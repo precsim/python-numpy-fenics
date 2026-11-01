@@ -14,6 +14,8 @@ contract.
 ## Design
 
 - Reuse existing locked binary packages first.
+- Replay and verify the checked-in exact package transaction before invoking the
+  overlay packager; the packager never performs dependency solving.
 - Exclude producer CPython and NumPy ownership from the overlay.
 - Prove whether stock PETSc/DOLFINx can coexist with the selected NumPy
   BLAS/LAPACK provider without generic-symbol interposition problems.
@@ -22,9 +24,40 @@ contract.
 - Bundle a private serial MPI runtime and fresh-JIT toolchain/sysroot.
 - Audit the complete ELF closure and generated JIT module at the required
   glibc/C++/GCC symbol ceilings.
+- Layer retained packages below `fenics-runtime/conda`, with the activation
+  bootstrap installed into the public NumPy base `site-packages` only when the
+  overlay is applied.
+- Emit a deterministic `tar.gz`, FEniCS manifest, exact package/source
+  provenance, native dependency census with measured GLIBCXX/CXXABI/GCC maxima,
+  and license inventory. GLIBC requirements must not exceed 2.17; the stock
+  C++/GCC maxima are recorded rather than forced to the older core ceilings.
+
+## Executable contract
+
+`scripts/linux/package_fenics_overlay.py` consumes a prefix already verified by
+`scripts/linux/package_lock.py verify-prefix`, its package cache, the checked-in
+lock, and a qualified public Linux NumPy base runtime. It filters producer
+CPython/NumPy ownership, retains the stock FEniCS/PETSc/MPICH closure and the
+locked GCC/glibc-2.17 sysroot needed for fresh FFCx JIT, rewrites shipped ELF
+search paths to `$ORIGIN`-relative RPATHs, retains the locked conda GCC specs as
+a prefix-tokenized relocation template, and rejects unresolved producer prefix
+references or forbidden MPI/GPU providers. The runtime wrapper supplies the
+equivalent private include/lib/sysroot search explicitly so fresh JIT output
+does not embed an absolute runtime path.
+
+`scripts/linux/test-fenics-overlay.sh` qualifies the archive on glibc 2.17 after
+relocation to a path containing spaces. It proves the inherited NumPy bytes are
+unchanged, activation wins over hostile Python/compiler/native state, both
+NumPy-first and PETSc-first import orders keep the private NumPy BLAS provider
+separate from the stock FEniCS BLAS provider, exactly one MPICH provider is
+loaded, and fresh FFCx JIT plus the serial PETSc Poisson solve pass with the
+bundled GCC/sysroot.
 
 ## Readiness blockers
 
-- Freeze the exact Linux package transaction and per-package hashes.
 - Settle the collision-safe BLAS/LAPACK binding using stock binaries first.
-- Pin the fresh-JIT compiler/sysroot and complete private native closure.
+- Execute the new packager/qualification path on the glibc-2.17 Linux producer
+  and record whether the locked stock ELF/JIT closure satisfies the GLIBC 2.17
+  floor without rebuild.
+- Wire the qualified runtime/overlay slice into the Linux FEniCS GitHub Actions
+  workflow in the follow-up workflow phase.
