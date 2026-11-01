@@ -399,6 +399,26 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "developer-metadata"
     if text.startswith(("lib/petsc/conf/", "lib/petsc/bin/")):
         return "petsc-build-metadata"
+    # These package extras are outside the qualified serial DOLFINx/PETSc and
+    # fresh-FFCx-JIT closure.  Keeping them would expand the shipped C++ ABI
+    # surface without providing a runtime capability covered by this profile.
+    if re.fullmatch(r"lib/libboost_[^/]+\.so(?:\..*)?", text):
+        return "unused-boost-shared-library"
+    if re.fullmatch(r"lib/libhdf5_cpp\.so(?:\..*)?", text):
+        return "unused-hdf5-cxx-binding"
+    if re.fullmatch(r"lib/libmpicxx\.so(?:\..*)?", text):
+        return "unused-mpich-cxx-binding"
+    if text in {"bin/nghttp", "bin/nghttpd", "bin/nghttpx"}:
+        return "unused-nghttp2-cli"
+    if text == "bin/io_demo" or re.fullmatch(r"lib/ucx/libucx_perftest_cuda\.so(?:\..*)?", text):
+        return "unused-ucx-test-tool"
+    if re.fullmatch(r"lib/libcfp\.so(?:\..*)?", text):
+        return "unused-zfp-cxx-wrapper"
+    if re.fullmatch(r"lib/libcc1\.so(?:\..*)?", text) or re.fullmatch(
+        r"lib/gcc/x86_64-conda-linux-gnu/16\.2\.0/plugin/libc(?:c1|p1)plugin\.so(?:\..*)?",
+        text,
+    ):
+        return "unused-gcc-debugger-plugin"
     if relative.suffix == ".la":
         return "libtool-metadata"
     return None
