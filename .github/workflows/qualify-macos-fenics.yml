@@ -179,15 +179,19 @@ jobs:
           printf '%s  %s\n' "$actual" "$ZIG_ASSET" > "$FENICS_OVERLAY_EVIDENCE/zig-sha256.txt"
           echo "FENICS_ZIG_ROOT=$root" >> "$GITHUB_ENV"
 
-      - name: Debug Zig from normal, spaced, and symlinked roots
+      - name: Debug Zig before and after ad-hoc codesign
         shell: bash
         run: |
           set -euo pipefail
-          spaced="$RUNNER_TEMP/zig relocated path with spaces"
-          link="$RUNNER_TEMP/zig-relocated-link"
-          rm -rf "$spaced" "$link"
-          cp -R "$FENICS_ZIG_ROOT" "$spaced"
-          ln -s "$spaced" "$link"
+          adhoc="$RUNNER_TEMP/zig-adhoc"
+          rm -rf "$adhoc"
+          cp -R "$FENICS_ZIG_ROOT" "$adhoc"
+          echo "===== original signature ====="
+          codesign -dv --verbose=4 "$FENICS_ZIG_ROOT/zig" 2>&1 || true
+          echo "===== ad-hoc signing ====="
+          codesign --force --sign - --timestamp=none "$adhoc/zig"
+          codesign --verify --strict "$adhoc/zig"
+          codesign -dv --verbose=4 "$adhoc/zig" 2>&1 || true
           work="$RUNNER_TEMP/zig probe cwd with spaces"
           rm -rf "$work"
           mkdir -p "$work"
@@ -195,11 +199,10 @@ jobs:
           #include <stdint.h>
           int probe(void) { return (int)sizeof(uint64_t); }
           EOF
-          for label in normal spaced symlink; do
+          for label in original adhoc; do
             case "$label" in
-              normal) zig="$FENICS_ZIG_ROOT/zig" ;;
-              spaced) zig="$spaced/zig" ;;
-              symlink) zig="$link/zig" ;;
+              original) zig="$FENICS_ZIG_ROOT/zig" ;;
+              adhoc) zig="$adhoc/zig" ;;
             esac
             echo "===== $label ====="
             /usr/bin/file "$zig"
