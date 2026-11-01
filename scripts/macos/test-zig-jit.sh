@@ -25,7 +25,7 @@ esac
 [[ -x "$zig_exe" ]] || { echo "Zig executable is missing: $zig_exe" >&2; exit 1; }
 [[ -x "$prefix/bin/python3.12" ]] || { echo "CPython 3.12 is missing: $prefix/bin/python3.12" >&2; exit 1; }
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics macos zig prototype ${target_arch}"
 wrapper_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics-zig-bin-${target_arch}"
 rm -rf "$work"

@@ -58,6 +58,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_canonical_text(path: Path) -> str:
+    text = path.read_text(encoding="utf-8-sig")
+    canonical = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("format_version") != 1:
@@ -126,7 +132,7 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
 
 
 def locked_url_order(lock: dict[str, Any], source_explicit: Path) -> list[str]:
-    actual_sha = sha256_file(source_explicit)
+    actual_sha = sha256_canonical_text(source_explicit)
     expected_sha = SOURCE_EXPLICIT_SHA256[lock["architecture"]]
     if actual_sha != expected_sha:
         raise SystemExit(
@@ -154,7 +160,7 @@ def render_explicit(lock: dict[str, Any], source_explicit: Path) -> str:
     lines = [
         "# Generated from the checked-in source explicit URL order plus checked-in SHA-256 locks.",
         "# Dependency solving is forbidden for this transaction.",
-        f"# source-explicit-sha256: {sha256_file(source_explicit)}",
+        f"# source-explicit-sha256: {sha256_canonical_text(source_explicit)}",
         f"# platform: {platform}",
         "@EXPLICIT",
     ]
@@ -265,7 +271,7 @@ if args.command == "explicit":
     source_explicit = Path(args.source_explicit).resolve()
     output.write_text(render_explicit(lock, source_explicit), encoding="utf-8")
     print(f"package_lock_sha256={sha256_file(lock_path)}")
-    print(f"source_explicit_sha256={sha256_file(source_explicit)}")
+    print(f"source_explicit_sha256={sha256_canonical_text(source_explicit)}")
     print(f"explicit_records={len(lock['packages'])}")
     print("dependency_solver=disabled")
 elif args.command == "verify-prefix":
