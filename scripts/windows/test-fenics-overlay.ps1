@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $zipPath = (Resolve-Path -LiteralPath $Zip -ErrorAction Stop).Path
@@ -42,9 +43,9 @@ try {
     function Get-NumpyHashMap {
         param([Parameter(Mandatory = $true)][string]$SitePackages)
         $roots = @(
-            Join-Path $SitePackages "numpy",
-            Join-Path $SitePackages "numpy.libs",
-            Join-Path $SitePackages "numpy-2.5.2.dist-info"
+            (Join-Path $SitePackages "numpy")
+            (Join-Path $SitePackages "numpy.libs")
+            (Join-Path $SitePackages "numpy-2.5.2.dist-info")
         )
         $map = [ordered]@{}
         foreach ($root in $roots) {
@@ -52,7 +53,7 @@ try {
             Get-ChildItem -LiteralPath $root -File -Recurse -Force |
                 Sort-Object FullName |
                 ForEach-Object {
-                    $relative = [IO.Path]::GetRelativePath($SitePackages, $_.FullName).Replace("\", "/")
+                    $relative = $_.FullName.Substring($SitePackages.Length).TrimStart("\", "/").Replace("\", "/")
                     $map[$relative] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
                 }
         }
@@ -103,8 +104,16 @@ try {
         throw "FEnICS overlay changed the qualified NumPy base distribution"
     }
 
-    Set-Content -LiteralPath (Join-Path $poisonRoot "numpy.py") -Value "raise RuntimeError('ambient numpy imported')" -Encoding utf8NoBOM
-    Set-Content -LiteralPath (Join-Path $poisonRoot "dolfinx.py") -Value "raise RuntimeError('ambient dolfinx imported')" -Encoding utf8NoBOM
+    [IO.File]::WriteAllText(
+        (Join-Path $poisonRoot "numpy.py"),
+        "raise RuntimeError('ambient numpy imported')" + [Environment]::NewLine,
+        $utf8NoBom
+    )
+    [IO.File]::WriteAllText(
+        (Join-Path $poisonRoot "dolfinx.py"),
+        "raise RuntimeError('ambient dolfinx imported')" + [Environment]::NewLine,
+        $utf8NoBom
+    )
 
     $runtimePython = Join-Path $runtimeRoot "python.exe"
     if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
@@ -160,7 +169,13 @@ assert Path(petsc4py.get_config()["PETSC_DIR"]).resolve() == root / "Library"
 mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
 print("fenics_embed_import=pass")
 '@
-        & $runtimePython -I -c $importProbe $runtimeRoot
+        $importProbePath = Join-Path $workRoot "import-probe.py"
+        [IO.File]::WriteAllText(
+            $importProbePath,
+            $importProbe + [Environment]::NewLine,
+            $utf8NoBom
+        )
+        & $runtimePython -I $importProbePath $runtimeRoot
         if ($LASTEXITCODE -ne 0) {
             throw "Relocated FEniCS import/mesh probe failed"
         }
@@ -175,8 +190,21 @@ script = Path(sys.argv[1]).resolve()
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 '@
-        $solveOutput = & $runtimePython -I -c $solveProbe $poisson 2>&1
-        $solveStatus = $LASTEXITCODE
+        $solveProbePath = Join-Path $workRoot "solve-probe.py"
+        [IO.File]::WriteAllText(
+            $solveProbePath,
+            $solveProbe + [Environment]::NewLine,
+            $utf8NoBom
+        )
+        $savedErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $solveOutput = & $runtimePython -I $solveProbePath $poisson 2>&1
+            $solveStatus = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
         $solveOutput | ForEach-Object { Write-Host $_ }
         if ($solveStatus -ne 0) {
             throw "Fresh relocated FEniCS Poisson JIT/solve failed"

@@ -4,12 +4,22 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Prefix,
     [string]$Output = "dist",
-    [string]$Version = "0.1.0",
-    [string]$Micromamba = ""
+    [string]$Version = "0.1.0"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
+
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+    [IO.File]::WriteAllText([IO.Path]::GetFullPath($Path), $Text, $utf8NoBom)
+}
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $prefixPath = (Resolve-Path -LiteralPath $Prefix -ErrorAction Stop).Path
@@ -84,13 +94,6 @@ if ($recordByName["fenics-jit-micro-clang"].version -ne "20260826") {
     throw "FEniCS embedded runtime requires qualified micro-Clang 20260826, got $($recordByName["fenics-jit-micro-clang"].version)"
 }
 
-$mamba = if ($Micromamba) {
-    (Resolve-Path -LiteralPath $Micromamba -ErrorAction Stop).Path
-} elseif ($env:MAMBA_EXE) {
-    (Resolve-Path -LiteralPath $env:MAMBA_EXE -ErrorAction Stop).Path
-} else {
-    (Get-Command micromamba.exe -ErrorAction Stop).Source
-}
 $probeCode = @'
 import json, platform, struct, sys
 import basix, dolfinx, ffcx, mpi4py, numpy, petsc4py, ufl
@@ -109,14 +112,17 @@ print(json.dumps({
 }))
 '@
 $probePath = Join-Path ([IO.Path]::GetTempPath()) ("fenics-embed-probe-" + [guid]::NewGuid().ToString("N") + ".py")
+$oldPath = $env:PATH
 try {
-    Set-Content -LiteralPath $probePath -Value $probeCode -Encoding utf8NoBOM
-    $probeText = & $mamba run -p $prefixPath python $probePath
+    Write-Utf8NoBom -Path $probePath -Text ($probeCode + [Environment]::NewLine)
+    $env:PATH = (Join-Path $prefixPath "Library\bin") + ";" + $prefixPath + ";" + $oldPath
+    $probeText = & $python -I $probePath 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "FEniCS prefix import probe failed under micromamba activation"
+        throw "FEniCS prefix import probe failed: $($probeText -join [Environment]::NewLine)"
     }
 }
 finally {
+    $env:PATH = $oldPath
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }
 $probe = ($probeText | Select-Object -Last 1) | ConvertFrom-Json
@@ -221,13 +227,13 @@ try {
                 }
             }
     )
-    $packageSummary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $provenanceRoot "conda-packages.json") -Encoding utf8NoBOM
+    Write-Utf8NoBom -Path (Join-Path $provenanceRoot "conda-packages.json") -Text (($packageSummary | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
 
     $files = @(
         Get-ChildItem -LiteralPath $stageRoot -File -Recurse |
             Sort-Object FullName |
             ForEach-Object {
-                $relative = [IO.Path]::GetRelativePath($stageRoot, $_.FullName).Replace("\", "/")
+                $relative = $_.FullName.Substring($stageRoot.Length).TrimStart("\", "/").Replace("\", "/")
                 [ordered]@{
                     path = $relative
                     bytes = $_.Length
@@ -257,7 +263,13 @@ try {
         profile = "fenics"
         producer = [ordered]@{
             repository = "precsim/python-numpy-fenics"
-            revision = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { "local" }
+            revision = if ($env:PRODUCER_REVISION) {
+                $env:PRODUCER_REVISION
+            } elseif ($env:GITHUB_SHA) {
+                $env:GITHUB_SHA
+            } else {
+                "local"
+            }
         }
         python = [ordered]@{
             version = $probe.python
@@ -288,7 +300,7 @@ try {
         files = $files
     }
     $manifestPath = Join-Path $stageRoot "fenics-embed-manifest.json"
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+    Write-Utf8NoBom -Path $manifestPath -Text (($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
 
     $assetName = "fenics-embed-runtime-v$Version-win-x64-cp312.zip"
     $zipPath = Join-Path $outputPath $assetName
@@ -297,7 +309,7 @@ try {
 
     $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $checksumPath = Join-Path $outputPath "SHA256SUMS-embedded-runtime.txt"
-    Set-Content -LiteralPath $checksumPath -Value "$zipHash  $assetName" -Encoding utf8NoBOM
+    Write-Utf8NoBom -Path $checksumPath -Text ("$zipHash  $assetName" + [Environment]::NewLine)
 
     Write-Host "FEniCS embedded-runtime overlay packaged."
     Write-Host "artifact=$zipPath"
