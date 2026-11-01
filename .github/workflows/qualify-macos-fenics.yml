@@ -50,18 +50,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - architecture: arm64
-            artifact_platform: macos-arm64
-            conda_subdir: osx-arm64
-            python_asset_id: "244701302"
-            python_asset_name: python-3.12.10-darwin-arm64.tar.gz
-            toolcache_arch: arm64
-            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
-            zig_asset: zig-aarch64-macos-0.15.2.tar.xz
-            zig_sha256: 3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
-            overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp312.zip
           - architecture: x86_64
             artifact_platform: macos-x64
             conda_subdir: osx-64
@@ -190,6 +178,36 @@ jobs:
           test -f "$root/LICENSE"
           printf '%s  %s\n' "$actual" "$ZIG_ASSET" > "$FENICS_OVERLAY_EVIDENCE/zig-sha256.txt"
           echo "FENICS_ZIG_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Debug Zig from normal, spaced, and symlinked roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          spaced="$RUNNER_TEMP/zig relocated path with spaces"
+          link="$RUNNER_TEMP/zig-relocated-link"
+          rm -rf "$spaced" "$link"
+          cp -R "$FENICS_ZIG_ROOT" "$spaced"
+          ln -s "$spaced" "$link"
+          work="$RUNNER_TEMP/zig probe cwd with spaces"
+          rm -rf "$work"
+          mkdir -p "$work"
+          cat > "$work/probe.c" <<'EOF'
+          #include <stdint.h>
+          int probe(void) { return (int)sizeof(uint64_t); }
+          EOF
+          for label in normal spaced symlink; do
+            case "$label" in
+              normal) zig="$FENICS_ZIG_ROOT/zig" ;;
+              spaced) zig="$spaced/zig" ;;
+              symlink) zig="$link/zig" ;;
+            esac
+            echo "===== $label ====="
+            /usr/bin/file "$zig"
+            /usr/bin/arch -x86_64 "$zig" version
+            (cd "$work" && /usr/bin/arch -x86_64 "$zig" cc -v -target x86_64-macos.14.0 -c probe.c -o "$label.o")
+            /usr/bin/file "$work/$label.o"
+          done
+          exit 99
 
       - name: Download pinned public CPython base assets
         shell: bash
