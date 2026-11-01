@@ -139,13 +139,7 @@ def overlay_path_exclusion_reason(relative: PurePosixPath, *, retain_static_arch
         return "petsc-build-metadata"
     if relative.suffix == ".la":
         return "libtool-metadata"
-    if (
-        relative.suffix == ".dylib"
-        and len(relative.parts) >= 6
-        and relative.parts[0:2] == ("lib", "clang")
-        and relative.parts[3:5] == ("lib", "darwin")
-        and relative.name.startswith("libclang_rt.")
-    ):
+    if relative.name.startswith("libclang_rt.") and relative.name.endswith("_osx_dynamic.dylib"):
         # The locked compiler-rt resource packages include optional sanitizer
         # runtimes for architectures beyond the overlay target.  FFCx's normal
         # C JIT does not use them; retaining the static compiler-rt archives is
