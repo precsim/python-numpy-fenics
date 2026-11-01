@@ -954,6 +954,14 @@ def main() -> int:
                 source = prefix / Path(*relative.parts)
                 if not source.exists() and not source.is_symlink():
                     raise SystemExit(f"locked package-owned path is missing: {name}: {source}")
+                expected_prefix_sha = owned.get("sha256_in_prefix")
+                if expected_prefix_sha and source.is_file() and not source.is_symlink():
+                    actual_prefix_sha = sha256_file(source)
+                    if actual_prefix_sha != str(expected_prefix_sha).lower():
+                        raise SystemExit(
+                            f"installed package-owned file hash mismatch: {name}: {relative}: "
+                            f"{actual_prefix_sha} != {expected_prefix_sha}"
+                        )
                 destination = private_prefix / Path(*relative.parts)
                 copy_path(source, destination, prefix, private_prefix)
                 rel = destination.relative_to(stage_root).as_posix()
