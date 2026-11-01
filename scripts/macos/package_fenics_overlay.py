@@ -139,6 +139,18 @@ def overlay_path_exclusion_reason(relative: PurePosixPath, *, retain_static_arch
         return "petsc-build-metadata"
     if relative.suffix == ".la":
         return "libtool-metadata"
+    if (
+        relative.suffix == ".dylib"
+        and len(relative.parts) >= 6
+        and relative.parts[0:2] == ("lib", "clang")
+        and relative.parts[3:5] == ("lib", "darwin")
+        and relative.name.startswith("libclang_rt.")
+    ):
+        # The locked compiler-rt resource packages include optional sanitizer
+        # runtimes for architectures beyond the overlay target.  FFCx's normal
+        # C JIT does not use them; retaining the static compiler-rt archives is
+        # sufficient for the default Clang link path exercised in qualification.
+        return "optional-compiler-rt-dynamic-runtime"
     if relative.suffix == ".a" and not retain_static_archives:
         return "static-developer-archive"
     return None
@@ -517,14 +529,23 @@ def is_macho(path: Path) -> bool:
         return False
 
 
+def macho_identity(path: Path) -> str | None:
+    output = run("otool", "-D", str(path), check=False).stdout.splitlines()
+    return output[1].strip() if len(output) > 1 and output[1].strip() else None
+
+
 def macho_dependencies(path: Path) -> list[str]:
+    identity = macho_identity(path)
     output = run("otool", "-L", str(path)).stdout.splitlines()[1:]
     dependencies = []
     for line in output:
         stripped = line.strip()
         if not stripped:
             continue
-        dependencies.append(stripped.split(" (compatibility version", 1)[0].strip())
+        dependency = stripped.split(" (compatibility version", 1)[0].strip()
+        if identity is not None and dependency == identity:
+            continue
+        dependencies.append(dependency)
     return dependencies
 
 
@@ -648,8 +669,7 @@ def relocate_and_audit_macho(
                 rewritten.add(binary)
 
         if binary.suffix == ".dylib":
-            identity_output = run("otool", "-D", str(binary), check=False).stdout.splitlines()
-            identity = identity_output[1].strip() if len(identity_output) > 1 else ""
+            identity = macho_identity(binary) or ""
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
