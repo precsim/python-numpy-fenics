@@ -210,6 +210,7 @@ mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
 print("fenics_public_overlay_import=pass")
 PY
 
+export FENICS_JIT_VERBOSE=1
 "${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" <<'PY'
 import importlib.util
 from pathlib import Path

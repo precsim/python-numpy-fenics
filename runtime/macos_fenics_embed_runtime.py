@@ -150,10 +150,22 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-if [[ $python_extension_link -eq 1 ]]; then
-    exec "$zig" cc -target "$target" -mmacosx-version-min=14.0 -shared -Wl,-undefined,dynamic_lookup "${{args[@]}}"
+verbose_args=()
+if [[ "${{FENICS_JIT_VERBOSE:-0}}" == 1 ]]; then
+    verbose_args=(-v)
+    printf 'fenics_zig_wrapper_machine=%q\\n' "$(uname -m)" >&2
+    printf 'fenics_zig_wrapper_zig=%q\\n' "$zig" >&2
+    printf 'fenics_zig_wrapper_target=%q\\n' "$target" >&2
+    printf 'fenics_zig_wrapper_cwd=%q\\n' "$PWD" >&2
+    printf 'fenics_zig_wrapper_args=' >&2
+    printf ' %q' "${{args[@]}}" >&2
+    printf '\\n' >&2
+    /usr/bin/file "$zig" >&2 || true
 fi
-exec "$zig" cc -target "$target" -mmacosx-version-min=14.0 "${{args[@]}}"
+if [[ $python_extension_link -eq 1 ]]; then
+    exec "$zig" cc "${{verbose_args[@]}}" -target "$target" -mmacosx-version-min=14.0 -shared -Wl,-undefined,dynamic_lookup "${{args[@]}}"
+fi
+exec "$zig" cc "${{verbose_args[@]}}" -target "$target" -mmacosx-version-min=14.0 "${{args[@]}}"
 """
     wrapper.write_text(script, encoding="utf-8")
     wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
