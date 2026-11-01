@@ -31,9 +31,22 @@ resolved_linker="$("$clang_exe" -B"$prefix/bin" -print-prog-name=ld)"
 if [[ "$resolved_linker" != /* ]]; then
     resolved_linker="$prefix/bin/$resolved_linker"
 fi
-resolved_linker="$(cd "$(dirname "$resolved_linker")" && pwd -P)/$(basename "$resolved_linker")"
-[[ "$resolved_linker" == "$linker_exe" ]] || {
-    echo "locked Clang did not resolve the locked cctools linker: $resolved_linker != $linker_exe" >&2
+resolved_linker="$("$prefix/bin/python3.12" - "$resolved_linker" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).resolve())
+PY
+)"
+expected_linker="$("$prefix/bin/python3.12" - "$linker_exe" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).resolve())
+PY
+)"
+[[ "$resolved_linker" == "$expected_linker" ]] || {
+    echo "locked Clang did not resolve the locked cctools linker: $resolved_linker != $expected_linker" >&2
     exit 1
 }
 
