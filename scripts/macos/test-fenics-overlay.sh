@@ -70,6 +70,10 @@ staged_python="$runtime/Python.framework/Versions/3.12/bin/python3.12"
     echo "public NumPy base runtime is incomplete" >&2
     exit 1
 }
+python_cmd=("$staged_python")
+if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
+    python_cmd=(/usr/bin/arch -x86_64 "$staged_python")
+fi
 
 hash_numpy() {
     python3 - "$site_packages" "$1" <<'PY'
@@ -163,7 +167,7 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
-"$staged_python" -S -P - "$runtime" <<'PY'
+"${python_cmd[@]}" -S -P - "$runtime" <<'PY'
 import importlib.util
 from pathlib import Path
 import sys
@@ -206,7 +210,7 @@ mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
 print("fenics_public_overlay_import=pass")
 PY
 
-"$staged_python" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" <<'PY'
+"${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" <<'PY'
 import importlib.util
 from pathlib import Path
 import sys

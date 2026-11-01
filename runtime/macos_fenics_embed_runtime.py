@@ -104,6 +104,14 @@ while [[ $# -gt 0 ]]; do
         -isysroot*)
             shift
             ;;
+        -arch)
+            # The staged CPython framework carries universal-build arch flags
+            # in sysconfig. This wrapper already selects one immutable Zig
+            # target from platform.machine(), so forwarding either (or both)
+            # -arch values can make Zig combine a host CPU with the wrong
+            # target architecture.
+            shift 2
+            ;;
         -I)
             if [[ "${{2:-}}" == */include/python3.12 && "${{2:-}}" != "$runtime_root"/* ]]; then
                 shift 2
