@@ -29,8 +29,11 @@ contract.
   overlay is applied.
 - Emit a deterministic `tar.gz`, FEniCS manifest, exact package/source
   provenance, native dependency census with measured GLIBCXX/CXXABI/GCC maxima,
-  and license inventory. GLIBC requirements must not exceed 2.17; the stock
-  C++/GCC maxima are recorded rather than forced to the older core ceilings.
+  and license inventory. The stock closure and freshly generated JIT modules
+  must not exceed GLIBC 2.17, GLIBCXX 3.4.19, CXXABI 1.3.7 (with nonnumeric
+  `CXXABI_TM_1` allowed), or GCC 4.8.0. A stock-package failure at one of these
+  executable gates is rebuild evidence; it is not a reason to weaken the
+  baseline silently.
 
 ## Executable contract
 

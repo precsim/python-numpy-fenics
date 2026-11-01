@@ -58,6 +58,12 @@ NUMPY_PREFIXES = (
 )
 GCC_SPECS_RELATIVE = PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs")
 GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
+REQUIRED_SYMBOL_CEILINGS = {
+    "GLIBC": (2, 17),
+    "GLIBCXX": (3, 4, 19),
+    "CXXABI": (1, 3, 7),
+    "GCC": (4, 8, 0),
+}
 PROTECTED_JIT_BIN_PATHS = {
     "bin/x86_64-conda-linux-gnu-gcc",
     "bin/x86_64-conda-linux-gnu-ld",
@@ -554,6 +560,7 @@ def audit_elf(
         "GCC": None,
     }
     version_tokens: set[str] = set()
+    ceiling_violations: list[dict[str, Any]] = []
     for path in all_elfs:
         header = run("readelf", "-hW", str(path)).stdout
         if "Advanced Micro Devices X86-64" not in header or "ELF64" not in header:
@@ -564,10 +571,22 @@ def audit_elf(
                 value = numeric_version(token, namespace)
                 if value is not None and (maxima[namespace] is None or value > maxima[namespace]):
                     maxima[namespace] = value
-    if maxima["GLIBC"] is not None and maxima["GLIBC"] > (2, 17):
+                ceiling = REQUIRED_SYMBOL_CEILINGS[namespace]
+                if value is not None and value > ceiling:
+                    rel = path.relative_to(stage_root).as_posix()
+                    ceiling_violations.append(
+                        {
+                            "path": rel,
+                            "owners": owners.get(rel, []),
+                            "required": token,
+                            "ceiling": f"{namespace}_{version_text(ceiling)}",
+                        }
+                    )
+    if ceiling_violations:
         raise SystemExit(
-            "stock FEniCS package closure exceeds the required GLIBC_2.17 ceiling: "
-            f"GLIBC_{version_text(maxima['GLIBC'])}"
+            "stock FEniCS package closure exceeds required native symbol ceilings; "
+            "selective rebuild decisions require this executable evidence:\n"
+            + json.dumps(ceiling_violations, indent=2, sort_keys=True)
         )
 
     census = []
@@ -651,6 +670,9 @@ def audit_elf(
         "elf_count": len(all_elfs),
         "runtime_dynamic_elf_count": len(census),
         "glibc_ceiling": "2.17",
+        "glibcxx_ceiling": "3.4.19",
+        "cxxabi_ceiling": "1.3.7",
+        "gcc_ceiling": "4.8.0",
         "measured_max_glibc": version_text(maxima["GLIBC"]),
         "measured_max_glibcxx": version_text(maxima["GLIBCXX"]),
         "measured_max_cxxabi": version_text(maxima["CXXABI"]),

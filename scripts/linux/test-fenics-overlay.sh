@@ -171,6 +171,9 @@ if (
     or manifest.get("numpy", {}).get("producer_payload_excluded") is not True
     or manifest.get("numpy", {}).get("base_tree_sha256") != aggregate.hexdigest()
     or manifest.get("native", {}).get("glibc_ceiling") != "2.17"
+    or manifest.get("native", {}).get("glibcxx_ceiling") != "3.4.19"
+    or manifest.get("native", {}).get("cxxabi_ceiling") != "1.3.7"
+    or manifest.get("native", {}).get("gcc_ceiling") != "4.8.0"
     or manifest.get("native", {}).get("mpi", {}).get("implementation") != "mpich"
     or manifest.get("native", {}).get("mpi", {}).get("provider_count") != 1
     or manifest.get("producer", {}).get("source_rebuilds") != []
@@ -483,6 +486,13 @@ import subprocess
 import sys
 
 maxima = {"GLIBC": None, "GLIBCXX": None, "CXXABI": None, "GCC": None}
+ceilings = {
+    "GLIBC": (2, 17),
+    "GLIBCXX": (3, 4, 19),
+    "CXXABI": (1, 3, 7),
+    "GCC": (4, 8, 0),
+}
+violations = []
 
 def numeric(token, namespace):
     prefix = namespace + "_"
@@ -503,15 +513,15 @@ for raw in sys.argv[1:]:
             value = numeric(token, namespace)
             if value is not None and (maxima[namespace] is None or value > maxima[namespace]):
                 maxima[namespace] = value
+            if value is not None and value > ceilings[namespace]:
+                violations.append((str(path), token, namespace + "_" + ".".join(map(str, ceilings[namespace]))))
     dynamic = subprocess.check_output(["readelf", "-dW", str(path)], text=True)
     for packed in re.findall(r"\((?:RUNPATH|RPATH)\).*?\[([^\]]*)\]", dynamic):
         for entry in packed.split(":"):
             if entry and not entry.startswith("$ORIGIN"):
                 raise SystemExit(f"fresh FFCx JIT module has absolute/non-relative RPATH: {path}: {entry}")
-if maxima["GLIBC"] is not None and maxima["GLIBC"] > (2, 17):
-    raise SystemExit(
-        "fresh FFCx JIT module exceeds GLIBC_2.17: GLIBC_" + ".".join(map(str, maxima["GLIBC"]))
-    )
+if violations:
+    raise SystemExit("fresh FFCx JIT module exceeds required native symbol ceilings: " + repr(violations))
 for namespace, value in maxima.items():
     print(
         f"fresh_ffcx_jit_{namespace.lower()}_max="
