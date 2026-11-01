@@ -44,8 +44,8 @@ def _wrapper_root(runtime_root: Path) -> Path:
         if any(character.isspace() for character in str(base)):
             continue
         token = hashlib.sha256(str(runtime_root).encode("utf-8")).hexdigest()[:16]
-        return base / f"fenics-embed-zig-{token}-{platform.machine()}"
-    raise RuntimeError("no whitespace-safe temporary directory is available for the FEniCS Zig compiler shim")
+        return base / f"fenics-embed-clang-{token}-{platform.machine()}"
+    raise RuntimeError("no whitespace-safe temporary directory is available for the FEniCS Clang compiler shim")
 
 
 def _write_jit_wrapper(runtime_root: Path) -> Path:
@@ -54,50 +54,46 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
         return _JIT_WRAPPER
 
     machine = platform.machine()
-    target = {
-        "arm64": "aarch64-macos.14.0",
-        "x86_64": "x86_64-macos.14.0",
+    target_tools = {
+        "arm64": (
+            "arm64-apple-darwin20.0.0-clang",
+            "arm64-apple-darwin20.0.0-ld",
+        ),
+        "x86_64": (
+            "x86_64-apple-darwin13.4.0-clang",
+            "x86_64-apple-darwin13.4.0-ld",
+        ),
     }.get(machine)
-    if target is None:
+    if target_tools is None:
         raise RuntimeError(f"unsupported macOS FEniCS runtime architecture: {machine}")
 
-    zig = runtime_root / "fenics-runtime" / "zig" / "zig"
-    if not zig.is_file():
-        raise RuntimeError(f"bundled Zig executable is missing: {zig}")
+    private_prefix = runtime_root / "fenics-runtime" / "conda"
+    clang = private_prefix / "bin" / target_tools[0]
+    linker = private_prefix / "bin" / target_tools[1]
+    if not clang.is_file():
+        raise RuntimeError(f"bundled Clang executable is missing: {clang}")
+    if not linker.is_file():
+        raise RuntimeError(f"bundled cctools linker is missing: {linker}")
 
     root = _wrapper_root(runtime_root)
     root.mkdir(parents=True, exist_ok=True)
-    wrapper = root / "fenics-zig-cc"
+    wrapper = root / "fenics-clang-cc"
     python_include = runtime_root / "Python.framework" / "Versions" / "3.12" / "include" / "python3.12"
-    private_include = runtime_root / "fenics-runtime" / "conda" / "include"
+    private_include = private_prefix / "include"
     if not python_include.is_dir():
         raise RuntimeError(f"staged CPython headers are missing: {python_include}")
     if not private_include.is_dir():
         raise RuntimeError(f"private FEniCS/PETSc headers are missing: {private_include}")
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
-zig={shlex.quote(str(zig))}
-target={shlex.quote(target)}
+clang={shlex.quote(str(clang))}
+tool_bin={shlex.quote(str(private_prefix / "bin"))}
 runtime_root={shlex.quote(str(runtime_root))}
 python_include={shlex.quote(str(python_include))}
 private_include={shlex.quote(str(private_include))}
 args=("-I$python_include" "-I$private_include")
-python_extension_link=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -bundle)
-            python_extension_link=1
-            shift
-            ;;
-        -undefined)
-            if [[ "${{2:-}}" == dynamic_lookup ]]; then
-                python_extension_link=1
-                shift 2
-            else
-                args+=("$1")
-                shift
-            fi
-            ;;
         -isysroot)
             shift 2
             ;;
@@ -106,10 +102,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         -arch)
             # The staged CPython framework carries universal-build arch flags
-            # in sysconfig. This wrapper already selects one immutable Zig
-            # target from platform.machine(), so forwarding either (or both)
-            # -arch values can make Zig combine a host CPU with the wrong
-            # target architecture.
+            # in sysconfig. The target-prefixed Clang driver already selects
+            # the runtime architecture, so drop inherited universal flags.
             shift 2
             ;;
         -I)
@@ -150,10 +144,15 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-if [[ $python_extension_link -eq 1 ]]; then
-    exec "$zig" cc -target "$target" -mmacosx-version-min=14.0 -shared -Wl,-undefined,dynamic_lookup "${{args[@]}}"
+sdkroot="${{SDKROOT:-}}"
+if [[ -z "$sdkroot" || ! -d "$sdkroot" ]]; then
+    sdkroot="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
 fi
-exec "$zig" cc -target "$target" -mmacosx-version-min=14.0 "${{args[@]}}"
+if [[ ! -d "$sdkroot" ]]; then
+    echo "macOS SDK root is unavailable: $sdkroot" >&2
+    exit 1
+fi
+exec "$clang" -B"$tool_bin" -isysroot "$sdkroot" -mmacosx-version-min=14.0 "${{args[@]}}"
 """
     wrapper.write_text(script, encoding="utf-8")
     wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
@@ -196,7 +195,6 @@ def activate() -> Path:
         (private_prefix / "lib", "private native-library root"),
         (private_site, "private FEniCS site-packages"),
         (public_site, "public NumPy site-packages"),
-        (root / "fenics-runtime" / "zig" / "zig", "bundled Zig compiler"),
     ):
         if not required.exists():
             raise RuntimeError(f"{label} is missing from embedded runtime: {required}")
@@ -219,6 +217,7 @@ def activate() -> Path:
     sys.path[:0] = authoritative_sites
 
     wrapper = _write_jit_wrapper(root)
+    _prepend_path("PATH", private_prefix / "bin")
     _prepend_path("PATH", wrapper.parent)
 
     os.environ["PETSC_DIR"] = str(private_prefix)
@@ -228,10 +227,12 @@ def activate() -> Path:
     os.environ["CPP"] = f"{wrapper} -E"
     os.environ["LDSHARED"] = f"{wrapper} -bundle -undefined dynamic_lookup"
     os.environ["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
-    os.environ["FENICS_ZIG_EXE"] = str(root / "fenics-runtime" / "zig" / "zig")
-    os.environ["FENICS_ZIG_TARGET"] = (
-        "aarch64-macos.14.0" if platform.machine() == "arm64" else "x86_64-macos.14.0"
-    )
+    tool_names = {
+        "arm64": ("arm64-apple-darwin20.0.0-clang", "arm64-apple-darwin20.0.0-ld"),
+        "x86_64": ("x86_64-apple-darwin13.4.0-clang", "x86_64-apple-darwin13.4.0-ld"),
+    }[platform.machine()]
+    os.environ["FENICS_JIT_CLANG"] = str(private_prefix / "bin" / tool_names[0])
+    os.environ["FENICS_JIT_LINKER"] = str(private_prefix / "bin" / tool_names[1])
 
     import petsc4py
 

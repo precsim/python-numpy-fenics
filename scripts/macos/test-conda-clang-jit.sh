@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-    echo "usage: $0 <conda-prefix> <arm64|x86_64> <zig-executable>" >&2
+if [[ $# -ne 2 ]]; then
+    echo "usage: $0 <conda-prefix> <arm64|x86_64>" >&2
     exit 2
 fi
 
 prefix="$(cd "$1" && pwd -P)"
 target_arch="$2"
-zig_exe="$(cd "$(dirname "$3")" && pwd -P)/$(basename "$3")"
 case "$target_arch" in
     arm64)
-        zig_target=aarch64-macos.14.0
+        clang_exe="$prefix/bin/arm64-apple-darwin20.0.0-clang"
+        linker_exe="$prefix/bin/arm64-apple-darwin20.0.0-ld"
         ;;
     x86_64)
-        zig_target=x86_64-macos.14.0
+        clang_exe="$prefix/bin/x86_64-apple-darwin13.4.0-clang"
+        linker_exe="$prefix/bin/x86_64-apple-darwin13.4.0-ld"
         ;;
     *)
         echo "unsupported target architecture: $target_arch" >&2
@@ -22,36 +23,39 @@ case "$target_arch" in
         ;;
 esac
 
-[[ -x "$zig_exe" ]] || { echo "Zig executable is missing: $zig_exe" >&2; exit 1; }
+[[ -x "$clang_exe" ]] || { echo "locked Clang executable is missing: $clang_exe" >&2; exit 1; }
+[[ -x "$linker_exe" ]] || { echo "locked cctools linker is missing: $linker_exe" >&2; exit 1; }
 [[ -x "$prefix/bin/python3.12" ]] || { echo "CPython 3.12 is missing: $prefix/bin/python3.12" >&2; exit 1; }
 
+resolved_linker="$("$clang_exe" -B"$prefix/bin" -print-prog-name=ld)"
+if [[ "$resolved_linker" != /* ]]; then
+    resolved_linker="$prefix/bin/$resolved_linker"
+fi
+resolved_linker="$(cd "$(dirname "$resolved_linker")" && pwd -P)/$(basename "$resolved_linker")"
+[[ "$resolved_linker" == "$linker_exe" ]] || {
+    echo "locked Clang did not resolve the locked cctools linker: $resolved_linker != $linker_exe" >&2
+    exit 1
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics macos zig prototype ${target_arch}"
-wrapper_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics-zig-bin-${target_arch}"
+work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics macos clang prototype ${target_arch}"
+wrapper_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fenics-clang-bin-${target_arch}"
 rm -rf "$work"
 rm -rf "$wrapper_root"
 mkdir -p "$work/cache" "$work/evidence" "$work/poison" "$wrapper_root"
 
-wrapper="$wrapper_root/fenics-zig-cc"
+wrapper="$wrapper_root/fenics-clang-cc"
 cat >"$wrapper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 args=()
-python_extension_link=0
 while [[ \$# -gt 0 ]]; do
     case "\$1" in
-        -bundle)
-            python_extension_link=1
-            shift
+        -isysroot|-arch)
+            shift 2
             ;;
-        -undefined)
-            if [[ "\${2:-}" == dynamic_lookup ]]; then
-                python_extension_link=1
-                shift 2
-            else
-                args+=("\$1")
-                shift
-            fi
+        -isysroot*|-mmacosx-version-min=*|-Wl,-syslibroot,*|-Wl,-platform_version,macos,*)
+            shift
             ;;
         *)
             args+=("\$1")
@@ -59,10 +63,12 @@ while [[ \$# -gt 0 ]]; do
             ;;
     esac
 done
-if [[ \$python_extension_link -eq 1 ]]; then
-    exec "$zig_exe" cc -target "$zig_target" -mmacosx-version-min=14.0 -shared -Wl,-undefined,dynamic_lookup "\${args[@]}"
+sdkroot="\${SDKROOT:-}"
+if [[ -z "\$sdkroot" || ! -d "\$sdkroot" ]]; then
+    sdkroot="\$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
 fi
-exec "$zig_exe" cc -target "$zig_target" -mmacosx-version-min=14.0 "\${args[@]}"
+[[ -d "\$sdkroot" ]] || { echo "macOS SDK root is unavailable: \$sdkroot" >&2; exit 1; }
+exec "$clang_exe" -B"$prefix/bin" -isysroot "\$sdkroot" -mmacosx-version-min=14.0 "\${args[@]}"
 EOF
 chmod +x "$wrapper"
 
@@ -108,7 +114,7 @@ export DYLD_LIBRARY_PATH="$work/poison"
 export DYLD_FALLBACK_LIBRARY_PATH="$work/poison"
 unset SDKROOT DEVELOPER_DIR CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH COMPILER_PATH GCC_EXEC_PREFIX
 
-"${python_cmd[@]}" -I - "$wrapper" "$zig_exe" "$zig_target" <<'PY'
+"${python_cmd[@]}" -I - "$wrapper" "$clang_exe" "$linker_exe" <<'PY'
 from __future__ import annotations
 
 from pathlib import Path
@@ -126,8 +132,8 @@ import petsc4py
 import ufl
 
 wrapper = Path(sys.argv[1]).resolve()
-zig = Path(sys.argv[2]).resolve()
-target = sys.argv[3]
+clang = Path(sys.argv[2]).resolve()
+linker = Path(sys.argv[3]).resolve()
 if numpy.__version__ != "2.5.2":
     raise SystemExit(f"unexpected NumPy version: {numpy.__version__}")
 if dolfinx.__version__ != "0.11.0":
@@ -150,8 +156,8 @@ record = {
     "ufl": ufl.__version__,
     "cc": os.environ.get("CC"),
     "ldshared": os.environ.get("LDSHARED"),
-    "zig": str(zig),
-    "zig_target": target,
+    "clang": str(clang),
+    "linker": str(linker),
 }
 if Path(record["cc"]).resolve() != wrapper:
     raise SystemExit(f"CC escaped bundled wrapper: {record['cc']}")
@@ -183,6 +189,6 @@ while IFS= read -r module; do
     }
 done <"$jit_modules"
 
-"$zig_exe" version | tee "$work/evidence/zig-version.txt"
-echo "zig_target=$zig_target" | tee "$work/evidence/zig-target.txt"
-echo "macos_zig_ffcx_jit_prototype=pass"
+"$clang_exe" --version | tee "$work/evidence/clang-version.txt"
+printf 'clang=%s\nlinker=%s\n' "$clang_exe" "$linker_exe" | tee "$work/evidence/clang-toolchain.txt"
+echo "macos_conda_clang_ffcx_jit_prototype=pass"

@@ -8,7 +8,8 @@ Initial migration sources are public producer assets only:
 - Windows FEniCS relocatable overlay packaging and standalone qualification;
 - Windows FEniCS package recipes/JIT work as needed for selective rebuilds;
 - macOS exact package locks, solver-free replay, relocatable overlay packaging,
-  Zig JIT bootstrap, Mach-O closure audit and deterministic archive production;
+  locked conda-forge Clang/cctools JIT bootstrap, Mach-O closure audit and
+  deterministic archive production;
 - shared fresh-FFCx/PETSc numerical probes.
 
 Downstream private source trees are not migration inputs.

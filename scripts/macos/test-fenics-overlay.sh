@@ -156,7 +156,8 @@ PY
 
 unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
     LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
-    PETSC_DIR FENICS_JIT_ROOT FENICS_JIT_COMPILER CONDA_PREFIX || true
+    PETSC_DIR FENICS_JIT_ROOT FENICS_JIT_COMPILER FENICS_JIT_CLANG \
+    FENICS_JIT_LINKER CONDA_PREFIX || true
 export PYTHONPATH="$poison"
 export PYTHONUSERBASE="$poison"
 export PYTHONNOUSERSITE=1
@@ -169,6 +170,7 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # so the poisoned PYTHONPATH cannot shadow it before activation.
 "${python_cmd[@]}" -S -P - "$runtime" <<'PY'
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -194,6 +196,10 @@ spec.loader.exec_module(fenics_embed_runtime)
 activated = Path(fenics_embed_runtime.activate()).resolve()
 if activated != root:
     raise SystemExit(f"unexpected activated root: {activated} != {root}")
+for variable in ("FENICS_JIT_CLANG", "FENICS_JIT_LINKER"):
+    value = Path(os.environ.get(variable, "")).resolve()
+    if root not in value.parents:
+        raise SystemExit(f"{variable} escaped relocated runtime: {value}")
 import numpy
 import dolfinx
 import petsc4py
