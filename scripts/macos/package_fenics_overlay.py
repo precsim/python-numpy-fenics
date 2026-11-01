@@ -32,6 +32,7 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
+JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
     "lib/python3.12/site-packages/numpy/",
     "lib/python3.12/site-packages/numpy.libs/",
@@ -48,9 +49,9 @@ EXCLUDED_PACKAGE_NAMES = {
     "python_abi",
     "tk",
     "wheel",
-    # The final JIT compiler is the separately pinned Zig toolchain.  These
-    # packages are producer-side compiler/linker inputs and are not runtime
-    # ownership of the overlay.
+    "pkg-config",
+}
+JIT_TOOLCHAIN_PACKAGE_NAMES = {
     "cctools",
     "clang",
     "clang-23",
@@ -63,11 +64,10 @@ EXCLUDED_PACKAGE_NAMES = {
     "libsigtool",
     "llvm-tools",
     "llvm-tools-23",
-    "pkg-config",
     "sigtool-codesign",
     "tapi",
 }
-EXCLUDED_PACKAGE_PREFIXES = (
+JIT_TOOLCHAIN_PACKAGE_PREFIXES = (
     "cctools_impl_osx-",
     "clang_impl_osx-",
     "compiler-rt23_osx-",
@@ -107,7 +107,13 @@ def safe_relative(raw: str) -> PurePosixPath:
 
 
 def package_excluded(name: str) -> bool:
-    return name in EXCLUDED_PACKAGE_NAMES or any(name.startswith(prefix) for prefix in EXCLUDED_PACKAGE_PREFIXES)
+    return name in EXCLUDED_PACKAGE_NAMES
+
+
+def jit_toolchain_package(name: str) -> bool:
+    return name in JIT_TOOLCHAIN_PACKAGE_NAMES or any(
+        name.startswith(prefix) for prefix in JIT_TOOLCHAIN_PACKAGE_PREFIXES
+    )
 
 
 def numpy_owned_path(relative: PurePosixPath) -> bool:
@@ -119,7 +125,7 @@ def numpy_owned_path(relative: PurePosixPath) -> bool:
     )
 
 
-def overlay_path_exclusion_reason(relative: PurePosixPath) -> str | None:
+def overlay_path_exclusion_reason(relative: PurePosixPath, *, retain_static_archives: bool = False) -> str | None:
     text = relative.as_posix()
     if "__pycache__" in relative.parts or relative.suffix in {".pyc", ".pyo"}:
         return "generated-python-bytecode"
@@ -133,7 +139,7 @@ def overlay_path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "petsc-build-metadata"
     if relative.suffix == ".la":
         return "libtool-metadata"
-    if relative.suffix == ".a":
+    if relative.suffix == ".a" and not retain_static_archives:
         return "static-developer-archive"
     return None
 
@@ -804,10 +810,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--prefix", required=True)
 parser.add_argument("--lock", required=True)
 parser.add_argument("--package-cache", required=True)
-parser.add_argument("--zig-root", required=True)
-parser.add_argument("--zig-version", required=True)
-parser.add_argument("--zig-archive", required=True)
-parser.add_argument("--zig-sha256", required=True)
 parser.add_argument("--arch", required=True, choices=("arm64", "x86_64"))
 parser.add_argument("--output", required=True)
 parser.add_argument("--version", default="0.1.0")
@@ -820,15 +822,12 @@ if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
 prefix = Path(args.prefix).resolve()
 lock_path = Path(args.lock).resolve()
 package_cache = Path(args.package_cache).resolve()
-zig_root = Path(args.zig_root).resolve()
 output = Path(args.output).resolve()
 bootstrap_source = Path(__file__).resolve().parents[2] / "runtime" / "macos_fenics_embed_runtime.py"
 
-for required in (prefix / "conda-meta", lock_path, package_cache, zig_root / "zig", bootstrap_source):
+for required in (prefix / "conda-meta", lock_path, package_cache, bootstrap_source):
     if not required.exists():
         raise SystemExit(f"required producer input is missing: {required}")
-if not re.fullmatch(r"[0-9a-f]{64}", args.zig_sha256.lower()):
-    raise SystemExit("invalid Zig SHA-256")
 
 lock = load_lock(lock_path, args.arch)
 records = installed_records(prefix)
@@ -845,7 +844,35 @@ required_versions = {
     "fenics-ufl": "2026.1.0",
     "numpy": "2.5.2",
     "python": "3.12.16",
+    "cctools": "1030.6.3",
+    "clang": "23.1.4",
+    "clang-23": "23.1.4",
+    "compiler-rt": "23.1.4",
+    "compiler-rt23": "23.1.4",
+    "ld64": "956.6",
+    "libcompiler-rt": "23.1.4",
+    "libllvm23": "23.1.4",
 }
+if args.arch == "arm64":
+    required_versions.update(
+        {
+            "cctools_impl_osx-arm64": "1030.6.3",
+            "clang_impl_osx-arm64": "23.1.4",
+            "compiler-rt23_osx-arm64": "23.1.4",
+            "compiler-rt_osx-arm64": "23.1.4",
+            "ld64_osx-arm64": "956.6",
+        }
+    )
+else:
+    required_versions.update(
+        {
+            "cctools_impl_osx-64": "1030.6.3",
+            "clang_impl_osx-64": "23.1.4",
+            "compiler-rt23_osx-64": "23.1.4",
+            "compiler-rt_osx-64": "23.1.4",
+            "ld64_osx-64": "956.6",
+        }
+    )
 for name, version in required_versions.items():
     if str(records.get(name, {}).get("version")) != version:
         raise SystemExit(f"locked prefix has unexpected {name} version: {records.get(name, {}).get('version')!r}")
@@ -868,18 +895,22 @@ try:
         if package_excluded(name):
             excluded_packages.append(name)
             continue
+        is_jit_toolchain = jit_toolchain_package(name)
+        allowed_top_level = JIT_TOOLCHAIN_SOURCE_TOP_LEVEL if is_jit_toolchain else ALLOWED_SOURCE_TOP_LEVEL
         contributed = False
         for owned in package_owned_paths(record):
             relative = owned["relative"]
             if numpy_owned_path(relative):
                 raise SystemExit(f"non-NumPy package unexpectedly owns a NumPy path: {name}: {relative}")
-            exclusion_reason = overlay_path_exclusion_reason(relative)
+            exclusion_reason = overlay_path_exclusion_reason(
+                relative, retain_static_archives=is_jit_toolchain
+            )
             if exclusion_reason is not None:
                 excluded_owned_paths.append(
                     {"package": name, "path": relative.as_posix(), "reason": exclusion_reason}
                 )
                 continue
-            if not relative.parts or relative.parts[0] not in ALLOWED_SOURCE_TOP_LEVEL:
+            if not relative.parts or relative.parts[0] not in allowed_top_level:
                 continue
             source = prefix.joinpath(*relative.parts)
             if not source.exists() and not source.is_symlink():
@@ -931,9 +962,6 @@ try:
     shutil.copy2(bootstrap_source, bootstrap_destination)
     owners[bootstrap_destination.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
 
-    zig_destination = stage_root / "fenics-runtime" / "zig"
-    copy_tree(zig_root, zig_destination, stage_root, owners, f"zig-{args.zig_version}")
-
     provenance = stage_root / "fenics-runtime" / "provenance"
     provenance.mkdir(parents=True, exist_ok=True)
     lock_copy = provenance / f"macos-{args.arch}-package-lock.json"
@@ -943,12 +971,6 @@ try:
     license_inventory = collect_package_licenses(
         package_cache, records, retained_packages, stage_root, owners
     )
-    license_inventory["zig"] = {
-        "version": args.zig_version,
-        "archive": args.zig_archive,
-        "sha256": args.zig_sha256.lower(),
-        "license_path": "fenics-runtime/zig/LICENSE",
-    }
     licenses_path = provenance / "third-party-licenses.json"
     licenses_path.write_text(json.dumps(license_inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     owners[licenses_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
@@ -1030,16 +1052,27 @@ try:
             "not_staged_packages": not_staged_packages,
             "excluded_owned_paths": excluded_owned_paths,
         },
-        "zig": {
-            "version": args.zig_version,
-            "archive": args.zig_archive,
-            "sha256": args.zig_sha256.lower(),
-            "target": "aarch64-macos.14.0" if args.arch == "arm64" else "x86_64-macos.14.0",
+        "jit_compiler": {
+            "kind": "conda-forge-clang",
+            "version": "23.1.4",
+            "driver": (
+                "fenics-runtime/conda/bin/arm64-apple-darwin20.0.0-clang"
+                if args.arch == "arm64"
+                else "fenics-runtime/conda/bin/x86_64-apple-darwin13.4.0-clang"
+            ),
+            "linker": (
+                "fenics-runtime/conda/bin/arm64-apple-darwin20.0.0-ld"
+                if args.arch == "arm64"
+                else "fenics-runtime/conda/bin/x86_64-apple-darwin13.4.0-ld"
+            ),
+            "deployment_target": "14.0",
+            "sdk": "host-macosx-via-/usr/bin/xcrun",
+            "provenance": "immutable-conda-package-lock",
         },
         "layout": {
             "private_prefix": "fenics-runtime/conda",
             "private_site_packages": "fenics-runtime/conda/lib/python3.12/site-packages",
-            "zig_root": "fenics-runtime/zig",
+            "jit_toolchain_root": "fenics-runtime/conda",
             "bootstrap": "Python.framework/Versions/3.12/lib/python3.12/site-packages/fenics_embed_runtime.py",
         },
         "native": {

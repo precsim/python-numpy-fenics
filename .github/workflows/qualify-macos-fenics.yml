@@ -11,7 +11,7 @@ on:
       - "scripts/macos/stage-numpy-runtime.sh"
       - "scripts/macos/inspect-macos-runtime.sh"
       - "scripts/macos/test-fenics-overlay.sh"
-      - "scripts/macos/test-zig-jit.sh"
+      - "scripts/macos/test-conda-clang-jit.sh"
       - "scripts/common/**"
       - "runtime/macos_fenics_embed_runtime.py"
       - "locks/macos/**"
@@ -60,8 +60,6 @@ jobs:
             numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
             numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
             numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
-            zig_asset: zig-aarch64-macos-0.17.0.tar.xz
-            zig_sha256: b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp312.zip
           - architecture: x86_64
             runner: macos-15-intel
@@ -73,8 +71,6 @@ jobs:
             numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
             numpy_url: https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
             numpy_sha256: 65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414
-            zig_asset: zig-x86_64-macos-0.17.0.tar.xz
-            zig_sha256: 4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-x64-cp312.zip
     env:
       TARGET_ARCH: ${{ matrix.architecture }}
@@ -86,9 +82,6 @@ jobs:
       NUMPY_WHEEL_NAME: ${{ matrix.numpy_wheel }}
       NUMPY_WHEEL_URL: ${{ matrix.numpy_url }}
       NUMPY_WHEEL_SHA256: ${{ matrix.numpy_sha256 }}
-      ZIG_ASSET: ${{ matrix.zig_asset }}
-      ZIG_SHA256: ${{ matrix.zig_sha256 }}
-      ZIG_VERSION: 0.17.0
       OVERLAY_ASSET: ${{ matrix.overlay_asset }}
       GH_TOKEN: ${{ github.token }}
 
@@ -167,25 +160,6 @@ jobs:
           echo "FENICS_LOCKED_PREFIX=$prefix" >> "$GITHUB_ENV"
           echo "FENICS_PACKAGE_CACHE=$package_cache" >> "$GITHUB_ENV"
           echo "FENICS_OVERLAY_EVIDENCE=$evidence" >> "$GITHUB_ENV"
-
-      - name: Fetch pinned Zig toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/$ZIG_ASSET"
-          curl --fail --location --retry 3 --retry-all-errors \
-            --output "$archive" \
-            "https://ziglang.org/download/$ZIG_VERSION/$ZIG_ASSET"
-          actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
-          test "$actual" = "$ZIG_SHA256"
-          root="$RUNNER_TEMP/fenics-zig-$TARGET_ARCH"
-          rm -rf "$root"
-          mkdir -p "$root"
-          tar -xJf "$archive" -C "$root" --strip-components=1
-          test -x "$root/zig"
-          test -f "$root/LICENSE"
-          printf '%s  %s\n' "$actual" "$ZIG_ASSET" > "$FENICS_OVERLAY_EVIDENCE/zig-sha256.txt"
-          echo "FENICS_ZIG_ROOT=$root" >> "$GITHUB_ENV"
 
       - name: Download pinned public CPython base assets
         shell: bash
@@ -299,12 +273,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/macos/test-zig-jit.sh
-          scripts/macos/test-zig-jit.sh \
+          chmod +x scripts/macos/test-conda-clang-jit.sh
+          scripts/macos/test-conda-clang-jit.sh \
             "$FENICS_LOCKED_PREFIX" \
-            "$TARGET_ARCH" \
-            "$FENICS_ZIG_ROOT/zig"
-          source_evidence="$RUNNER_TEMP/fenics macos zig prototype $TARGET_ARCH/evidence"
+            "$TARGET_ARCH"
+          source_evidence="$RUNNER_TEMP/fenics macos clang prototype $TARGET_ARCH/evidence"
           test -d "$source_evidence"
           cp -R "$source_evidence" "$FENICS_OVERLAY_EVIDENCE/jit-evidence"
 
@@ -318,10 +291,6 @@ jobs:
             --prefix "$FENICS_LOCKED_PREFIX" \
             --lock "$FENICS_LOCK_FILE" \
             --package-cache "$FENICS_PACKAGE_CACHE" \
-            --zig-root "$FENICS_ZIG_ROOT" \
-            --zig-version "$ZIG_VERSION" \
-            --zig-archive "$ZIG_ASSET" \
-            --zig-sha256 "$ZIG_SHA256" \
             --arch "$TARGET_ARCH" \
             --output dist \
             --version 0.1.0 \
@@ -352,10 +321,6 @@ jobs:
             --prefix "$FENICS_LOCKED_PREFIX" \
             --lock "$FENICS_LOCK_FILE" \
             --package-cache "$FENICS_PACKAGE_CACHE" \
-            --zig-root "$FENICS_ZIG_ROOT" \
-            --zig-version "$ZIG_VERSION" \
-            --zig-archive "$ZIG_ASSET" \
-            --zig-sha256 "$ZIG_SHA256" \
             --arch "$TARGET_ARCH" \
             --output dist-repeat \
             --version 0.1.0 \
@@ -379,7 +344,15 @@ jobs:
           ditto -x -k "dist/$OVERLAY_ASSET" "$audit_root"
           python3 -m py_compile \
             "$audit_root/Python.framework/Versions/3.12/lib/python3.12/site-packages/fenics_embed_runtime.py"
-          test -x "$audit_root/fenics-runtime/zig/zig"
+          if [[ "$TARGET_ARCH" == arm64 ]]; then
+            clang_name=arm64-apple-darwin20.0.0-clang
+            linker_name=arm64-apple-darwin20.0.0-ld
+          else
+            clang_name=x86_64-apple-darwin13.4.0-clang
+            linker_name=x86_64-apple-darwin13.4.0-ld
+          fi
+          test -x "$audit_root/fenics-runtime/conda/bin/$clang_name"
+          test -x "$audit_root/fenics-runtime/conda/bin/$linker_name"
           if find "$audit_root" -type f -o -type l | sed "s#^$audit_root/##" \
               | grep -E '^fenics-runtime/conda/lib/python3\.12/site-packages/(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)'; then
             echo "producer-owned NumPy path found in overlay" >&2
@@ -404,10 +377,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$FENICS_LOCKED_PREFIX" "$FENICS_PACKAGE_CACHE" "$FENICS_ZIG_ROOT"
+          rm -rf "$FENICS_LOCKED_PREFIX" "$FENICS_PACKAGE_CACHE"
           test ! -e "$FENICS_LOCKED_PREFIX"
           test ! -e "$FENICS_PACKAGE_CACHE"
-          test ! -e "$FENICS_ZIG_ROOT"
 
       - name: Collect immutable handoff evidence
         shell: bash
