@@ -8,7 +8,7 @@ priority: P0
 ## Goal
 
 Reproduce the qualified relocatable macOS overlay producer using the exact
-checked-in package locks, solver-free replay, bundled Zig 0.15.2 JIT and a
+checked-in package locks, solver-free replay, bundled Zig 0.17.0 JIT and a
 macOS 14.0 deployment floor.
 
 ## Acceptance
