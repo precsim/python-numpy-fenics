@@ -38,19 +38,21 @@ done
 [[ "$(uname -m)" == x86_64 ]] || { echo "Linux FEniCS qualification requires x86_64" >&2; exit 1; }
 
 base_manifest="$base_runtime/runtime-manifest.json"
-base_provenance="$base_runtime/build-provenance-linux.json"
+base_core_provenance="$base_runtime/build-provenance-linux.json"
+base_provenance="$base_runtime/build-provenance-linux-numpy.json"
 base_numpy_payload="$base_runtime/numpy-payload-manifest-linux.json"
-for required in "$base_manifest" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.12"; do
+for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.12"; do
     [[ -e "$required" ]] || { echo "qualified NumPy base input is missing: $required" >&2; exit 1; }
 done
-python3 - "$base_manifest" "$base_provenance" "$base_qualification" <<'PY'
+python3 - "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_qualification" <<'PY'
 import json
 import pathlib
 import sys
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-provenance = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
-qualification = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+core_provenance = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+provenance = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+qualification = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
 if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != "linux-x64"
@@ -84,7 +86,7 @@ if (
     raise SystemExit(f"invalid public NumPy qualification: {qualification!r}")
 if provenance.get("numpy", {}).get("version") != "2.5.2":
     raise SystemExit("public NumPy base provenance does not identify NumPy 2.5.2")
-if provenance.get("python", {}).get("version") != "3.12.10":
+if core_provenance.get("python", {}).get("version") != "3.12.10":
     raise SystemExit("public NumPy base provenance does not identify CPython 3.12.10")
 PY
 
@@ -137,7 +139,7 @@ cmp "$work/numpy-before.json" "$work/numpy-after.json"
 
 overlay_manifest="$runtime/fenics-embed-manifest.json"
 [[ -f "$overlay_manifest" ]] || { echo "FEniCS overlay manifest is missing" >&2; exit 1; }
-python3 - "$overlay_manifest" "$work/numpy-after.json" "$runtime" "$base_manifest" "$base_provenance" "$base_numpy_payload" "$base_qualification" <<'PY'
+python3 - "$overlay_manifest" "$work/numpy-after.json" "$runtime" "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_qualification" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -148,9 +150,10 @@ manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 numpy_entries = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 root = pathlib.Path(sys.argv[3]).resolve()
 base_manifest = pathlib.Path(sys.argv[4])
-base_provenance = pathlib.Path(sys.argv[5])
-base_numpy_payload = pathlib.Path(sys.argv[6])
-base_qualification = pathlib.Path(sys.argv[7])
+base_core_provenance = pathlib.Path(sys.argv[5])
+base_provenance = pathlib.Path(sys.argv[6])
+base_numpy_payload = pathlib.Path(sys.argv[7])
+base_qualification = pathlib.Path(sys.argv[8])
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -228,6 +231,7 @@ source_provenance = json.loads(source_provenance_path.read_text(encoding="utf-8"
 base = source_provenance.get("numpy_base", {})
 for path, key in (
     (base_manifest, "manifest_sha256"),
+    (base_core_provenance, "core_provenance_sha256"),
     (base_provenance, "provenance_sha256"),
     (base_numpy_payload, "numpy_payload_manifest_sha256"),
     (base_qualification, "qualification_sha256"),

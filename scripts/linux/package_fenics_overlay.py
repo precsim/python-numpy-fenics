@@ -216,9 +216,16 @@ def verify_external_prefix_evidence(
 
 def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any]:
     manifest_path = base / "runtime-manifest.json"
-    provenance_path = base / "build-provenance-linux.json"
+    core_provenance_path = base / "build-provenance-linux.json"
+    provenance_path = base / "build-provenance-linux-numpy.json"
     numpy_payload = base / "numpy-payload-manifest-linux.json"
-    for required in (manifest_path, provenance_path, numpy_payload, base / "bin" / "python3.12"):
+    for required in (
+        manifest_path,
+        core_provenance_path,
+        provenance_path,
+        numpy_payload,
+        base / "bin" / "python3.12",
+    ):
         if not required.exists():
             raise SystemExit(f"qualified public NumPy base input is missing: {required}")
     manifest = read_json(manifest_path)
@@ -251,13 +258,14 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         or any(checks.get(name) != "pass" for name in required_checks)
     ):
         raise SystemExit(f"invalid public NumPy qualification evidence: {qualification_path}")
+    core_provenance = read_json(core_provenance_path)
     base_provenance = read_json(provenance_path)
     baseline = base_provenance.get("baseline", {})
     if baseline.get("architecture") != "x86_64" or str(baseline.get("glibc")) != "2.17":
         raise SystemExit("public NumPy base does not carry the qualified Linux glibc-2.17 baseline")
     if base_provenance.get("numpy", {}).get("version") != "2.5.2":
         raise SystemExit("public NumPy base provenance does not identify NumPy 2.5.2")
-    if base_provenance.get("python", {}).get("version") != "3.12.10":
+    if core_provenance.get("python", {}).get("version") != "3.12.10":
         raise SystemExit("public NumPy base provenance does not identify CPython 3.12.10")
     site = base / "lib" / "python3.12" / "site-packages"
     if not (site / "numpy").is_dir():
@@ -265,6 +273,8 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
     return {
         "manifest": manifest,
         "manifest_path": manifest_path,
+        "core_provenance": core_provenance,
+        "core_provenance_path": core_provenance_path,
         "provenance": base_provenance,
         "provenance_path": provenance_path,
         "numpy_payload_path": numpy_payload,
@@ -1073,6 +1083,7 @@ def main() -> int:
             },
             "numpy_base": {
                 "manifest_sha256": sha256_file(base_info["manifest_path"]),
+                "core_provenance_sha256": sha256_file(base_info["core_provenance_path"]),
                 "provenance_sha256": sha256_file(base_info["provenance_path"]),
                 "numpy_payload_manifest_sha256": sha256_file(base_info["numpy_payload_path"]),
                 "qualification_sha256": sha256_file(base_info["qualification_path"]),
