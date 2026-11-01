@@ -473,7 +473,7 @@ jobs:
           evidence="$FENICS_OVERLAY_EVIDENCE"
           cp ci-artifact/manylinux-identity.txt "$evidence/"
           cp ci-artifact/manylinux-image-inspect.json "$evidence/"
-          cp dist/qualification-linux-x64-numpy-base.json "$evidence/"
+          cp dist/qualification-linux-x64-numpy-base.json "$evidence/numpy-base-qualification.json"
           cp out/linux-x64/numpy/runtime-manifest.json "$evidence/numpy-base-runtime-manifest.json"
           cp out/linux-x64/numpy/build-provenance-linux.json "$evidence/numpy-base-core-provenance.json"
           cp out/linux-x64/numpy/build-provenance-linux-numpy.json "$evidence/numpy-base-build-provenance.json"
@@ -499,7 +499,7 @@ jobs:
             "$evidence/native-dependency-census.json" \
             "$evidence/license-inventory.json" \
             "$evidence/package-lock-verification.json" \
-            "$evidence/qualification-linux-x64-numpy-base.json" \
+            "$evidence/numpy-base-qualification.json" \
             "$evidence/numpy-base-runtime-manifest.json" \
             "$evidence/numpy-base-core-provenance.json" \
             "$evidence/numpy-base-build-provenance.json" \
