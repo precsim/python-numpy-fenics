@@ -504,7 +504,11 @@ def verify_symlink_closure(stage_root: Path) -> None:
 
 
 def is_macho(path: Path) -> bool:
-    if path.is_symlink() or not path.is_file():
+    # Compiler-rt ships universal static archives whose outer file starts with
+    # a Mach-O fat header. They are link-time inputs rather than loadable
+    # Mach-O images, so install_name_tool/codesign and per-file architecture
+    # checks do not apply to them.
+    if path.is_symlink() or not path.is_file() or path.suffix == ".a":
         return False
     try:
         with path.open("rb") as stream:
