@@ -64,6 +64,7 @@ REQUIRED_SYMBOL_CEILINGS = {
     "CXXABI": (1, 3, 7),
     "GCC": (4, 8, 0),
 }
+ALLOWED_NONNUMERIC_VERSION_TOKENS = {"CXXABI_TM_1"}
 PROTECTED_JIT_BIN_PATHS = {
     "bin/x86_64-conda-linux-gnu-gcc",
     "bin/x86_64-conda-linux-gnu-ld",
@@ -192,15 +193,20 @@ def verify_external_prefix_evidence(
     lock: dict[str, Any], lock_path: Path, evidence_path: Path, records: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
     evidence = read_json(evidence_path)
+    archive_records = evidence.get("verified_package_archives")
     if (
         evidence.get("format_version") != 1
         or evidence.get("architecture") != "x86_64"
         or evidence.get("solver_used") is not False
         or evidence.get("package_hash_verification")
-        != "micromamba-explicit-sha256-plus-installed-record-match"
+        != "cached-package-sha256-plus-installed-record-match"
+        or evidence.get("replay_input_format") != "@EXPLICIT-url-plus-sha256"
+        or evidence.get("verified_package_archive_count") != len(lock["packages"])
         or evidence.get("lock_sha256") != sha256_file(lock_path)
         or evidence.get("lock_record_count") != len(lock["packages"])
         or evidence.get("installed_record_count") != len(lock["packages"])
+        or not isinstance(archive_records, list)
+        or len(archive_records) != len(lock["packages"])
     ):
         raise SystemExit(f"invalid external locked-prefix verification evidence: {evidence_path}")
     locked = {str(record["name"]): normalized_record(record) for record in lock["packages"]}
@@ -211,6 +217,23 @@ def verify_external_prefix_evidence(
     verified = {str(record.get("name")): normalized_record(record) for record in evidence_records}
     if installed != locked or verified != locked:
         raise SystemExit("verified prefix, external evidence and checked-in package lock differ")
+    archives_by_name = {
+        str(record.get("name")): record
+        for record in archive_records
+        if isinstance(record, dict) and record.get("name")
+    }
+    if len(archives_by_name) != len(lock["packages"]):
+        raise SystemExit("locked-prefix evidence has duplicate or missing package archive records")
+    for record in lock["packages"]:
+        name = str(record["name"])
+        archive = archives_by_name.get(name)
+        if (
+            not isinstance(archive, dict)
+            or str(archive.get("sha256", "")).lower() != str(record["sha256"]).lower()
+            or not isinstance(archive.get("cache_paths"), list)
+            or not archive["cache_paths"]
+        ):
+            raise SystemExit(f"locked-prefix evidence does not bind cached package bytes: {name}")
     return evidence
 
 
@@ -570,6 +593,7 @@ def audit_elf(
         "GCC": None,
     }
     version_tokens: set[str] = set()
+    nonnumeric_tokens: set[str] = set()
     ceiling_violations: list[dict[str, Any]] = []
     for path in all_elfs:
         header = run("readelf", "-hW", str(path)).stdout
@@ -577,10 +601,13 @@ def audit_elf(
             raise SystemExit(f"overlay contains non-x86_64 ELF: {path.relative_to(stage_root)}")
         for token in version_needs(path):
             version_tokens.add(token)
+            matched_numeric = False
             for namespace in maxima:
                 value = numeric_version(token, namespace)
-                if value is not None and (maxima[namespace] is None or value > maxima[namespace]):
-                    maxima[namespace] = value
+                if value is not None:
+                    matched_numeric = True
+                    if maxima[namespace] is None or value > maxima[namespace]:
+                        maxima[namespace] = value
                 ceiling = REQUIRED_SYMBOL_CEILINGS[namespace]
                 if value is not None and value > ceiling:
                     rel = path.relative_to(stage_root).as_posix()
@@ -592,6 +619,14 @@ def audit_elf(
                             "ceiling": f"{namespace}_{version_text(ceiling)}",
                         }
                     )
+            if not matched_numeric:
+                nonnumeric_tokens.add(token)
+    unexpected_nonnumeric = sorted(nonnumeric_tokens - ALLOWED_NONNUMERIC_VERSION_TOKENS)
+    if unexpected_nonnumeric:
+        raise SystemExit(
+            "stock FEniCS package closure requires unsupported nonnumeric ABI symbol versions: "
+            f"{unexpected_nonnumeric}"
+        )
     if ceiling_violations:
         raise SystemExit(
             "stock FEniCS package closure exceeds required native symbol ceilings; "
@@ -688,6 +723,9 @@ def audit_elf(
         "measured_max_cxxabi": version_text(maxima["CXXABI"]),
         "measured_max_gcc": version_text(maxima["GCC"]),
         "measured_required_versions": sorted(version_tokens),
+        "allowed_nonnumeric_required_versions": sorted(
+            nonnumeric_tokens & ALLOWED_NONNUMERIC_VERSION_TOKENS
+        ),
         "mpi": {
             "implementation": "mpich",
             "provider": mpi_rel,

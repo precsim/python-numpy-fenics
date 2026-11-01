@@ -4,8 +4,10 @@
 The producer lock is deliberately separate from an environment solver.  The
 ``explicit`` subcommand turns the checked-in records into a CEP-23-style
 ``@EXPLICIT`` transaction containing exact URLs and SHA-256 digests.  The
-``verify-prefix`` subcommand proves that a prefix created from that transaction
-contains exactly the locked package identities before overlay packaging starts.
+``verify-prefix`` subcommand proves that the replay input is an exact
+URL+SHA256 transaction, independently hashes every retained cached package
+archive, and verifies that the installed prefix contains exactly the locked
+package identities before overlay packaging starts.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 REQUIRED_FIELDS = (
@@ -206,11 +209,77 @@ def normalize_installed_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def verify_explicit_transaction(lock: dict[str, Any], explicit_path: Path) -> str:
+    """Verify that the replay input is an exact URL+SHA256 @EXPLICIT lock."""
+
+    if not explicit_path.is_file():
+        raise SystemExit(f"rendered @EXPLICIT transaction is missing: {explicit_path}")
+    lines = [
+        line.strip()
+        for line in explicit_path.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines or lines[0] != "@EXPLICIT":
+        raise SystemExit("replay transaction is not an @EXPLICIT transaction")
+    package_lines = lines[1:]
+    expected = [
+        f"{record['url']}#sha256:{str(record['sha256']).lower()}"
+        for record in lock["packages"]
+    ]
+    if len(package_lines) != len(expected) or set(package_lines) != set(expected):
+        raise SystemExit("replay @EXPLICIT URL+SHA256 set differs from the checked-in package lock")
+    if len(package_lines) != len(set(package_lines)):
+        raise SystemExit("replay @EXPLICIT transaction contains duplicate package records")
+    return sha256_file(explicit_path)
+
+
+def verify_cached_archives(package_cache: Path, lock: dict[str, Any]) -> list[dict[str, Any]]:
+    """Independently hash every locked package archive retained in the cache."""
+
+    if not package_cache.is_dir():
+        raise SystemExit(f"package cache is missing: {package_cache}")
+    archive_index: dict[str, list[Path]] = {}
+    for path in package_cache.rglob("*"):
+        if path.is_file() and path.suffix in {".conda", ".bz2"}:
+            archive_index.setdefault(path.name, []).append(path)
+    verified: list[dict[str, Any]] = []
+    for record in lock["packages"]:
+        filename = Path(urlparse(str(record["url"])).path).name
+        if not filename:
+            raise SystemExit(f"locked package URL has no archive filename: {record['url']!r}")
+        candidates = sorted(archive_index.get(filename, []), key=lambda path: str(path))
+        if not candidates:
+            raise SystemExit(
+                f"package cache has no archive bytes for locked package {record['name']}: {filename}"
+            )
+        expected_sha = str(record["sha256"]).lower()
+        actuals = [(path, sha256_file(path)) for path in candidates]
+        bad = [(str(path), digest) for path, digest in actuals if digest != expected_sha]
+        if bad:
+            raise SystemExit(
+                f"cached package archive SHA-256 mismatch for {record['name']}: "
+                + json.dumps({"expected": expected_sha, "actual": bad}, sort_keys=True)
+            )
+        verified.append(
+            {
+                "name": record["name"],
+                "filename": filename,
+                "sha256": expected_sha,
+                "cache_paths": [
+                    path.relative_to(package_cache).as_posix()
+                    for path, _ in actuals
+                ],
+            }
+        )
+    return verified
+
+
 def verify_prefix(
     lock: dict[str, Any],
     lock_path: Path,
     prefix: Path,
     package_cache: Path,
+    explicit_path: Path,
     evidence: Path,
 ) -> None:
     conda_meta = prefix / "conda-meta"
@@ -253,6 +322,9 @@ def verify_prefix(
     if mismatches:
         raise SystemExit("locked-prefix identity mismatch:\n" + json.dumps(mismatches, indent=2))
 
+    explicit_sha256 = verify_explicit_transaction(lock, explicit_path)
+    archive_verification = verify_cached_archives(package_cache, lock)
+
     evidence.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "format_version": 1,
@@ -260,7 +332,11 @@ def verify_prefix(
         "lock_record_count": len(expected),
         "installed_record_count": len(installed),
         "lock_sha256": sha256_file(lock_path),
-        "package_hash_verification": "micromamba-explicit-sha256-plus-installed-record-match",
+        "explicit_transaction_sha256": explicit_sha256,
+        "package_hash_verification": "cached-package-sha256-plus-installed-record-match",
+        "verified_package_archive_count": len(archive_verification),
+        "verified_package_archives": archive_verification,
+        "replay_input_format": "@EXPLICIT-url-plus-sha256",
         "solver_used": False,
         "packages": [installed_by_name[name] for name in sorted(installed_by_name)],
     }
@@ -280,6 +356,7 @@ verify_parser = subparsers.add_parser("verify-prefix", help="verify an installed
 verify_parser.add_argument("--lock", required=True)
 verify_parser.add_argument("--prefix", required=True)
 verify_parser.add_argument("--package-cache", required=True)
+verify_parser.add_argument("--explicit", required=True)
 verify_parser.add_argument("--evidence", required=True)
 verify_parser.add_argument("--arch", choices=("x86_64",))
 
@@ -302,10 +379,11 @@ elif args.command == "verify-prefix":
         lock_path,
         Path(args.prefix).resolve(),
         Path(args.package_cache).resolve(),
+        Path(args.explicit).resolve(),
         Path(args.evidence).resolve(),
     )
     print(f"package_lock_sha256={sha256_file(lock_path)}")
     print(f"verified_records={len(lock['packages'])}")
-    print("package_hash_verification=micromamba-explicit-sha256-plus-installed-record-match")
+    print("package_hash_verification=cached-package-sha256-plus-installed-record-match")
 else:  # pragma: no cover
     raise AssertionError(args.command)

@@ -496,6 +496,8 @@ ceilings = {
     "CXXABI": (1, 3, 7),
     "GCC": (4, 8, 0),
 }
+allowed_nonnumeric = {"CXXABI_TM_1"}
+nonnumeric = set()
 violations = []
 
 def numeric(token, namespace):
@@ -513,17 +515,28 @@ for raw in sys.argv[1:]:
     needs = text.split("Version needs section", 1)[1] if "Version needs section" in text else ""
     tokens = set(re.findall(r"\bName: ((?:GLIBC|CXXABI|GLIBCXX|GCC)_[A-Za-z0-9_.]+)", needs))
     for token in tokens:
+        matched_numeric = False
         for namespace in maxima:
             value = numeric(token, namespace)
-            if value is not None and (maxima[namespace] is None or value > maxima[namespace]):
-                maxima[namespace] = value
+            if value is not None:
+                matched_numeric = True
+                if maxima[namespace] is None or value > maxima[namespace]:
+                    maxima[namespace] = value
             if value is not None and value > ceilings[namespace]:
                 violations.append((str(path), token, namespace + "_" + ".".join(map(str, ceilings[namespace]))))
+        if not matched_numeric:
+            nonnumeric.add(token)
     dynamic = subprocess.check_output(["readelf", "-dW", str(path)], text=True)
     for packed in re.findall(r"\((?:RUNPATH|RPATH)\).*?\[([^\]]*)\]", dynamic):
         for entry in packed.split(":"):
             if entry and not entry.startswith("$ORIGIN"):
                 raise SystemExit(f"fresh FFCx JIT module has absolute/non-relative RPATH: {path}: {entry}")
+unexpected_nonnumeric = sorted(nonnumeric - allowed_nonnumeric)
+if unexpected_nonnumeric:
+    raise SystemExit(
+        "fresh FFCx JIT module requires unsupported nonnumeric ABI symbol versions: "
+        + repr(unexpected_nonnumeric)
+    )
 if violations:
     raise SystemExit("fresh FFCx JIT module exceeds required native symbol ceilings: " + repr(violations))
 for namespace, value in maxima.items():
@@ -531,6 +544,8 @@ for namespace, value in maxima.items():
         f"fresh_ffcx_jit_{namespace.lower()}_max="
         + ("none" if value is None else ".".join(map(str, value)))
     )
+if nonnumeric:
+    print("fresh_ffcx_jit_allowed_nonnumeric_versions=" + ",".join(sorted(nonnumeric)))
 PY
 
 "$staged_python" -I -S - "$runtime" "$overlay_manifest" <<'PY'
