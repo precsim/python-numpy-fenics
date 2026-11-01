@@ -44,13 +44,14 @@ concurrency:
 
 jobs:
   qualify-overlay:
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - architecture: arm64
+            runner: macos-15
             artifact_platform: macos-arm64
             conda_subdir: osx-arm64
             python_asset_id: "244701302"
@@ -63,6 +64,7 @@ jobs:
             zig_sha256: 3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp312.zip
           - architecture: x86_64
+            runner: macos-15-intel
             artifact_platform: macos-x64
             conda_subdir: osx-64
             python_asset_id: "244701305"
@@ -101,17 +103,11 @@ jobs:
           set -euo pipefail
           echo "PRODUCER_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Provision Rosetta 2 for x86_64
-        if: matrix.architecture == 'x86_64'
+      - name: Verify native runner architecture
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
-          sudo softwareupdate --install-rosetta --agree-to-license >"$RUNNER_TEMP/rosetta-install.log" 2>&1 || {
-            cat "$RUNNER_TEMP/rosetta-install.log" >&2
-            /usr/bin/arch -x86_64 /usr/bin/uname -m >/dev/null 2>&1 || exit 1
-          }
-          test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
+          test "$(uname -m)" = "$TARGET_ARCH"
 
       - name: Install micromamba
         uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3
