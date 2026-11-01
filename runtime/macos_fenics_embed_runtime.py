@@ -175,17 +175,40 @@ def activate() -> Path:
 
     private_prefix = root / "fenics-runtime" / "conda"
     private_site = private_prefix / "lib" / "python3.12" / "site-packages"
+    public_site = (
+        root
+        / "Python.framework"
+        / "Versions"
+        / "3.12"
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+    )
     for required, label in (
         (private_prefix / "lib", "private native-library root"),
         (private_site, "private FEniCS site-packages"),
+        (public_site, "public NumPy site-packages"),
         (root / "fenics-runtime" / "zig" / "zig", "bundled Zig compiler"),
     ):
         if not required.exists():
             raise RuntimeError(f"{label} is missing from embedded runtime: {required}")
 
-    private_site_text = str(private_site)
-    if private_site_text not in sys.path:
-        sys.path.insert(0, private_site_text)
+    # The consumer can start with an arbitrary PYTHONPATH. Activation must
+    # make both producer-owned sites authoritative: FEniCS from the private
+    # overlay and NumPy from the public base runtime. Reinsert them in a
+    # deterministic order rather than merely adding the private site when
+    # absent, otherwise ambient paths can remain ahead of the public NumPy
+    # payload.
+    authoritative_sites = [str(private_site), str(public_site)]
+    authoritative_normalized = {
+        os.path.normcase(os.path.abspath(path)) for path in authoritative_sites
+    }
+    sys.path[:] = [
+        path
+        for path in sys.path
+        if os.path.normcase(os.path.abspath(path)) not in authoritative_normalized
+    ]
+    sys.path[:0] = authoritative_sites
 
     wrapper = _write_jit_wrapper(root)
     _prepend_path("PATH", wrapper.parent)

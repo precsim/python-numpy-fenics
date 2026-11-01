@@ -143,6 +143,12 @@ PY
 cat > "$poison/dolfinx.py" <<'PY'
 raise RuntimeError("ambient dolfinx poison imported")
 PY
+cat > "$poison/fenics_embed_runtime.py" <<'PY'
+raise RuntimeError("ambient fenics bootstrap poison imported")
+PY
+cat > "$poison/sitecustomize.py" <<'PY'
+raise RuntimeError("ambient sitecustomize poison imported")
+PY
 
 unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
     LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
@@ -154,14 +160,33 @@ export PYTHONHOME="$runtime/Python.framework/Versions/3.12"
 export XDG_CACHE_HOME="$cache"
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
-"$staged_python" -I - "$runtime" <<'PY'
+# -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
+# preventing ambient sitecustomize execution; load the bootstrap by exact path
+# so the poisoned PYTHONPATH cannot shadow it before activation.
+"$staged_python" -S -P - "$runtime" <<'PY'
+import importlib.util
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1]).resolve()
 if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.12":
     raise SystemExit(f"unexpected relocated prefix: {sys.prefix}")
-import fenics_embed_runtime
+bootstrap = (
+    root
+    / "Python.framework"
+    / "Versions"
+    / "3.12"
+    / "lib"
+    / "python3.12"
+    / "site-packages"
+    / "fenics_embed_runtime.py"
+)
+spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
+fenics_embed_runtime = importlib.util.module_from_spec(spec)
+sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
+spec.loader.exec_module(fenics_embed_runtime)
 activated = Path(fenics_embed_runtime.activate()).resolve()
 if activated != root:
     raise SystemExit(f"unexpected activated root: {activated} != {root}")
@@ -181,13 +206,30 @@ mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
 print("fenics_public_overlay_import=pass")
 PY
 
-"$staged_python" -I - "$repo_root/tests/fenics/test_poisson.py" <<'PY'
+"$staged_python" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" <<'PY'
+import importlib.util
 from pathlib import Path
 import sys
-import fenics_embed_runtime
 
-fenics_embed_runtime.activate()
 script = Path(sys.argv[1]).resolve()
+root = Path(sys.argv[2]).resolve()
+bootstrap = (
+    root
+    / "Python.framework"
+    / "Versions"
+    / "3.12"
+    / "lib"
+    / "python3.12"
+    / "site-packages"
+    / "fenics_embed_runtime.py"
+)
+spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
+fenics_embed_runtime = importlib.util.module_from_spec(spec)
+sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
+spec.loader.exec_module(fenics_embed_runtime)
+fenics_embed_runtime.activate()
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 PY
