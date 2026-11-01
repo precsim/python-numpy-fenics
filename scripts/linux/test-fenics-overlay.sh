@@ -256,6 +256,7 @@ for name in (
     "gcc",
     "gcc_impl_linux-64",
     "conda-gcc-specs",
+    "ld_impl_linux-64",
     "binutils_impl_linux-64",
     "sysroot_linux-64",
     "kernel-headers_linux-64",

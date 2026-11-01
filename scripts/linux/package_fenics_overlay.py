@@ -1084,7 +1084,7 @@ def main() -> int:
 
         required_jit_owners = {
             "bin/x86_64-conda-linux-gnu-gcc": "gcc_impl_linux-64",
-            "bin/x86_64-conda-linux-gnu-ld": "binutils_impl_linux-64",
+            "bin/x86_64-conda-linux-gnu-ld": "ld_impl_linux-64",
             "bin/x86_64-conda-linux-gnu-as": "binutils_impl_linux-64",
             "bin/x86_64-conda-linux-gnu-ar": "binutils_impl_linux-64",
             "bin/x86_64-conda-linux-gnu-ranlib": "binutils_impl_linux-64",
@@ -1244,6 +1244,7 @@ def main() -> int:
                         "gcc",
                         "gcc_impl_linux-64",
                         "conda-gcc-specs",
+                        "ld_impl_linux-64",
                         "binutils_impl_linux-64",
                         "sysroot_linux-64",
                         "kernel-headers_linux-64",
