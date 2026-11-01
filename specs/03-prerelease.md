@@ -24,5 +24,8 @@ consumers can pin by tag, asset name and SHA-256.
 - All promoted qualification runs must be successful expected producer
   workflows from one producer revision, and qualification JSON must bind back
   to those exact run IDs and revision.
+- Publication remains blocked until Linux FEnIcs has a successful
+  `qualify-linux-fenics` producer run; partial-matrix producer pre-releases are
+  not valid release candidates.
 - Publication is immutable: changing bytes requires a new producer version or
   pre-release identifier.

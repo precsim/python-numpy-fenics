@@ -43,7 +43,10 @@ def main() -> int:
     payload = {
         "format_version": 1,
         "producer_repository": "precsim/python-numpy-fenics",
-        "producer_revision": os.environ.get("GITHUB_SHA", "local"),
+        "producer_revision": os.environ.get(
+            "PRODUCER_REVISION",
+            os.environ.get("GITHUB_SHA", "local"),
+        ),
         "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
         "platform": args.platform,
         "profile": args.profile,

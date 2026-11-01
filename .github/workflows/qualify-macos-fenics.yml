@@ -9,6 +9,7 @@ on:
       - "scripts/macos/package_fenics_overlay.py"
       - "scripts/macos/stage-core-runtime.sh"
       - "scripts/macos/stage-numpy-runtime.sh"
+      - "scripts/macos/inspect-macos-runtime.sh"
       - "scripts/macos/test-fenics-overlay.sh"
       - "scripts/macos/test-zig-jit.sh"
       - "scripts/common/**"
@@ -93,6 +94,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Capture checked-out producer revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PRODUCER_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Provision Rosetta 2 for x86_64
         if: matrix.architecture == 'x86_64'

@@ -150,7 +150,7 @@ jobs:
 
       - name: Write producer qualification evidence
         shell: pwsh
-        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
+        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check package_hash_verification=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified overlay
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

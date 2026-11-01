@@ -19,7 +19,7 @@ $ExpectedWheel = 'numpy-2.5.2-cp312-cp312-win_amd64.whl'
 $ExpectedWheelSha256 = '28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4'
 
 $pythonPath = (Resolve-Path -LiteralPath $Python -ErrorAction Stop).Path
-$info = (& $pythonPath -I -S -c @'
+$infoScript = @'
 import json, pathlib, platform, struct, sys
 p = pathlib.Path(sys.prefix).resolve()
 print(json.dumps({
@@ -28,7 +28,8 @@ print(json.dumps({
     "pointer_bits": 8 * struct.calcsize("P"),
     "prefix": str(p),
 }))
-'@) | ConvertFrom-Json
+'@
+$info = ($infoScript | & $pythonPath -I -S -) | ConvertFrom-Json
 if ($info.implementation -ne 'CPython' -or $info.version -ne $ExpectedPython -or $info.pointer_bits -ne 64) {
     throw "Expected 64-bit CPython $ExpectedPython, got $($info.implementation) $($info.version)"
 }
@@ -68,7 +69,7 @@ if ($RuntimeProfile -eq 'numpy') {
     if ($wheelSha -ne $ExpectedWheelSha256) {
         throw "NumPy wheel SHA-256 mismatch: $wheelSha"
     }
-    & $pythonPath -I -S - $wheel $sitePackages @'
+    $extractScript = @'
 import base64, csv, hashlib, io, pathlib, sys, zipfile
 wheel = pathlib.Path(sys.argv[1]).resolve()
 target = pathlib.Path(sys.argv[2]).resolve()
@@ -107,10 +108,11 @@ with zipfile.ZipFile(wheel) as zf:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
 '@
+    $extractScript | & $pythonPath -I -S - $wheel $sitePackages
     if ($LASTEXITCODE -ne 0) {
         throw 'NumPy wheel extraction/RECORD verification failed'
     }
-    $probe = (& (Join-Path $outputPath 'python.exe') -I -c @'
+    $probeScript = @'
 import json, numpy
 cfg = numpy.show_config(mode="dicts")
 text = json.dumps(cfg, default=str).lower()
@@ -119,7 +121,8 @@ if numpy.__version__ != "2.5.2":
 if "openblas" not in text or "mkl" in text:
     raise SystemExit(f"unexpected BLAS provider: {cfg!r}")
 print(json.dumps({"version": numpy.__version__, "blas": "openblas"}))
-'@) | ConvertFrom-Json
+'@
+    $probe = ($probeScript | & (Join-Path $outputPath 'python.exe') -I -) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) {
         throw 'Staged NumPy probe failed'
     }
@@ -159,7 +162,13 @@ $manifest = [ordered]@{
     profile = $RuntimeProfile
     producer = [ordered]@{
         repository = 'precsim/python-numpy-fenics'
-        revision = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { 'local' }
+        revision = if ($env:PRODUCER_REVISION) {
+            $env:PRODUCER_REVISION
+        } elseif ($env:GITHUB_SHA) {
+            $env:GITHUB_SHA
+        } else {
+            'local'
+        }
     }
     python = [ordered]@{
         implementation = 'CPython'

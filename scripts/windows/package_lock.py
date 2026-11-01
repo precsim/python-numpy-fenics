@@ -34,6 +34,21 @@ SOURCE_EXPLICIT_SHA256 = {
     "x64": "e33a118540b9c5d1c954c4d4cd86a2f7343530a9852eb203ea16ee7aa84d9afa",
 }
 
+REQUIRED_VERSIONS = {
+    "python": "3.12.10",
+    "numpy": "2.5.2",
+    "fenics-dolfinx": "0.11.0.post0",
+    "fenics-libdolfinx": "0.11.0.post0",
+    "petsc": "3.25.6",
+    "petsc4py": "3.25.6",
+    "mpi4py": "4.1.2",
+    "fenics-basix": "0.11.0",
+    "fenics-ffcx": "0.11.0",
+    "fenics-ufl": "2026.1.0",
+    "fenics-jit-runtime": "0.1.0",
+    "fenics-jit-micro-clang": "20260826",
+}
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -62,6 +77,7 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
         )
 
     seen: set[tuple[str, str, str, str]] = set()
+    by_name: dict[str, dict[str, Any]] = {}
     for index, record in enumerate(packages):
         if not isinstance(record, dict):
             raise SystemExit(f"package-lock record {index} is not an object")
@@ -91,6 +107,21 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
         if key in seen:
             raise SystemExit(f"duplicate package-lock identity: {key!r}")
         seen.add(key)
+        name = str(record["name"])
+        if name in by_name:
+            raise SystemExit(f"duplicate package-lock name: {name!r}")
+        by_name[name] = record
+
+    for name, expected_version in REQUIRED_VERSIONS.items():
+        record = by_name.get(name)
+        if record is None:
+            raise SystemExit(f"package lock is missing required package: {name}")
+        actual_version = str(record["version"])
+        if actual_version != expected_version:
+            raise SystemExit(
+                f"package lock version mismatch for {name}: "
+                f"{actual_version!r} != {expected_version!r}"
+            )
     return payload
 
 

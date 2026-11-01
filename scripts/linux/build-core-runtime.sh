@@ -1398,7 +1398,8 @@ import sys
 ) = sys.argv[1:]
 
 runtime = pathlib.Path(runtime_arg).resolve()
-native = json.loads(pathlib.Path(native_json_arg).read_text(encoding="utf-8"))
+native_json_path = pathlib.Path(native_json_arg).resolve()
+native = json.loads(native_json_path.read_text(encoding="utf-8"))
 openssl_provider = json.loads(pathlib.Path(openssl_json_arg).read_text(encoding="utf-8"))
 dynamic_extension_baseline = json.loads(
     pathlib.Path(dynamic_extension_baseline_json_arg).read_text(encoding="utf-8")
@@ -1407,10 +1408,11 @@ development_rpms = json.loads(pathlib.Path(dev_rpm_json_arg).read_text(encoding=
 license_rpms = json.loads(pathlib.Path(license_rpm_json_arg).read_text(encoding="utf-8"))
 output = pathlib.Path(output_arg)
 
+build_root = native_json_path.parent
 expected_pkg_config_path = ":".join([
-    str(runtime.parent / "build/linux-glibc217-runtime/openssl-prefix/lib/pkgconfig"),
-    str(runtime.parent / "build/linux-glibc217-runtime/openssl-prefix/lib64/pkgconfig"),
-    str(runtime.parent / "build/linux-glibc217-runtime/tcltk-prefix/lib/pkgconfig"),
+    str(build_root / "openssl-prefix/lib/pkgconfig"),
+    str(build_root / "openssl-prefix/lib64/pkgconfig"),
+    str(build_root / "tcltk-prefix/lib/pkgconfig"),
     "/usr/local/lib/pkgconfig",
 ])
 if cpython_pkg_config_path_arg != expected_pkg_config_path:

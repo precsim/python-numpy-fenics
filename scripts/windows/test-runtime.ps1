@@ -79,7 +79,7 @@ else:
     result.update({"numpy": numpy.__version__, "blas": "openblas"})
 print(json.dumps(result, sort_keys=True))
 '@
-    & $python -I -c $probe $root $RuntimeProfile
+    $probe | & $python -I - $root $RuntimeProfile
     if ($LASTEXITCODE -ne 0) {
         throw "runtime probe failed for $RuntimeProfile"
     }

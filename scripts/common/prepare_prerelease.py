@@ -15,7 +15,9 @@ import tarfile
 import zipfile
 
 
-TAG_RE = re.compile(r"^runtime-v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$")
+TAG_RE = re.compile(
+    r"^runtime-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)-rc(?P<rc>[0-9]+)$"
+)
 FORBIDDEN_SUFFIXES = (".mex", ".mexa64", ".mexmaci64", ".mexw64")
 EXPECTED_WORKFLOW_COVERAGE = {
     "qualify-windows-core-numpy": {
@@ -38,6 +40,9 @@ EXPECTED_WORKFLOW_COVERAGE = {
     "qualify-linux-core-numpy": {
         ("linux-x64", "core"),
         ("linux-x64", "numpy"),
+    },
+    "qualify-linux-fenics": {
+        ("linux-x64", "fenics"),
     },
 }
 
@@ -151,10 +156,12 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     args = parser.parse_args()
 
-    if not TAG_RE.fullmatch(args.tag):
+    tag_match = TAG_RE.fullmatch(args.tag)
+    if tag_match is None:
         raise SystemExit(
             "producer pre-release tag must match runtime-vX.Y.Z-rcN"
         )
+    release_version = tag_match.group("version")
 
     source_root = Path(args.input).resolve()
     output = Path(args.output).resolve()
@@ -203,11 +210,21 @@ def main() -> int:
         run_id = str(metadata.get("databaseId", ""))
         workflow_name = str(metadata.get("workflowName", ""))
         head_sha = str(metadata.get("headSha", ""))
+        head_branch = str(metadata.get("headBranch", ""))
         conclusion = str(metadata.get("conclusion", ""))
+        event = str(metadata.get("event", ""))
         if conclusion != "success":
             raise SystemExit(f"qualification run is not successful: {metadata_path}")
         if workflow_name not in EXPECTED_WORKFLOW_COVERAGE:
             raise SystemExit(f"unexpected qualification workflow: {workflow_name!r}")
+        if event not in {"push", "workflow_dispatch"}:
+            raise SystemExit(
+                f"qualification run must be a push/workflow_dispatch run, not {event!r}: {metadata_path}"
+            )
+        if head_branch != "main":
+            raise SystemExit(
+                f"qualification run must target producer main, not {head_branch!r}: {metadata_path}"
+            )
         if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
             raise SystemExit(f"qualification run has invalid head SHA: {metadata_path}")
         if str(payload.get("workflow_run_id", "")) != run_id:
@@ -228,6 +245,8 @@ def main() -> int:
         normalized_run = {
             "workflow": workflow_name,
             "head_sha": head_sha,
+            "head_branch": head_branch,
+            "event": event,
         }
         if previous_run is not None and previous_run != normalized_run:
             raise SystemExit(f"conflicting metadata for qualification run {run_id}")
@@ -245,6 +264,10 @@ def main() -> int:
         expected_sha = str(payload.get("artifact_sha256", "")).lower()
         if not artifact_name or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
             raise SystemExit(f"qualification has invalid artifact identity: {qualification}")
+        if f"-v{release_version}-" not in artifact_name:
+            raise SystemExit(
+                f"artifact version does not match producer pre-release tag {args.tag}: {artifact_name}"
+            )
         matches = find_by_name(source_root, artifact_name)
         if len(matches) != 1:
             raise SystemExit(
@@ -274,6 +297,7 @@ def main() -> int:
             raise SystemExit(f"embedded manifest producer is invalid: {artifact_name}")
         if (
             embedded_manifest.get("format_version") != 1
+            or embedded_manifest.get("version") != release_version
             or embedded_manifest.get("platform") != platform
             or embedded_manifest.get("profile") != profile
             or embedded_manifest.get("python_abi") != "cp312"
@@ -352,6 +376,7 @@ def main() -> int:
     manifest = {
         "format_version": 1,
         "tag": args.tag,
+        "version": release_version,
         "producer_repository": "precsim/python-numpy-fenics",
         "producer_revision": producer_revision,
         "source_runs": [

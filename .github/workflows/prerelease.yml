@@ -27,6 +27,10 @@ on:
         description: Successful qualify-linux-core-numpy run ID
         required: true
         type: string
+      linux_fenics_run_id:
+        description: Successful qualify-linux-fenics run ID
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -43,6 +47,7 @@ jobs:
       MACOS_CORE_NUMPY_RUN_ID: ${{ inputs.macos_core_numpy_run_id }}
       MACOS_FENICS_RUN_ID: ${{ inputs.macos_fenics_run_id }}
       LINUX_CORE_NUMPY_RUN_ID: ${{ inputs.linux_core_numpy_run_id }}
+      LINUX_FENICS_RUN_ID: ${{ inputs.linux_fenics_run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -63,12 +68,14 @@ jobs:
           download_run() {
             local expected_workflow="$1"
             local run_id="$2"
-            local metadata conclusion workflow_name head_sha run_dir
+            local metadata conclusion workflow_name head_sha head_branch event run_dir
 
-            metadata="$(gh run view "$run_id" --json conclusion,workflowName,headSha,databaseId,event)"
+            metadata="$(gh run view "$run_id" --json conclusion,workflowName,headSha,headBranch,databaseId,event)"
             conclusion="$(jq -r '.conclusion' <<<"$metadata")"
             workflow_name="$(jq -r '.workflowName' <<<"$metadata")"
             head_sha="$(jq -r '.headSha' <<<"$metadata")"
+            head_branch="$(jq -r '.headBranch' <<<"$metadata")"
+            event="$(jq -r '.event' <<<"$metadata")"
 
             [[ "$conclusion" == "success" ]] || {
               echo "qualification run $run_id is not successful: $conclusion" >&2
@@ -76,6 +83,14 @@ jobs:
             }
             [[ "$workflow_name" == "$expected_workflow" ]] || {
               echo "qualification run $run_id is $workflow_name, expected $expected_workflow" >&2
+              exit 1
+            }
+            [[ "$event" == "push" || "$event" == "workflow_dispatch" ]] || {
+              echo "qualification run $run_id has non-promotable event: $event" >&2
+              exit 1
+            }
+            [[ "$head_branch" == "main" ]] || {
+              echo "qualification run $run_id is from $head_branch, expected main" >&2
               exit 1
             }
             [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || {
@@ -100,6 +115,7 @@ jobs:
           download_run "qualify-macos-core-numpy" "$MACOS_CORE_NUMPY_RUN_ID"
           download_run "qualify-macos-fenics" "$MACOS_FENICS_RUN_ID"
           download_run "qualify-linux-core-numpy" "$LINUX_CORE_NUMPY_RUN_ID"
+          download_run "qualify-linux-fenics" "$LINUX_FENICS_RUN_ID"
           echo "PRODUCER_REVISION=$producer_revision" >> "$GITHUB_ENV"
 
       - name: Verify and collect release inputs
@@ -113,8 +129,23 @@ jobs:
             echo "release already exists: $RELEASE_TAG" >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" release-assets/* \
-            --prerelease \
-            --target "$PRODUCER_REVISION" \
-            --title "$RELEASE_TAG" \
-            --notes "Qualified public runtime producer artifacts. This is not a downstream application release."
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "tag already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" \
+            -f sha="$PRODUCER_REVISION" >/dev/null
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          [[ "$tag_sha" == "$PRODUCER_REVISION" ]] || {
+            echo "created tag target mismatch: $tag_sha != $PRODUCER_REVISION" >&2
+            exit 1
+          }
+          if ! gh release create "$RELEASE_TAG" release-assets/* \
+              --prerelease \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --notes "Qualified public runtime producer artifacts. This is not a downstream application release."; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" >/dev/null 2>&1 || true
+            exit 1
+          fi

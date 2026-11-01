@@ -68,7 +68,10 @@ def main() -> int:
         "profile": args.profile,
         "producer": {
             "repository": "precsim/python-numpy-fenics",
-            "revision": os.environ.get("GITHUB_SHA", "local"),
+            "revision": os.environ.get(
+                "PRODUCER_REVISION",
+                os.environ.get("GITHUB_SHA", "local"),
+            ),
         },
         "files": entries,
     }

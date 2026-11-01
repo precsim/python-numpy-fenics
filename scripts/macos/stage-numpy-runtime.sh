@@ -327,7 +327,7 @@ PY
 ditto "$work/overlay" "$site_packages"
 cp "$payload_manifest" "$runtime/numpy-payload-manifest-macos.json"
 
-bash "$root/tools/inspect-macos-runtime.sh" \
+bash "$root/scripts/macos/inspect-macos-runtime.sh" \
     --root "$site_packages" \
     --output "$census_output" \
     --arch "$target_arch" \
