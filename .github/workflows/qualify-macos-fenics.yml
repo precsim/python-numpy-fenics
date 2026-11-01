@@ -50,19 +50,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - architecture: arm64
-            runner: macos-15
-            artifact_platform: macos-arm64
-            conda_subdir: osx-arm64
-            python_asset_id: "244701302"
-            python_asset_name: python-3.12.10-darwin-arm64.tar.gz
-            toolcache_arch: arm64
-            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
-            zig_asset: zig-aarch64-macos-0.17.0.tar.xz
-            zig_sha256: b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
-            overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp312.zip
           - architecture: x86_64
             runner: macos-15-intel
             artifact_platform: macos-x64
@@ -73,8 +60,8 @@ jobs:
             numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
             numpy_url: https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
             numpy_sha256: 65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414
-            zig_asset: zig-x86_64-macos-0.17.0.tar.xz
-            zig_sha256: 4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6
+            zig_asset: zig-x86_64-macos-0.15.2.tar.xz
+            zig_sha256: 375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-x64-cp312.zip
     env:
       TARGET_ARCH: ${{ matrix.architecture }}
@@ -88,7 +75,7 @@ jobs:
       NUMPY_WHEEL_SHA256: ${{ matrix.numpy_sha256 }}
       ZIG_ASSET: ${{ matrix.zig_asset }}
       ZIG_SHA256: ${{ matrix.zig_sha256 }}
-      ZIG_VERSION: 0.17.0
+      ZIG_VERSION: 0.15.2
       OVERLAY_ASSET: ${{ matrix.overlay_asset }}
       GH_TOKEN: ${{ github.token }}
 
@@ -295,6 +282,53 @@ jobs:
             --platform "$ARTIFACT_PLATFORM" \
             --profile numpy
 
+      - name: Debug embedded bootstrap before Mach-O relocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/prepack runtime with spaces"
+          cache="$RUNNER_TEMP/prepack bootstrap jit cache"
+          rm -rf "$runtime" "$cache"
+          mkdir -p "$runtime" "$cache" "$runtime/fenics-runtime"
+          ditto "out/$ARTIFACT_PLATFORM/numpy" "$runtime"
+          ln -s "$FENICS_LOCKED_PREFIX" "$runtime/fenics-runtime/conda"
+          ln -s "$FENICS_ZIG_ROOT" "$runtime/fenics-runtime/zig"
+          site="$runtime/Python.framework/Versions/3.12/lib/python3.12/site-packages"
+          staged_python="$runtime/Python.framework/Versions/3.12/bin/python3.12"
+          cp runtime/macos_fenics_embed_runtime.py "$site/fenics_embed_runtime.py"
+          export PYTHONHOME="$runtime/Python.framework/Versions/3.12"
+          export XDG_CACHE_HOME="$cache"
+          export PYTHONNOUSERSITE=1
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+          unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+            LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
+            PETSC_DIR FENICS_JIT_ROOT FENICS_JIT_COMPILER CONDA_PREFIX || true
+          "$staged_python" -S -P - "$runtime" "$GITHUB_WORKSPACE/tests/fenics/test_poisson.py" <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]).resolve()
+          script = Path(sys.argv[2]).resolve()
+          bootstrap = root / "Python.framework/Versions/3.12/lib/python3.12/site-packages/fenics_embed_runtime.py"
+          spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+          if spec is None or spec.loader is None:
+              raise SystemExit(f"cannot load bootstrap: {bootstrap}")
+          module = importlib.util.module_from_spec(spec)
+          sys.modules["fenics_embed_runtime"] = module
+          spec.loader.exec_module(module)
+          activated = Path(module.activate()).resolve()
+          if activated != root:
+              raise SystemExit(f"unexpected activated root: {activated} != {root}")
+          print(f"bootstrap_cc={os.environ.get('CC')}")
+          print(f"bootstrap_python_include={root / 'Python.framework/Versions/3.12/include/python3.12'}")
+          code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
+          exec(code, {"__name__": "__main__", "__file__": str(script)})
+          PY
+          find "$cache" -type f \( -name '*.so' -o -name '*.dylib' \) -print -quit | grep -q .
+          echo "prepack_embedded_bootstrap_jit=pass"
+          exit 99
       - name: Prove fresh FFCx JIT and serial PETSc solve from locked packages
         shell: bash
         run: |
