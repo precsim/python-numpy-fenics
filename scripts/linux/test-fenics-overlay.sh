@@ -44,6 +44,72 @@ base_numpy_payload="$base_runtime/numpy-payload-manifest-linux.json"
 for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.12"; do
     [[ -e "$required" ]] || { echo "qualified NumPy base input is missing: $required" >&2; exit 1; }
 done
+verify_inherited_base_tree() {
+    local root="$1"
+    local allow_extra="$2"
+    python3 - "$root" "$base_manifest" "$allow_extra" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+manifest_path = pathlib.Path(sys.argv[2]).resolve()
+allow_extra = sys.argv[3] == "yes"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+expected = {}
+for entry in manifest.get("files", []):
+    rel = pathlib.PurePosixPath(str(entry.get("path", "")))
+    if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+        raise SystemExit(f"unsafe inherited-base manifest path: {rel}")
+    key = rel.as_posix()
+    if key == "runtime-manifest.json" or key in expected:
+        raise SystemExit(f"ambiguous inherited-base manifest path: {key}")
+    expected[key] = entry
+if not expected:
+    raise SystemExit("inherited-base runtime manifest has no file inventory")
+
+actual = set()
+for path in root.rglob("*"):
+    if path.is_dir() and not path.is_symlink():
+        continue
+    rel = path.relative_to(root).as_posix()
+    if rel == "runtime-manifest.json":
+        continue
+    actual.add(rel)
+missing = sorted(set(expected) - actual)
+extra = sorted(actual - set(expected))
+if missing or (extra and not allow_extra):
+    raise SystemExit(f"inherited-base tree mismatch: missing={missing!r} extra={extra!r}")
+
+for rel, entry in expected.items():
+    path = root.joinpath(*pathlib.PurePosixPath(rel).parts)
+    if entry.get("kind") == "symlink":
+        if not path.is_symlink() or os.readlink(path) != entry.get("target"):
+            raise SystemExit(f"inherited-base symlink changed: {rel}")
+    elif entry.get("kind") == "file":
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit(f"inherited-base file changed type: {rel}")
+        if path.stat().st_size != entry.get("bytes") or sha256(path) != entry.get("sha256"):
+            raise SystemExit(f"inherited-base file bytes changed: {rel}")
+    else:
+        raise SystemExit(f"unsupported inherited-base manifest kind: {rel}: {entry.get('kind')!r}")
+
+staged_manifest = root / "runtime-manifest.json"
+if not staged_manifest.is_file() or staged_manifest.read_bytes() != manifest_path.read_bytes():
+    raise SystemExit("inherited runtime-manifest.json changed")
+print("inherited_base_manifest_identity=pass")
+PY
+}
 python3 - "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_qualification" <<'PY'
 import json
 import pathlib
@@ -97,6 +163,7 @@ poison="$work/hostile ambient state"
 mkdir -p "$runtime" "$cache" "$poison/bin" "$poison/python" "$poison/native" "$poison/home"
 trap 'rm -rf "$work"' EXIT
 cp -a "$base_runtime"/. "$runtime"/
+verify_inherited_base_tree "$runtime" no
 
 site_packages="$runtime/lib/python3.12/site-packages"
 staged_python="$runtime/bin/python3.12"
@@ -136,6 +203,7 @@ hash_numpy "$work/numpy-before.json"
 tar -xzf "$archive" -C "$runtime"
 hash_numpy "$work/numpy-after.json"
 cmp "$work/numpy-before.json" "$work/numpy-after.json"
+verify_inherited_base_tree "$runtime" yes
 
 overlay_manifest="$runtime/fenics-embed-manifest.json"
 [[ -f "$overlay_manifest" ]] || { echo "FEniCS overlay manifest is missing" >&2; exit 1; }

@@ -381,6 +381,7 @@ jobs:
             --lock "$lock" \
             --prefix "$prefix" \
             --package-cache "$package_cache" \
+            --explicit "$transaction" \
             --evidence "$evidence/package-lock-verification.json" \
             --arch x86_64 \
             | tee "$evidence/package-lock-verification.log"
@@ -392,6 +393,9 @@ jobs:
           assert data["solver_used"] is False
           assert data["lock_record_count"] == 128
           assert data["installed_record_count"] == 128
+          assert data["verified_package_archive_count"] == 128
+          assert data["package_hash_verification"] == "cached-package-sha256-plus-installed-record-match"
+          assert data["replay_input_format"] == "@EXPLICIT-url-plus-sha256"
           assert len(data["packages"]) == 128
           print("exact_lock_replay=pass")
           PY
@@ -518,7 +522,7 @@ jobs:
             --check glibc_floor=pass \
             --check package_lock_replay=pass \
             --check package_hash_verification=pass \
-            --check dependency_solver=not-applicable \
+            --check dependency_solver_disabled=pass \
             --check stock_package_reuse=pass \
             --check public_numpy_base=pass \
             --check inherited_numpy_identity=pass \

@@ -51,5 +51,11 @@ u_exact = fem.Function(V)
 u_exact.interpolate(lambda x: 1.0 - x[0]**2 - x[1]**2)
 err = np.sqrt(domain.comm.allreduce(
     fem.assemble_scalar(fem.form((uh - u_exact)**2 * ufl.dx)), op=MPI.SUM))
+max_l2_error = 5.0e-2
+if not np.isfinite(err) or err > max_l2_error:
+    raise RuntimeError(
+        f"Poisson solve failed numerical accuracy check: L2 error {err!r} > {max_l2_error}"
+    )
 if domain.comm.rank == 0:
     print("L2 error:", err)
+    print("L2 tolerance:", max_l2_error)

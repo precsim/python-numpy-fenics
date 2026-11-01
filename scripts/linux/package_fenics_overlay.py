@@ -237,6 +237,52 @@ def verify_external_prefix_evidence(
     return evidence
 
 
+def validate_runtime_manifest_tree(root: Path, manifest_path: Path, manifest: dict[str, Any]) -> None:
+    """Bind the qualified base manifest to every inherited runtime byte/symlink."""
+
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit(f"public NumPy runtime manifest has no file inventory: {manifest_path}")
+    expected: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("path"):
+            raise SystemExit(f"invalid public NumPy runtime manifest entry: {entry!r}")
+        relative = safe_relative(str(entry["path"]))
+        rel = relative.as_posix()
+        if rel == "runtime-manifest.json" or rel in expected:
+            raise SystemExit(f"ambiguous public NumPy runtime manifest path: {rel}")
+        expected[rel] = entry
+
+    actual: set[str] = set()
+    for path in sorted(root.rglob("*")):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel == "runtime-manifest.json":
+            continue
+        actual.add(rel)
+    missing = sorted(set(expected) - actual)
+    extra = sorted(actual - set(expected))
+    if missing or extra:
+        raise SystemExit(
+            f"public NumPy runtime tree differs from its manifest: missing={missing!r} extra={extra!r}"
+        )
+
+    for rel, entry in expected.items():
+        path = root / Path(*PurePosixPath(rel).parts)
+        kind = entry.get("kind")
+        if kind == "symlink":
+            if not path.is_symlink() or os.readlink(path) != entry.get("target"):
+                raise SystemExit(f"public NumPy runtime symlink identity mismatch: {rel}")
+        elif kind == "file":
+            if not path.is_file() or path.is_symlink():
+                raise SystemExit(f"public NumPy runtime file identity mismatch: {rel}")
+            if path.stat().st_size != entry.get("bytes") or sha256_file(path) != entry.get("sha256"):
+                raise SystemExit(f"public NumPy runtime file hash mismatch: {rel}")
+        else:
+            raise SystemExit(f"unsupported public NumPy runtime manifest kind for {rel}: {kind!r}")
+
+
 def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any]:
     manifest_path = base / "runtime-manifest.json"
     core_provenance_path = base / "build-provenance-linux.json"
@@ -260,6 +306,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
     ):
         raise SystemExit(f"invalid public NumPy base runtime manifest: {manifest_path}")
+    validate_runtime_manifest_tree(base, manifest_path, manifest)
     qualification = read_json(qualification_path)
     checks = qualification.get("checks")
     required_checks = {
