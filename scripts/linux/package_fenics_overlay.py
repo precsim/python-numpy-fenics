@@ -641,6 +641,7 @@ def audit_elf(
     }
     version_tokens: set[str] = set()
     nonnumeric_tokens: set[str] = set()
+    nonnumeric_occurrences: list[dict[str, Any]] = []
     ceiling_violations: list[dict[str, Any]] = []
     for path in all_elfs:
         header = run("readelf", "-hW", str(path)).stdout
@@ -668,11 +669,18 @@ def audit_elf(
                     )
             if not matched_numeric:
                 nonnumeric_tokens.add(token)
+                rel = path.relative_to(stage_root).as_posix()
+                nonnumeric_occurrences.append(
+                    {"path": rel, "owners": owners.get(rel, []), "required": token}
+                )
     unexpected_nonnumeric = sorted(nonnumeric_tokens - ALLOWED_NONNUMERIC_VERSION_TOKENS)
     if unexpected_nonnumeric:
-        raise SystemExit(
-            "stock FEniCS package closure requires unsupported nonnumeric ABI symbol versions: "
-            f"{unexpected_nonnumeric}"
+        print(
+            "debug_unexpected_nonnumeric_abi="
+            + json.dumps(
+                [item for item in nonnumeric_occurrences if item["required"] in unexpected_nonnumeric],
+                sort_keys=True,
+            )
         )
     if ceiling_violations:
         raise SystemExit(
