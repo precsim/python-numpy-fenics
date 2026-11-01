@@ -65,6 +65,7 @@ REQUIRED_SYMBOL_CEILINGS = {
     "GCC": (4, 8, 0),
 }
 ALLOWED_NONNUMERIC_VERSION_TOKENS = {"CXXABI_TM_1"}
+SYSROOT_ALLOWED_NONNUMERIC_VERSION_TOKENS = {"GLIBC_PRIVATE"}
 PROTECTED_JIT_BIN_PATHS = {
     "bin/x86_64-conda-linux-gnu-gcc",
     "bin/x86_64-conda-linux-gnu-ld",
@@ -641,6 +642,8 @@ def audit_elf(
     }
     version_tokens: set[str] = set()
     nonnumeric_tokens: set[str] = set()
+    sysroot_nonnumeric_requirements: list[dict[str, Any]] = []
+    unexpected_nonnumeric_requirements: list[dict[str, Any]] = []
     ceiling_violations: list[dict[str, Any]] = []
     for path in all_elfs:
         header = run("readelf", "-hW", str(path)).stdout
@@ -668,11 +671,26 @@ def audit_elf(
                     )
             if not matched_numeric:
                 nonnumeric_tokens.add(token)
-    unexpected_nonnumeric = sorted(nonnumeric_tokens - ALLOWED_NONNUMERIC_VERSION_TOKENS)
-    if unexpected_nonnumeric:
+                if token in ALLOWED_NONNUMERIC_VERSION_TOKENS:
+                    continue
+                rel = path.relative_to(stage_root).as_posix()
+                requirement = {
+                    "path": rel,
+                    "owners": owners.get(rel, []),
+                    "required": token,
+                }
+                if (
+                    under(path, sysroot)
+                    and token in SYSROOT_ALLOWED_NONNUMERIC_VERSION_TOKENS
+                    and set(owners.get(rel, [])) == {"sysroot_linux-64"}
+                ):
+                    sysroot_nonnumeric_requirements.append(requirement)
+                else:
+                    unexpected_nonnumeric_requirements.append(requirement)
+    if unexpected_nonnumeric_requirements:
         raise SystemExit(
             "stock FEniCS package closure requires unsupported nonnumeric ABI symbol versions: "
-            f"{unexpected_nonnumeric}"
+            + json.dumps(unexpected_nonnumeric_requirements, indent=2, sort_keys=True)
         )
     if ceiling_violations:
         raise SystemExit(
@@ -773,6 +791,10 @@ def audit_elf(
         "allowed_nonnumeric_required_versions": sorted(
             nonnumeric_tokens & ALLOWED_NONNUMERIC_VERSION_TOKENS
         ),
+        "sysroot_allowed_nonnumeric_required_versions": sorted(
+            {item["required"] for item in sysroot_nonnumeric_requirements}
+        ),
+        "sysroot_nonnumeric_requirements": sysroot_nonnumeric_requirements,
         "mpi": {
             "implementation": "mpich",
             "provider": mpi_rel,
