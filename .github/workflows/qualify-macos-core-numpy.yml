@@ -1,0 +1,248 @@
+name: qualify-macos-core-numpy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/qualify-macos-core-numpy.yml"
+      - "scripts/macos/stage-core-runtime.sh"
+      - "scripts/macos/stage-numpy-runtime.sh"
+      - "scripts/common/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/02-core-numpy-profiles.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/qualify-macos-core-numpy.yml"
+      - "scripts/macos/stage-core-runtime.sh"
+      - "scripts/macos/stage-numpy-runtime.sh"
+      - "scripts/common/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/02-core-numpy-profiles.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-core-numpy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: macos-15
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_arch: arm64
+            artifact_platform: macos-arm64
+            python_asset_id: "244701302"
+            python_asset_name: python-3.12.10-darwin-arm64.tar.gz
+            toolcache_arch: arm64
+            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
+            numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
+            numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
+          - target_arch: x86_64
+            artifact_platform: macos-x64
+            python_asset_id: "244701305"
+            python_asset_name: python-3.12.10-darwin-x64.tar.gz
+            toolcache_arch: x64
+            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
+            numpy_url: https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
+            numpy_sha256: 65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414
+
+    env:
+      TARGET_ARCH: ${{ matrix.target_arch }}
+      ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
+      PYTHON_ASSET_ID: ${{ matrix.python_asset_id }}
+      PYTHON_ASSET_NAME: ${{ matrix.python_asset_name }}
+      TOOLCACHE_ARCH: ${{ matrix.toolcache_arch }}
+      NUMPY_WHEEL_NAME: ${{ matrix.numpy_wheel }}
+      NUMPY_WHEEL_URL: ${{ matrix.numpy_url }}
+      NUMPY_WHEEL_SHA256: ${{ matrix.numpy_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Provision Rosetta for x86_64 target
+        if: ${{ matrix.target_arch == 'x86_64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sudo softwareupdate --install-rosetta --agree-to-license >"$RUNNER_TEMP/rosetta-install.log" 2>&1 || {
+            cat "$RUNNER_TEMP/rosetta-install.log" >&2
+            /usr/bin/arch -x86_64 /usr/bin/uname -m >/dev/null 2>&1 || exit 1
+          }
+          test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
+
+      - name: Download pinned actions/python-versions CPython assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/macos-python-assets-$TARGET_ARCH"
+          mkdir -p "$destination"
+          python3 - "$PYTHON_ASSET_ID" "$PYTHON_ASSET_NAME" "$destination" <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import urllib.request
+
+          asset_id = int(sys.argv[1])
+          asset_name = sys.argv[2]
+          destination = pathlib.Path(sys.argv[3])
+          assets = [(asset_id, asset_name), (244701301, "hashes.sha256")]
+          for current_id, expected_name in assets:
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/actions/python-versions/releases/assets/{current_id}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "User-Agent": "python-numpy-fenics-ci",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  metadata = json.load(response)
+              if metadata.get("id") != current_id or metadata.get("name") != expected_name:
+                  raise SystemExit(f"pinned CPython asset identity mismatch: {metadata!r}")
+              download = urllib.request.Request(
+                  metadata["browser_download_url"],
+                  headers={"User-Agent": "python-numpy-fenics-ci"},
+              )
+              target = destination / expected_name
+              with urllib.request.urlopen(download) as response, target.open("wb") as stream:
+                  shutil.copyfileobj(response, stream)
+              print(f"downloaded_asset={current_id} name={expected_name} bytes={target.stat().st_size}")
+          env = pathlib.Path(os.environ["GITHUB_ENV"])
+          with env.open("a", encoding="utf-8") as stream:
+              stream.write(f"CPYTHON_ARCHIVE={destination / asset_name}\n")
+              stream.write(f"CPYTHON_HASHES={destination / 'hashes.sha256'}\n")
+          PY
+
+      - name: Install pinned CPython toolcache payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_dir="$RUNNER_TEMP/python-setup-$TARGET_ARCH"
+          rm -rf "$setup_dir"
+          mkdir -p "$setup_dir"
+          tar -xzf "$CPYTHON_ARCHIVE" -C "$setup_dir"
+          export AGENT_TOOLSDIRECTORY="$RUNNER_TEMP/toolcache"
+          (cd "$setup_dir" && bash ./setup.sh)
+          python_real="$AGENT_TOOLSDIRECTORY/Python/3.12.10/$TOOLCACHE_ARCH/bin/python3.12"
+          test -x "$python_real"
+          if [[ "$TARGET_ARCH" == x86_64 ]]; then
+            python_launcher="$RUNNER_TEMP/python3.12-x86_64"
+            cat > "$python_launcher" <<EOF
+          #!/bin/bash
+          exec /usr/bin/arch -x86_64 "$python_real" "\$@"
+          EOF
+            chmod +x "$python_launcher"
+            selected="$python_launcher"
+          else
+            selected="$python_real"
+          fi
+          echo "PRODUCER_PYTHON=$selected" >> "$GITHUB_ENV"
+          "$selected" -I -S - <<'PY'
+          import platform, struct
+          assert platform.python_version() == "3.12.10"
+          assert 8 * struct.calcsize("P") == 64
+          print(f"selected_machine={platform.machine()}")
+          PY
+
+      - name: Fetch and verify exact NumPy wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$RUNNER_TEMP/$NUMPY_WHEEL_NAME"
+          curl --fail --location --retry 3 --retry-all-errors -o "$wheel" "$NUMPY_WHEEL_URL"
+          echo "$NUMPY_WHEEL_SHA256  $wheel" | shasum -a 256 -c -
+          echo "NUMPY_WHEEL=$wheel" >> "$GITHUB_ENV"
+
+      - name: Stage public core runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos/stage-core-runtime.sh
+          scripts/macos/stage-core-runtime.sh \
+            --python "$PRODUCER_PYTHON" \
+            --python-archive "$CPYTHON_ARCHIVE" \
+            --python-hashes "$CPYTHON_HASHES" \
+            --arch "$TARGET_ARCH"
+          test -f "out/macos-$TARGET_ARCH/core/build-provenance-macos.json"
+
+      - name: Stage and qualify NumPy runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos/stage-numpy-runtime.sh
+          scripts/macos/stage-numpy-runtime.sh \
+            --core-runtime "out/macos-$TARGET_ARCH/core" \
+            --output-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --numpy-wheel "$NUMPY_WHEEL" \
+            --numpy-url "$NUMPY_WHEEL_URL" \
+            --arch "$TARGET_ARCH"
+
+      - name: Write producer manifests and deterministic archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for profile in core numpy; do
+            root="out/macos-$TARGET_ARCH/$profile"
+            python3 scripts/common/write_runtime_manifest.py \
+              --root "$root" \
+              --platform "$ARTIFACT_PLATFORM" \
+              --profile "$profile"
+            archive="dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-$profile.zip"
+            python3 scripts/common/archive_runtime.py --root "$root" --output "$archive" --format zip
+            archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+            printf '%s  %s\n' "$archive_sha" "$(basename "$archive")" > "$archive.sha256"
+          done
+
+          python3 scripts/common/write_qualification.py \
+            --platform "$ARTIFACT_PLATFORM" \
+            --profile core \
+            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-core.zip" \
+            --output "dist/qualification-$ARTIFACT_PLATFORM-core.json" \
+            --check pinned_cpython_asset=pass \
+            --check relocated_framework=pass \
+            --check tkinter=pass \
+            --check macos_floor=pass \
+            --check numpy_absent=pass \
+            --check private_consumer_checkout=not-applicable
+
+          python3 scripts/common/write_qualification.py \
+            --platform "$ARTIFACT_PLATFORM" \
+            --profile numpy \
+            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-numpy.zip" \
+            --output "dist/qualification-$ARTIFACT_PLATFORM-numpy.json" \
+            --check inherited_core_identity=pass \
+            --check pinned_numpy_wheel=pass \
+            --check accelerate=pass \
+            --check blas_lapack_functional=pass \
+            --check native_closure=pass \
+            --check macos_floor=pass \
+            --check private_consumer_checkout=not-applicable
+
+      - name: Upload qualified producer runtimes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-runtime-${{ matrix.artifact_platform }}-cp312
+          path: |
+            dist/
+            out/macos-${{ matrix.target_arch }}/core/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/core/runtime-manifest.json
+            out/macos-${{ matrix.target_arch }}/numpy/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-manifest-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 30

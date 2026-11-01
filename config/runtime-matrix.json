@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "python": {
+    "abi": "cp312",
+    "consumer_baseline": "3.12.10"
+  },
+  "numpy": {
+    "version": "2.5.2"
+  },
+  "targets": {
+    "win-x64": {
+      "profiles": ["core", "numpy", "fenics"],
+      "fenics_overlay": "migration-in-progress"
+    },
+    "linux-x64": {
+      "glibc_floor": "2.17",
+      "profiles": ["core", "numpy", "fenics"],
+      "fenics_overlay": "planned"
+    },
+    "macos-arm64": {
+      "macos_floor": "14.0",
+      "profiles": ["core", "numpy", "fenics"],
+      "fenics_overlay": "migration-in-progress"
+    },
+    "macos-x64": {
+      "macos_floor": "14.0",
+      "profiles": ["core", "numpy", "fenics"],
+      "fenics_overlay": "migration-in-progress"
+    }
+  },
+  "ci": {
+    "provider": "github-actions"
+  }
+}

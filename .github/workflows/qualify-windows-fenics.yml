@@ -1,0 +1,168 @@
+name: qualify-windows-fenics
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "runtime/windows/fenics_embed_runtime.py"
+      - "scripts/windows/package-fenics-overlay.ps1"
+      - "scripts/windows/package_lock.py"
+      - "scripts/windows/test-fenics-overlay.ps1"
+      - "scripts/windows/stage-runtime.ps1"
+      - "scripts/windows/test-runtime.ps1"
+      - "scripts/common/**"
+      - "locks/windows/**"
+      - "tests/fenics/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/windows/**"
+      - ".github/workflows/qualify-windows-fenics.yml"
+      - "README.md"
+  push:
+    branches:
+      - main
+    paths:
+      - "runtime/windows/fenics_embed_runtime.py"
+      - "scripts/windows/package-fenics-overlay.ps1"
+      - "scripts/windows/package_lock.py"
+      - "scripts/windows/test-fenics-overlay.ps1"
+      - "scripts/windows/stage-runtime.ps1"
+      - "scripts/windows/test-runtime.ps1"
+      - "scripts/common/**"
+      - "locks/windows/**"
+      - "tests/fenics/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/windows/**"
+      - ".github/workflows/qualify-windows-fenics.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('windows-fenics-pr-{0}', github.event.pull_request.number) || 'windows-fenics-main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  qualify:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install reference CPython 3.12.10
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12.10"
+          architecture: x64
+
+      - name: Capture non-conda Python
+        shell: pwsh
+        run: |
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          "REFERENCE_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          python -c "import platform,sys; print(sys.executable); print(platform.python_version())"
+
+      - name: Install and verify pinned micromamba
+        shell: pwsh
+        run: |
+          $url = "https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-win-64"
+          $exe = Join-Path $env:RUNNER_TEMP "micromamba-2.9.0.exe"
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne "a6d804394b2418991c4e29562853eaace2f2ce9d9da661a98e74e02e8dbb44b0") {
+            throw "Pinned micromamba SHA-256 mismatch: $sha"
+          }
+          "MAMBA_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $exe --version
+
+      - name: Validate embedded-runtime scripts
+        shell: pwsh
+        run: |
+          python -m py_compile runtime/windows/fenics_embed_runtime.py
+          python -m py_compile scripts/windows/package_lock.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($Path in @('scripts/windows/package-fenics-overlay.ps1','scripts/windows/test-fenics-overlay.ps1','scripts/windows/stage-runtime.ps1','scripts/windows/test-runtime.ps1')) {
+            $Tokens = $null
+            $Errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $Path),
+              [ref]$Tokens,
+              [ref]$Errors
+            ) | Out-Null
+            if ($Errors.Count -ne 0) {
+              $Errors | ForEach-Object { Write-Error "${Path}:$($_.Extent.StartLineNumber): $($_.Message)" }
+              throw "PowerShell syntax validation failed: $Path"
+            }
+          }
+
+      - name: Fetch and verify public NumPy base wheel
+        shell: pwsh
+        run: |
+          $input = Join-Path $env:RUNNER_TEMP "numpy-wheel"
+          New-Item -ItemType Directory -Force -Path $input | Out-Null
+          & $env:REFERENCE_PYTHON -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
+          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
+          $wheel = Join-Path $input "numpy-2.5.2-cp312-cp312-win_amd64.whl"
+          if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned public NumPy wheel is missing" }
+          $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne "28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4") { throw "Pinned public NumPy wheel SHA-256 mismatch: $sha" }
+          "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Stage and qualify public NumPy base runtime
+        shell: pwsh
+        run: |
+          .\scripts\windows\stage-runtime.ps1 -Python $env:REFERENCE_PYTHON -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy
+          .\scripts\windows\test-runtime.ps1 -Runtime .\out\win-x64\numpy -RuntimeProfile numpy
+
+      - name: Replay exact locked FEniCS source prefix
+        shell: pwsh
+        run: |
+          $lock = "locks/windows/windows-x64-fenics-package-lock.json"
+          $sourceExplicit = "locks/windows/windows-x64-fenics-explicit.txt"
+          $transaction = Join-Path $env:RUNNER_TEMP "windows-x64-fenics-explicit.txt"
+          $packageCache = Join-Path $env:RUNNER_TEMP "windows-x64-fenics-package-cache"
+          $prefix = Join-Path $env:RUNNER_TEMP "fenics bridge source prefix with spaces"
+          New-Item -ItemType Directory -Force -Path $packageCache | Out-Null
+          $env:CONDA_PKGS_DIRS = $packageCache
+          python scripts/windows/package_lock.py explicit --lock $lock --source-explicit $sourceExplicit --output $transaction --arch x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows FEniCS lock rendering failed" }
+          & $env:MAMBA_EXE create -y -p $prefix --file $transaction
+          if ($LASTEXITCODE -ne 0) { throw "Locked FEniCS source-prefix replay failed" }
+          python scripts/windows/package_lock.py verify-prefix --lock $lock --prefix $prefix --package-cache $packageCache --evidence fenics-package-lock-evidence.json --arch x64
+          if ($LASTEXITCODE -ne 0) { throw "Locked FEniCS source-prefix verification failed" }
+          "FENICS_SOURCE_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FENICS_PACKAGE_CACHE=$packageCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package embedded-runtime overlay
+        shell: pwsh
+        run: |
+          .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -Output .\dist -Version 0.1.0
+          $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
+          $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$zip.sha256" -Value "$sha  $([IO.Path]::GetFileName($zip))" -Encoding utf8NoBOM
+
+      - name: Qualify exact overlay against public NumPy base runtime
+        shell: pwsh
+        run: |
+          $zip = Resolve-Path ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
+          .\scripts\windows\test-fenics-overlay.ps1 -Zip $zip -BaseRuntime .\out\win-x64\numpy
+
+      - name: Write producer qualification evidence
+        shell: pwsh
+        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
+
+      - name: Upload qualified overlay
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fenics-embed-runtime-win-x64-cp312
+          path: |
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip.sha256
+            dist/SHA256SUMS-embedded-runtime.txt
+            dist/qualification-win-x64-fenics.json
+            locks/windows/windows-x64-fenics-explicit.txt
+            locks/windows/windows-x64-fenics-package-lock.json
+            fenics-package-lock-evidence.json
+          if-no-files-found: error
+          retention-days: 30

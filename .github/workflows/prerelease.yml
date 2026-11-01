@@ -1,0 +1,120 @@
+name: producer-prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Producer pre-release tag, for example runtime-v0.1.0-rc1
+        required: true
+        type: string
+      windows_core_numpy_run_id:
+        description: Successful qualify-windows-core-numpy run ID
+        required: true
+        type: string
+      windows_fenics_run_id:
+        description: Successful qualify-windows-fenics run ID
+        required: true
+        type: string
+      macos_core_numpy_run_id:
+        description: Successful qualify-macos-core-numpy run ID
+        required: true
+        type: string
+      macos_fenics_run_id:
+        description: Successful qualify-macos-fenics run ID
+        required: true
+        type: string
+      linux_core_numpy_run_id:
+        description: Successful qualify-linux-core-numpy run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      WINDOWS_CORE_NUMPY_RUN_ID: ${{ inputs.windows_core_numpy_run_id }}
+      WINDOWS_FENICS_RUN_ID: ${{ inputs.windows_fenics_run_id }}
+      MACOS_CORE_NUMPY_RUN_ID: ${{ inputs.macos_core_numpy_run_id }}
+      MACOS_FENICS_RUN_ID: ${{ inputs.macos_fenics_run_id }}
+      LINUX_CORE_NUMPY_RUN_ID: ${{ inputs.linux_core_numpy_run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Validate producer repository
+        run: python scripts/common/validate_repo.py
+
+      - name: Download qualified producer artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p incoming
+
+          producer_revision=""
+          download_run() {
+            local expected_workflow="$1"
+            local run_id="$2"
+            local metadata conclusion workflow_name head_sha run_dir
+
+            metadata="$(gh run view "$run_id" --json conclusion,workflowName,headSha,databaseId,event)"
+            conclusion="$(jq -r '.conclusion' <<<"$metadata")"
+            workflow_name="$(jq -r '.workflowName' <<<"$metadata")"
+            head_sha="$(jq -r '.headSha' <<<"$metadata")"
+
+            [[ "$conclusion" == "success" ]] || {
+              echo "qualification run $run_id is not successful: $conclusion" >&2
+              exit 1
+            }
+            [[ "$workflow_name" == "$expected_workflow" ]] || {
+              echo "qualification run $run_id is $workflow_name, expected $expected_workflow" >&2
+              exit 1
+            }
+            [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "qualification run $run_id has invalid head SHA: $head_sha" >&2
+              exit 1
+            }
+            if [[ -z "$producer_revision" ]]; then
+              producer_revision="$head_sha"
+            elif [[ "$producer_revision" != "$head_sha" ]]; then
+              echo "qualification runs span producer revisions: $producer_revision != $head_sha" >&2
+              exit 1
+            fi
+
+            mkdir -p "incoming/$run_id"
+            run_dir="incoming/$run_id"
+            printf '%s\n' "$metadata" > "$run_dir/run-metadata.json"
+            gh run download "$run_id" --dir "incoming/$run_id"
+          }
+
+          download_run "qualify-windows-core-numpy" "$WINDOWS_CORE_NUMPY_RUN_ID"
+          download_run "qualify-windows-fenics" "$WINDOWS_FENICS_RUN_ID"
+          download_run "qualify-macos-core-numpy" "$MACOS_CORE_NUMPY_RUN_ID"
+          download_run "qualify-macos-fenics" "$MACOS_FENICS_RUN_ID"
+          download_run "qualify-linux-core-numpy" "$LINUX_CORE_NUMPY_RUN_ID"
+          echo "PRODUCER_REVISION=$producer_revision" >> "$GITHUB_ENV"
+
+      - name: Verify and collect release inputs
+        run: python scripts/common/prepare_prerelease.py --input incoming --output release-assets --tag "$RELEASE_TAG"
+
+      - name: Publish GitHub pre-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --prerelease \
+            --target "$PRODUCER_REVISION" \
+            --title "$RELEASE_TAG" \
+            --notes "Qualified public runtime producer artifacts. This is not a downstream application release."

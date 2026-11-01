@@ -1,0 +1,108 @@
+name: qualify-windows-core-numpy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/qualify-windows-core-numpy.yml"
+      - "scripts/windows/stage-runtime.ps1"
+      - "scripts/windows/test-runtime.ps1"
+      - "scripts/common/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/02-core-numpy-profiles.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/qualify-windows-core-numpy.yml"
+      - "scripts/windows/stage-runtime.ps1"
+      - "scripts/windows/test-runtime.ps1"
+      - "scripts/common/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/02-core-numpy-profiles.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-core-numpy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12.10"
+          architecture: x64
+
+      - name: Capture exact CPython
+        shell: pwsh
+        run: |
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          "PRODUCER_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $python -I -S -c "import platform,struct; assert platform.python_version() == '3.12.10'; assert 8*struct.calcsize('P') == 64"
+
+      - name: Fetch and verify pinned NumPy wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $input = Join-Path $env:RUNNER_TEMP "numpy-wheel"
+          New-Item -ItemType Directory -Force -Path $input | Out-Null
+          & $env:PRODUCER_PYTHON -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
+          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
+          $wheel = Join-Path $input "numpy-2.5.2-cp312-cp312-win_amd64.whl"
+          if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned Windows NumPy wheel is missing" }
+          $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne "28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4") {
+            throw "Pinned Windows NumPy wheel SHA-256 mismatch: $sha"
+          }
+          "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Stage core and NumPy runtimes
+        shell: pwsh
+        run: |
+          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -Output .\out\win-x64\core
+          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy
+
+      - name: Qualify relocated runtimes with hostile ambient state
+        shell: pwsh
+        run: |
+          foreach ($profile in @("core","numpy")) {
+            $source = Resolve-Path ".\out\win-x64\$profile"
+            $relocated = Join-Path $env:RUNNER_TEMP "qualified runtime with spaces $profile"
+            Remove-Item -LiteralPath $relocated -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath $source -Destination $relocated -Recurse
+            .\scripts\windows\test-runtime.ps1 -Runtime $relocated -RuntimeProfile $profile
+          }
+
+      - name: Package deterministic producer runtimes
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          python scripts/common/archive_runtime.py --root out/win-x64/core --output dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --format zip
+          python scripts/common/archive_runtime.py --root out/win-x64/numpy --output dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --format zip
+          foreach ($profile in @("core","numpy")) {
+            $archive = "dist/python-runtime-v0.1.0-win-x64-cp312-$profile.zip"
+            $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath "$archive.sha256" -Value "$sha  $([IO.Path]::GetFileName($archive))" -Encoding utf8NoBOM
+          }
+          python scripts/common/write_qualification.py --platform win-x64 --profile core --artifact dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --output dist/qualification-win-x64-core.json --check isolated_cpython=pass --check tkinter=pass --check numpy_absent=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+          python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_contract=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+
+      - name: Upload qualified producer runtimes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-runtime-win-x64-cp312
+          path: |
+            dist/
+            out/win-x64/core/runtime-manifest.json
+            out/win-x64/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 30

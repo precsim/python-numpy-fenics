@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/precsim/python-numpy-fenics/contracts/qualification-v1.schema.json",
+  "title": "Runtime qualification evidence v1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "producer_repository",
+    "producer_revision",
+    "workflow_run_id",
+    "platform",
+    "profile",
+    "artifact",
+    "artifact_sha256",
+    "checks"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "producer_repository": {
+      "const": "precsim/python-numpy-fenics"
+    },
+    "producer_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workflow_run_id": {
+      "type": ["string", "null"]
+    },
+    "platform": {
+      "enum": ["win-x64", "linux-x64", "macos-arm64", "macos-x64"]
+    },
+    "profile": {
+      "enum": ["core", "numpy", "fenics"]
+    },
+    "artifact": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["pass", "fail", "not-applicable"]
+      }
+    }
+  },
+  "additionalProperties": true
+}
