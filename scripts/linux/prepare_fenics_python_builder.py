@@ -544,7 +544,7 @@ def validate_builder_python(python: Path, site_packages: Path, expected_modules:
         observed = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise BuilderInputError(f"prepared Python builder returned invalid validation JSON: {result.stdout!r}") from exc
-    if observed.get("version") != [3, 12, 10] or observed.get("modules") != expected_modules:
+    if observed.get("version") != [3, 14, 10] or observed.get("modules") != expected_modules:
         raise BuilderInputError(f"prepared Python builder identity mismatch: {observed!r}")
     return observed
 

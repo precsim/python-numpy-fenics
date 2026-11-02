@@ -7,6 +7,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 from scripts.linux.prepare_fenics_python_builder import (
@@ -19,6 +20,7 @@ from scripts.linux.prepare_fenics_python_builder import (
     safe_extract_wheels,
     tree_evidence,
     validate_base_runtime,
+    validate_builder_python,
     validate_lock,
 )
 
@@ -73,6 +75,27 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
         self.assertEqual(active_dependency_names(requirements), ("packaging", "pathspec"))
         with self.assertRaisesRegex(BuilderInputError, "unsupported Python 3.14 dependency marker"):
             active_dependency_names(['mystery>=1; sys_platform == "linux"'])
+
+    def test_builder_python_identity_requires_cp314_patch_baseline(self) -> None:
+        expected_modules = {"pip": "25.3"}
+        completed = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"version": [3, 14, 10], "modules": expected_modules}),
+        )
+        with mock.patch(
+            "scripts.linux.prepare_fenics_python_builder.subprocess.run",
+            return_value=completed,
+        ):
+            observed = validate_builder_python(Path("python3.14"), Path("site-packages"), expected_modules)
+        self.assertEqual(observed["version"], [3, 14, 10])
+
+        completed.stdout = json.dumps({"version": [3, 12, 10], "modules": expected_modules})
+        with mock.patch(
+            "scripts.linux.prepare_fenics_python_builder.subprocess.run",
+            return_value=completed,
+        ):
+            with self.assertRaisesRegex(BuilderInputError, "identity mismatch"):
+                validate_builder_python(Path("python3.14"), Path("site-packages"), expected_modules)
 
     def test_wheel_metadata_cannot_expand_the_locked_dependency_closure(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
