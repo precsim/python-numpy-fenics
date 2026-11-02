@@ -252,6 +252,7 @@ def activate() -> Path:
 
     os.environ["PETSC_DIR"] = str(private_prefix)
     os.environ["PETSC_ARCH"] = ""
+    os.environ["SLEPC_DIR"] = str(private_prefix)
     os.environ["CC"] = str(wrapper)
     os.environ["CXX"] = str(wrapper)
     os.environ["CPP"] = f"{shlex.quote(str(wrapper))} -E"
@@ -278,6 +279,27 @@ def activate() -> Path:
 
         relocated_get_config._fenics_embed_runtime = True
         petsc4py.get_config = relocated_get_config
+
+    import slepc4py
+
+    current_slepc_get_config = slepc4py.get_config
+    if not getattr(current_slepc_get_config, "_fenics_embed_runtime", False):
+
+        def relocated_slepc_get_config(
+            _get_config=current_slepc_get_config, _private_root=str(private_prefix)
+        ):
+            config = dict(_get_config())
+            config.update(
+                {
+                    "SLEPC_DIR": _private_root,
+                    "PETSC_DIR": _private_root,
+                    "PETSC_ARCH": "",
+                }
+            )
+            return config
+
+        relocated_slepc_get_config._fenics_embed_runtime = True
+        slepc4py.get_config = relocated_slepc_get_config
 
     _ACTIVATED_ROOT = root
     return root

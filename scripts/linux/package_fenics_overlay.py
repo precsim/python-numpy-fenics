@@ -58,6 +58,7 @@ NUMPY_PREFIXES = (
 )
 GCC_SPECS_RELATIVE = PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs")
 GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
+RUNTIME_PREFIX_TOKEN = "@FENICS_RUNTIME_PREFIX@"
 REQUIRED_SYMBOL_CEILINGS = {
     "GLIBC": (2, 17),
     "GLIBCXX": (3, 4, 19),
@@ -72,6 +73,7 @@ PROTECTED_JIT_BIN_PATHS = {
     "bin/x86_64-conda-linux-gnu-as",
     "bin/x86_64-conda-linux-gnu-ar",
     "bin/x86_64-conda-linux-gnu-ranlib",
+    "bin/x86_64-conda-linux-gnu.cfg",
     "bin/gcc",
     "bin/cc",
 }
@@ -99,6 +101,10 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -479,27 +485,325 @@ def find_cache_record(package_cache: Path, record: dict[str, Any]) -> Path | Non
             if part not in {"", "/"}:
                 hierarchy /= part
         candidates.append(hierarchy / dist)
-    candidates.extend(path.parent.parent for path in package_cache.rglob("info/index.json"))
     seen: set[Path] = set()
-    for candidate in candidates:
+
+    def matching(candidate: Path) -> Path | None:
         try:
             candidate = candidate.resolve()
         except OSError:
-            continue
+            return None
         if candidate in seen:
-            continue
+            return None
         seen.add(candidate)
         index = candidate / "info" / "index.json"
         if not index.is_file():
-            continue
+            return None
         try:
             meta = read_json(index)
         except Exception:
-            continue
+            return None
         actual = (str(meta.get("name")), str(meta.get("version")), str(meta.get("build")))
         if actual == identity:
             return candidate
+        return None
+
+    for candidate in candidates:
+        match = matching(candidate)
+        if match is not None:
+            return match
+    for index in package_cache.rglob("info/index.json"):
+        match = matching(index.parent.parent)
+        if match is not None:
+            return match
     return None
+
+
+def cache_path_to_installed_path(cache_relative: PurePosixPath, link_metadata: dict[str, Any]) -> PurePosixPath:
+    noarch = link_metadata.get("noarch")
+    if not isinstance(noarch, dict) or noarch.get("type") != "python":
+        return cache_relative
+    text = cache_relative.as_posix()
+    if text.startswith("site-packages/"):
+        return safe_relative("lib/python3.12/site-packages/" + text.removeprefix("site-packages/"))
+    if text.startswith("python-scripts/"):
+        return safe_relative("bin/" + text.removeprefix("python-scripts/"))
+    return cache_relative
+
+
+def package_cache_prefix_entries(
+    package_cache: Path, record: dict[str, Any]
+) -> list[dict[str, Any]]:
+    name = str(record["name"])
+    cache_record = find_cache_record(package_cache, record)
+    if cache_record is None:
+        raise SystemExit(f"package cache is missing retained package metadata: {name}")
+    paths_path = cache_record / "info" / "paths.json"
+    if not paths_path.is_file():
+        raise SystemExit(f"package cache is missing paths.json metadata: {name}: {paths_path}")
+    paths_metadata = read_json(paths_path)
+    raw_paths = paths_metadata.get("paths")
+    if paths_metadata.get("paths_version") != 1 or not isinstance(raw_paths, list):
+        raise SystemExit(f"unsupported package paths.json metadata: {name}: {paths_path}")
+    link_path = cache_record / "info" / "link.json"
+    link_metadata = read_json(link_path) if link_path.is_file() else {}
+    if not isinstance(link_metadata, dict):
+        raise SystemExit(f"invalid package link.json metadata: {name}: {link_path}")
+
+    installed_by_path = {
+        item["relative"].as_posix(): item for item in package_owned_paths(record)
+    }
+    mapped_paths: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in raw_paths:
+        if not isinstance(item, dict) or not item.get("_path"):
+            raise SystemExit(f"invalid package paths.json entry: {name}: {item!r}")
+        cache_relative = safe_relative(str(item["_path"]))
+        installed_relative = cache_path_to_installed_path(cache_relative, link_metadata)
+        installed_text = installed_relative.as_posix()
+        if installed_text in mapped_paths:
+            raise SystemExit(
+                f"package cache paths map ambiguously after noarch relocation: {name}: {installed_text}"
+            )
+        mapped_paths.add(installed_text)
+
+        placeholder = item.get("prefix_placeholder")
+        file_mode = item.get("file_mode")
+        if placeholder is None and file_mode is None:
+            continue
+        if not isinstance(placeholder, str) or not placeholder or file_mode not in {"text", "binary"}:
+            raise SystemExit(
+                f"invalid prefix replacement metadata: {name}: {cache_relative}: "
+                f"placeholder={placeholder!r} mode={file_mode!r}"
+            )
+        if "\x00" in placeholder:
+            raise SystemExit(f"prefix placeholder contains NUL: {name}: {cache_relative}")
+        if item.get("path_type") != "hardlink":
+            raise SystemExit(
+                f"prefix-rewritten cache payload is not a hardlink file: {name}: {cache_relative}: "
+                f"{item.get('path_type')!r}"
+            )
+        installed = installed_by_path.get(installed_text)
+        if installed is None:
+            raise SystemExit(
+                f"prefix-rewritten cache payload has no installed package ownership: {name}: "
+                f"{cache_relative} -> {installed_text}"
+            )
+        if installed.get("path_type") != "hardlink":
+            raise SystemExit(
+                f"prefix-rewritten installed payload is not a hardlink file: {name}: {installed_text}: "
+                f"{installed.get('path_type')!r}"
+            )
+        cache_sha = str(item.get("sha256") or "").lower()
+        installed_source_sha = str(installed.get("sha256") or "").lower()
+        installed_prefix_sha = str(installed.get("sha256_in_prefix") or "").lower()
+        for label, value in (
+            ("cache sha256", cache_sha),
+            ("installed source sha256", installed_source_sha),
+            ("installed sha256_in_prefix", installed_prefix_sha),
+        ):
+            if not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise SystemExit(
+                    f"prefix-rewritten payload has invalid {label}: {name}: {installed_text}: {value!r}"
+                )
+        if cache_sha != installed_source_sha:
+            raise SystemExit(
+                f"cache and installed source hashes differ for prefix-rewritten payload: {name}: "
+                f"{installed_text}: {cache_sha} != {installed_source_sha}"
+            )
+        result.append(
+            {
+                "package": name,
+                "cache_record": cache_record,
+                "cache_relative": cache_relative,
+                "installed_relative": installed_relative,
+                "file_mode": file_mode,
+                "prefix_placeholder": placeholder,
+                "cache_sha256": cache_sha,
+                "installed_sha256_in_prefix": installed_prefix_sha,
+            }
+        )
+    return result
+
+
+def replace_conda_prefix(
+    data: bytes, placeholder: bytes, replacement: bytes, file_mode: str
+) -> tuple[bytes, int]:
+    if not placeholder or b"\x00" in placeholder or b"\x00" in replacement:
+        raise SystemExit("conda prefix replacement requires nonempty NUL-free byte strings")
+    if file_mode == "text":
+        count = data.count(placeholder)
+        return data.replace(placeholder, replacement), count
+    if file_mode != "binary":
+        raise SystemExit(f"unsupported conda prefix replacement mode: {file_mode!r}")
+    if len(replacement) > len(placeholder):
+        raise SystemExit(
+            f"binary conda prefix replacement is longer than its placeholder: "
+            f"{len(replacement)} > {len(placeholder)}"
+        )
+
+    count = 0
+    rewritten = bytearray()
+    start = 0
+    while True:
+        end = data.find(b"\x00", start)
+        terminated = end >= 0
+        if not terminated:
+            end = len(data)
+        segment = data[start:end]
+        occurrences = segment.count(placeholder)
+        if occurrences:
+            replaced = segment.replace(placeholder, replacement)
+            if len(replaced) > len(segment):
+                raise SystemExit("binary conda prefix replacement expanded a fixed-width string")
+            rewritten.extend(replaced)
+            rewritten.extend(b"\x00" * (len(segment) - len(replaced)))
+            count += occurrences
+        else:
+            rewritten.extend(segment)
+        if not terminated:
+            break
+        rewritten.append(0)
+        start = end + 1
+    if len(rewritten) != len(data):
+        raise SystemExit("binary conda prefix replacement changed payload size")
+    return bytes(rewritten), count
+
+
+def relocate_verified_prefix_file(
+    stage_root: Path,
+    private_prefix: Path,
+    source_prefix: Path,
+    metadata: dict[str, Any],
+    replacement_token: str,
+) -> dict[str, Any]:
+    name = str(metadata["package"])
+    installed_relative: PurePosixPath = metadata["installed_relative"]
+    cache_relative: PurePosixPath = metadata["cache_relative"]
+    cache_record: Path = metadata["cache_record"]
+    file_mode = str(metadata["file_mode"])
+    placeholder = str(metadata["prefix_placeholder"]).encode("utf-8")
+    replacement = replacement_token.encode("ascii")
+    source_replacement = str(source_prefix).encode("utf-8")
+    cache_payload = cache_record / Path(*cache_relative.parts)
+    if not cache_payload.is_file() or cache_payload.is_symlink():
+        raise SystemExit(f"prefix-rewritten cache payload is missing or not regular: {name}: {cache_payload}")
+    cache_sha = sha256_file(cache_payload)
+    if cache_sha != metadata["cache_sha256"]:
+        raise SystemExit(
+            f"prefix-rewritten cache payload hash mismatch: {name}: {cache_relative}: "
+            f"{cache_sha} != {metadata['cache_sha256']}"
+        )
+
+    source = source_prefix / Path(*installed_relative.parts)
+    if not source.is_file() or source.is_symlink():
+        raise SystemExit(f"installed prefix-rewritten payload is missing or not regular: {name}: {source}")
+    source_sha = sha256_file(source)
+    if source_sha != metadata["installed_sha256_in_prefix"]:
+        raise SystemExit(
+            f"installed prefix-rewritten payload hash mismatch: {name}: {installed_relative}: "
+            f"{source_sha} != {metadata['installed_sha256_in_prefix']}"
+        )
+
+    raw = cache_payload.read_bytes()
+    reproduced, source_occurrences = replace_conda_prefix(raw, placeholder, source_replacement, file_mode)
+    if source_occurrences == 0:
+        raise SystemExit(
+            f"declared prefix placeholder does not occur in cache payload: {name}: {cache_relative}"
+        )
+    reproduced_sha = sha256_bytes(reproduced)
+    if reproduced_sha != metadata["installed_sha256_in_prefix"]:
+        raise SystemExit(
+            f"cache metadata cannot reproduce installed prefix bytes: {name}: {installed_relative}: "
+            f"{reproduced_sha} != {metadata['installed_sha256_in_prefix']}"
+        )
+
+    destination = private_prefix / Path(*installed_relative.parts)
+    if not destination.is_file() or destination.is_symlink():
+        raise SystemExit(f"staged prefix-rewritten payload is missing or not regular: {name}: {destination}")
+    staged_before_sha = sha256_file(destination)
+    if staged_before_sha != metadata["installed_sha256_in_prefix"]:
+        raise SystemExit(
+            f"staged payload changed before prefix relocation: {name}: {installed_relative}: "
+            f"{staged_before_sha} != {metadata['installed_sha256_in_prefix']}"
+        )
+    relocated, relocated_occurrences = replace_conda_prefix(raw, placeholder, replacement, file_mode)
+    if relocated_occurrences != source_occurrences:
+        raise SystemExit(
+            f"prefix relocation occurrence count changed: {name}: {installed_relative}: "
+            f"{relocated_occurrences} != {source_occurrences}"
+        )
+    mode = stat.S_IMODE(destination.stat().st_mode)
+    destination.write_bytes(relocated)
+    destination.chmod(mode)
+    return {
+        "package": name,
+        "path": destination.relative_to(stage_root).as_posix(),
+        "cache_path": cache_relative.as_posix(),
+        "mode": file_mode,
+        "replacement": replacement_token,
+        "occurrences": relocated_occurrences,
+        "placeholder_bytes": len(placeholder),
+        "cache_sha256": metadata["cache_sha256"],
+        "installed_sha256_in_prefix": metadata["installed_sha256_in_prefix"],
+        "prefix_relocated_sha256": sha256_bytes(relocated),
+    }
+
+
+def relocate_metadata_prefixes(
+    stage_root: Path,
+    private_prefix: Path,
+    source_prefix: Path,
+    package_cache: Path,
+    records: dict[str, dict[str, Any]],
+    retained_packages: list[str],
+    owners: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for name in retained_packages:
+        for metadata in package_cache_prefix_entries(package_cache, records[name]):
+            installed_relative: PurePosixPath = metadata["installed_relative"]
+            if installed_relative == GCC_SPECS_RELATIVE and name == "conda-gcc-specs":
+                continue
+            staged = private_prefix / Path(*installed_relative.parts)
+            staged_rel = staged.relative_to(stage_root).as_posix()
+            if name not in owners.get(staged_rel, []):
+                if path_exclusion_reason(installed_relative) is not None:
+                    continue
+                raise SystemExit(
+                    f"prefix-rewritten retained path has no staged ownership: {name}: {installed_relative}"
+                )
+            private_rel = installed_relative.as_posix()
+            if private_rel.startswith("bin/") and not protected_jit_bin_path(private_rel) and not is_elf(staged):
+                continue
+            evidence.append(
+                relocate_verified_prefix_file(
+                    stage_root,
+                    private_prefix,
+                    source_prefix,
+                    metadata,
+                    RUNTIME_PREFIX_TOKEN,
+                )
+            )
+    return evidence
+
+
+def finalize_prefix_relocation_evidence(
+    stage_root: Path, entries: list[dict[str, Any]]
+) -> dict[str, Any]:
+    finalized = []
+    for entry in sorted(entries, key=lambda item: (str(item["path"]), str(item["package"]))):
+        path = stage_root / Path(*PurePosixPath(str(entry["path"])).parts)
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit(f"prefix-relocated staged payload disappeared: {entry['path']}")
+        finalized.append(dict(entry) | {"final_sha256": sha256_file(path)})
+    return {
+        "format_version": 1,
+        "generic_marker": RUNTIME_PREFIX_TOKEN,
+        "entry_count": len(finalized),
+        "text_entry_count": sum(item["mode"] == "text" for item in finalized),
+        "binary_entry_count": sum(item["mode"] == "binary" for item in finalized),
+        "entries": finalized,
+    }
 
 
 def collect_licenses(
@@ -889,6 +1193,7 @@ def drop_prefix_bound_bin_scripts(
 def relocate_conda_gcc_specs(
     private_prefix: Path,
     source_prefix: Path,
+    package_cache: Path,
     record: dict[str, Any],
     owners: dict[str, list[str]],
     stage_root: Path,
@@ -899,30 +1204,26 @@ def relocate_conda_gcc_specs(
     rel = specs.relative_to(stage_root).as_posix()
     if "conda-gcc-specs" not in owners.get(rel, []):
         raise SystemExit(f"GCC specs template is not owned by conda-gcc-specs: {rel}")
-    entry = next(
-        (item for item in package_owned_paths(record) if item["relative"] == GCC_SPECS_RELATIVE),
-        None,
+    matches = [
+        metadata
+        for metadata in package_cache_prefix_entries(package_cache, record)
+        if metadata["installed_relative"] == GCC_SPECS_RELATIVE
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"conda-gcc-specs cache metadata does not identify exactly one conda.specs template: {len(matches)}"
+        )
+    relocation = relocate_verified_prefix_file(
+        stage_root,
+        private_prefix,
+        source_prefix,
+        matches[0],
+        GCC_SPECS_PREFIX_TOKEN,
     )
-    if entry is None:
-        raise SystemExit("conda-gcc-specs metadata does not own the expected conda.specs path")
-    text = specs.read_text(encoding="utf-8")
-    replacements = 0
-    candidates = [str(source_prefix), str(entry.get("prefix_placeholder") or "")]
-    for candidate in candidates:
-        if not candidate or candidate == GCC_SPECS_PREFIX_TOKEN:
-            continue
-        count = text.count(candidate)
-        if count:
-            text = text.replace(candidate, GCC_SPECS_PREFIX_TOKEN)
-            replacements += count
-    if replacements == 0 and GCC_SPECS_PREFIX_TOKEN not in text:
-        raise SystemExit("conda-gcc-specs template has no relocatable prefix marker to rewrite")
-    specs.write_text(text, encoding="utf-8", newline="\n")
-    return {
-        "path": rel,
+    return relocation | {
         "sha256": sha256_file(specs),
         "prefix_token": GCC_SPECS_PREFIX_TOKEN,
-        "prefix_replacement_count": replacements,
+        "prefix_replacement_count": relocation["occurrences"],
         "runtime_policy": (
             "retained relocation template; fresh-JIT wrapper supplies equivalent private include/lib/sysroot "
             "search explicitly and omits the template's absolute runtime rpath"
@@ -1130,6 +1431,7 @@ def main() -> int:
             "bin/x86_64-conda-linux-gnu-as": "binutils_impl_linux-64",
             "bin/x86_64-conda-linux-gnu-ar": "binutils_impl_linux-64",
             "bin/x86_64-conda-linux-gnu-ranlib": "binutils_impl_linux-64",
+            "bin/x86_64-conda-linux-gnu.cfg": "sysroot_linux-64",
             GCC_SPECS_RELATIVE.as_posix(): "conda-gcc-specs",
         }
         for private_rel, expected_owner in required_jit_owners.items():
@@ -1140,18 +1442,30 @@ def main() -> int:
                     f"expected {expected_owner}, got {owners.get(staged_rel)}"
                 )
 
+        prefix_relocation_entries = relocate_metadata_prefixes(
+            stage_root,
+            private_prefix,
+            prefix,
+            package_cache,
+            records,
+            retained_packages,
+            owners,
+        )
         gcc_specs = relocate_conda_gcc_specs(
             private_prefix,
             prefix,
+            package_cache,
             records["conda-gcc-specs"],
             owners,
             stage_root,
         )
+        prefix_relocation_entries.append(gcc_specs)
 
         drop_prefix_bound_bin_scripts(stage_root, private_prefix, prefix, owners, excluded_owned_paths)
         set_relative_runpaths(stage_root, private_prefix)
         verify_symlink_closure(stage_root)
         reject_absolute_prefix_references(stage_root, [prefix, stage_root])
+        prefix_relocation = finalize_prefix_relocation_evidence(stage_root, prefix_relocation_entries)
 
         census = audit_elf(stage_root, private_prefix, base_info["provenance"], owners)
         provenance_root = stage_root / "fenics-runtime" / "provenance"
@@ -1181,6 +1495,7 @@ def main() -> int:
             "external_prefix_verification_sha256": sha256_file(evidence_path),
             "packages": package_summary,
             "excluded_owned_paths": excluded_owned_paths,
+            "prefix_relocation": prefix_relocation,
         }
         package_provenance_path = provenance_root / "package-provenance.json"
         package_provenance_path.write_text(

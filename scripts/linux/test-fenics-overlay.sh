@@ -310,6 +310,47 @@ for path, key in (
 package_provenance = json.loads(package_provenance_path.read_text(encoding="utf-8"))
 if package_provenance.get("solver_used_by_packager") is not False or package_provenance.get("source_rebuilds") != []:
     raise SystemExit("overlay provenance indicates solver use or source rebuilding")
+relocation = package_provenance.get("prefix_relocation", {})
+entries = relocation.get("entries")
+if (
+    relocation.get("format_version") != 1
+    or relocation.get("generic_marker") != "@FENICS_RUNTIME_PREFIX@"
+    or relocation.get("entry_count") != 396
+    or relocation.get("text_entry_count") != 173
+    or relocation.get("binary_entry_count") != 223
+    or not isinstance(entries, list)
+    or len(entries) != relocation.get("entry_count")
+):
+    raise SystemExit(f"invalid metadata-driven prefix relocation evidence: {relocation!r}")
+by_path = {entry.get("path"): entry for entry in entries if isinstance(entry, dict)}
+if len(by_path) != len(entries):
+    raise SystemExit("prefix relocation provenance contains duplicate or invalid paths")
+required_relocations = {
+    "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
+    "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
+    "fenics-runtime/conda/lib/python3.12/site-packages/dolfinx/cpp.abi3.so": ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@"),
+    "fenics-runtime/conda/lib/python3.12/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
+}
+for relative, expected in required_relocations.items():
+    entry = by_path.get(relative)
+    actual = None if entry is None else (entry.get("package"), entry.get("mode"), entry.get("replacement"))
+    if actual != expected:
+        raise SystemExit(f"required prefix relocation evidence mismatch: {relative}: {actual!r} != {expected!r}")
+for relative, entry in by_path.items():
+    path = root / relative
+    if not path.is_file() or sha(path) != entry.get("final_sha256"):
+        raise SystemExit(f"prefix relocation final hash mismatch: {relative}")
+    if not entry.get("occurrences") or not entry.get("placeholder_bytes"):
+        raise SystemExit(f"prefix relocation evidence is incomplete: {relative}: {entry!r}")
+    for key in ("cache_sha256", "installed_sha256_in_prefix", "prefix_relocated_sha256", "final_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get(key, ""))):
+            raise SystemExit(f"prefix relocation evidence has invalid {key}: {relative}: {entry!r}")
+cfg = root / "fenics-runtime" / "conda" / "bin" / "x86_64-conda-linux-gnu.cfg"
+expected_cfg = "--sysroot=@FENICS_RUNTIME_PREFIX@/x86_64-conda-linux-gnu/sysroot"
+if not cfg.is_file() or cfg.read_text(encoding="utf-8").strip() != expected_cfg:
+    raise SystemExit(f"protected JIT target config was not metadata-relocated: {cfg}")
+if (root / "fenics-runtime" / "conda" / "bin" / "ffcx").exists():
+    raise SystemExit("generated producer-prefix-bound ffcx command script was retained")
 excluded = set(manifest.get("producer", {}).get("excluded_packages", []))
 for entry in manifest.get("files", []):
     if excluded.intersection(entry.get("owners", [])):
@@ -417,6 +458,7 @@ import basix
 import dolfinx
 import ffcx
 import petsc4py
+import slepc4py
 import ufl
 from dolfinx import mesh
 from mpi4py import MPI
@@ -431,6 +473,7 @@ expected_versions = {
     "ffcx": (ffcx.__version__, "0.11.0"),
     "ufl": (ufl.__version__, "2026.1.0"),
     "petsc4py": (petsc4py.__version__, "3.25.6"),
+    "slepc4py": (slepc4py.__version__, "3.25.2"),
 }
 for name, (actual, expected) in expected_versions.items():
     if actual != expected:
@@ -441,13 +484,22 @@ if not numpy.allclose(numpy.linalg.solve(matrix, rhs), numpy.array([2.0, 3.0])):
     raise SystemExit("public NumPy base numerical probe failed after FEniCS activation")
 if root not in Path(numpy.__file__).resolve().parents or private in Path(numpy.__file__).resolve().parents:
     raise SystemExit(f"NumPy escaped the public base runtime: {numpy.__file__}")
-for package in (dolfinx, basix, ffcx, ufl, petsc4py):
+for package in (dolfinx, basix, ffcx, ufl, petsc4py, slepc4py):
     if private not in Path(package.__file__).resolve().parents:
         raise SystemExit(f"private FEniCS package escaped overlay: {package.__name__}: {package.__file__}")
 if Path(os.environ["PETSC_DIR"]).resolve() != private or os.environ.get("PETSC_ARCH") != "":
     raise SystemExit("PETSc environment was not relocated to private prefix")
 if Path(petsc4py.get_config()["PETSC_DIR"]).resolve() != private:
     raise SystemExit("petsc4py.get_config did not follow relocated PETSC_DIR")
+if Path(os.environ["SLEPC_DIR"]).resolve() != private:
+    raise SystemExit("SLEPc environment was not relocated to private prefix")
+slepc_config = slepc4py.get_config()
+if (
+    Path(slepc_config["SLEPC_DIR"]).resolve() != private
+    or Path(slepc_config["PETSC_DIR"]).resolve() != private
+    or slepc_config.get("PETSC_ARCH") != ""
+):
+    raise SystemExit(f"slepc4py.get_config did not follow relocated private prefix: {slepc_config!r}")
 
 cc = Path(os.environ["CC"])
 if not cc.is_file() or "hostile ambient state" in str(cc):
