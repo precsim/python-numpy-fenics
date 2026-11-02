@@ -90,6 +90,9 @@ ABI_CEILINGS = {
 HANDOFF_FORMAT_VERSION = 1
 HANDOFF_KIND = "linux-fenics-native-rebuild-handoff"
 HANDOFF_STATUS = "candidate-unqualified"
+CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION = 1
+CANDIDATE_BUILD_HANDOFF_KIND = "linux-fenics-native-build-candidate-handoff"
+CANDIDATE_BUILD_HANDOFF_STATUS = "candidate-built-unqualified"
 HANDOFF_OMISSION_PACKAGES = ("kahip", "libadios2", "zeromq")
 HANDOFF_PROVIDER_OWNER = "python-numpy-fenics-native-provider"
 REBUILD_COMPONENT_OWNERS = {
@@ -1189,6 +1192,387 @@ def collect_install_owners(roots: dict[str, Path]) -> dict[str, str]:
     return owners
 
 
+def collect_candidate_replacements(
+    roots: dict[str, Path], locked_prefix: Path, wheels: list[Path]
+) -> dict[str, dict]:
+    """Collect exact candidate bytes that are eligible for package handoff."""
+
+    installed = installed_package_records(locked_prefix)
+    expected_owners = set(REBUILD_COMPONENT_OWNERS.values()) | set(WHEEL_OWNERS.values())
+    owned_by_package = {
+        name: installed_owned_paths(installed[name])
+        for name in expected_owners
+        if name in installed
+    }
+    if set(owned_by_package) != expected_owners:
+        missing = sorted(expected_owners - set(owned_by_package))
+        raise InputError(f"locked prefix is missing rebuilt package ownership metadata: {missing}")
+    install_owners = collect_install_owners(roots)
+    replacements: dict[str, dict] = {}
+
+    def add_candidate(destination_relative: PurePosixPath, owner: str, data: bytes, mode: int) -> None:
+        text = destination_relative.as_posix()
+        if text in replacements:
+            raise InputError(f"native rebuild handoff has duplicate replacement destination: {text}")
+        if owner == HANDOFF_PROVIDER_OWNER:
+            if text != "lib/libfenics_cxxrt.so.1":
+                raise InputError(f"private provider has unexpected handoff destination: {text}")
+            replaces_sha = None
+        else:
+            if owner not in owned_by_package or text not in owned_by_package[owner]:
+                raise InputError(f"candidate replacement is not owned by locked package {owner}: {text}")
+            stock = locked_prefix / Path(*destination_relative.parts)
+            if not stock.is_file() or stock.is_symlink():
+                raise InputError(f"candidate replacement stock destination is not a regular file: {owner}: {text}")
+            replaces_sha = sha256(stock)
+        replacements[text] = {
+            "destination": text,
+            "owner": owner,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+            "mode": mode & 0o777,
+            "replaces_sha256": replaces_sha,
+            "data": data,
+        }
+
+    for raw_relative, owner in sorted(install_owners.items()):
+        relative = safe_handoff_relative(raw_relative, "candidate install destination")
+        source = roots["prefix"] / Path(*relative.parts)
+        if source.is_symlink():
+            stock = locked_prefix / Path(*relative.parts)
+            if owner != HANDOFF_PROVIDER_OWNER and stock.is_symlink():
+                continue
+            raise InputError(f"candidate handoff does not accept symlink replacements: {relative}")
+        if not source.is_file():
+            raise InputError(f"candidate install manifest path is not a regular file: {relative}")
+        if owner != HANDOFF_PROVIDER_OWNER and not handoff_runtime_prefix_path(relative):
+            if ignored_build_install_path(relative):
+                continue
+            raise InputError(f"candidate install path is outside the runtime handoff boundary: {relative}")
+        add_candidate(relative, owner, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
+
+    for wheel in sorted(wheels, key=lambda path: path.name):
+        wheel_owner = next((owner for stem, owner in WHEEL_OWNERS.items() if wheel.name.startswith(stem + "-")), None)
+        if wheel_owner is None:
+            raise InputError(f"candidate wheel has no fixed handoff owner: {wheel.name}")
+        with zipfile.ZipFile(wheel) as bundle:
+            for info in sorted(bundle.infolist(), key=lambda item: item.filename):
+                if info.is_dir():
+                    continue
+                member = safe_handoff_relative(info.filename, f"wheel member in {wheel.name}")
+                zip_mode = (info.external_attr >> 16) & 0o177777
+                if stat.S_ISLNK(zip_mode):
+                    raise InputError(f"candidate wheel contains a symlink: {wheel.name}: {member}")
+                destination_relative = PurePosixPath("lib/python3.12/site-packages") / member
+                mode = zip_mode & 0o777 or 0o644
+                add_candidate(destination_relative, wheel_owner, bundle.read(info), mode)
+
+    if not replacements:
+        raise InputError("native rebuild produced no package handoff replacements")
+    return replacements
+
+
+def regular_file_identity(path: Path, label: str) -> dict:
+    if not path.is_file() or path.is_symlink():
+        raise InputError(f"{label} is missing or is not a regular file: {path}")
+    return {"path": str(path.resolve()), "sha256": sha256(path)}
+
+
+def write_candidate_build_handoff(
+    destination: Path,
+    *,
+    roots: dict[str, Path],
+    locked_prefix: Path,
+    package_lock: Path,
+    prefix_verification: dict,
+    stock_abi_preflight: dict,
+    source_manifest: Path,
+    source_evidence: list[dict],
+    build_tool_explicit: Path,
+    python_builder_manifest: Path,
+    libxml2_build_deps_manifest: Path,
+    private_provider_manifest: Path,
+    wheels: list[Path],
+    elf_records: list[dict],
+    wheel_records: list[dict],
+) -> dict:
+    """Publish the exact built candidate for an independent closure audit."""
+
+    if destination.exists() or destination.is_symlink():
+        raise InputError(f"candidate build handoff destination already exists: {destination}")
+    candidate_root = roots["evidence"].parent.resolve()
+    if destination.resolve(strict=False) != roots["evidence"].resolve() / "native-build-handoff.json":
+        raise InputError("candidate build handoff must be written to evidence/native-build-handoff.json")
+    locked_prefix = locked_prefix.resolve()
+    if not locked_prefix.is_dir() or locked_prefix.is_symlink():
+        raise InputError(f"locked prefix is missing or unsafe: {locked_prefix}")
+
+    replacements = collect_candidate_replacements(roots, locked_prefix, wheels)
+    output_binding = candidate_output_binding(roots, replacements, elf_records, wheel_records)
+    output_binding_sha = canonical_json_sha(output_binding)
+    prefix_verification_path = Path(str(prefix_verification.get("verification", {}).get("path", "")))
+    prefix_verification_sha = require_sha(
+        prefix_verification.get("verification", {}).get("sha256"), "prefix verification sha256"
+    )
+    if regular_file_identity(prefix_verification_path, "prefix verification")["sha256"] != prefix_verification_sha:
+        raise InputError("prefix verification evidence changed before candidate handoff")
+    stock_preflight_path = Path(str(stock_abi_preflight.get("path", "")))
+    stock_preflight_sha = require_sha(stock_abi_preflight.get("sha256"), "stock ABI preflight sha256")
+    if regular_file_identity(stock_preflight_path, "stock ABI preflight")["sha256"] != stock_preflight_sha:
+        raise InputError("stock ABI preflight evidence changed before candidate handoff")
+
+    source_hashes_unsorted = {
+        str(record["component"]): require_sha(record.get("sha256"), f"source {record.get('component')} sha256")
+        for record in source_evidence
+    }
+    if set(source_hashes_unsorted) != set(REQUIRED_SOURCES):
+        raise InputError("candidate build source evidence differs from the fixed source set")
+    source_hashes = {name: source_hashes_unsorted[name] for name in sorted(REQUIRED_SOURCES)}
+
+    payload = {
+        "format_version": CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION,
+        "kind": CANDIDATE_BUILD_HANDOFF_KIND,
+        "status": CANDIDATE_BUILD_HANDOFF_STATUS,
+        "source_rebuild_provenance_eligible": False,
+        "candidate_root": str(candidate_root),
+        "inputs": {
+            "package_lock": regular_file_identity(package_lock, "package lock"),
+            "locked_prefix": {"path": str(locked_prefix)},
+            "prefix_verification": regular_file_identity(prefix_verification_path, "prefix verification"),
+            "stock_abi_preflight": {
+                **regular_file_identity(stock_preflight_path, "stock ABI preflight"),
+                "selection_fingerprint_sha256": require_sha(
+                    stock_abi_preflight.get("selection_fingerprint_sha256"), "stock ABI selection fingerprint"
+                ),
+            },
+            "source_manifest": regular_file_identity(source_manifest, "source manifest"),
+            "source_sha256": source_hashes,
+            "build_tool_explicit": regular_file_identity(build_tool_explicit, "build-tool explicit lock"),
+            "python_builder_manifest": regular_file_identity(python_builder_manifest, "Python builder manifest"),
+            "libxml2_build_deps_manifest": regular_file_identity(
+                libxml2_build_deps_manifest, "libxml2 build-deps manifest"
+            ),
+            "private_provider_manifest": regular_file_identity(
+                private_provider_manifest, "private-provider manifest"
+            ),
+        },
+        "candidate_output_binding": output_binding,
+        "candidate_output_binding_sha256": output_binding_sha,
+        "qualification": {
+            "full_native_closure": "not-run",
+            "hosted_linux_glibc217": "not-run",
+            "jit": "not-run",
+            "poisson": "not-run",
+            "relocation": "not-run",
+        },
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def validate_candidate_build_handoff(path: Path) -> dict:
+    """Re-hash a built candidate before accepting post-build closure evidence."""
+
+    payload = load_json(path)
+    expected_top = {
+        "format_version",
+        "kind",
+        "status",
+        "source_rebuild_provenance_eligible",
+        "candidate_root",
+        "inputs",
+        "candidate_output_binding",
+        "candidate_output_binding_sha256",
+        "qualification",
+    }
+    if set(payload) != expected_top:
+        raise InputError("candidate build handoff has unexpected or missing top-level fields")
+    if (
+        payload.get("format_version") != CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION
+        or payload.get("kind") != CANDIDATE_BUILD_HANDOFF_KIND
+        or payload.get("status") != CANDIDATE_BUILD_HANDOFF_STATUS
+        or payload.get("source_rebuild_provenance_eligible") is not False
+    ):
+        raise InputError("unsupported candidate build handoff identity")
+    if payload.get("qualification") != {
+        "full_native_closure": "not-run",
+        "hosted_linux_glibc217": "not-run",
+        "jit": "not-run",
+        "poisson": "not-run",
+        "relocation": "not-run",
+    }:
+        raise InputError("candidate build handoff must remain explicitly unqualified")
+
+    candidate_root_raw = payload.get("candidate_root")
+    if not isinstance(candidate_root_raw, str) or not candidate_root_raw:
+        raise InputError("candidate build handoff has no candidate root")
+    candidate_root = Path(candidate_root_raw).resolve()
+    expected_handoff = candidate_root / "evidence" / "native-build-handoff.json"
+    if path.resolve() != expected_handoff:
+        raise InputError("candidate build handoff path is not bound to its candidate root")
+    roots = {
+        name: candidate_root / name
+        for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+    }
+    for name in ("build", "prefix", "wheels", "audit", "evidence"):
+        if not roots[name].is_dir() or roots[name].is_symlink():
+            raise InputError(f"candidate build root is missing or unsafe: {name}: {roots[name]}")
+
+    inputs = payload.get("inputs")
+    expected_inputs = {
+        "package_lock",
+        "locked_prefix",
+        "prefix_verification",
+        "stock_abi_preflight",
+        "source_manifest",
+        "source_sha256",
+        "build_tool_explicit",
+        "python_builder_manifest",
+        "libxml2_build_deps_manifest",
+        "private_provider_manifest",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected_inputs:
+        raise InputError("candidate build handoff has unexpected or missing inputs")
+
+    def checked_input(name: str) -> Path:
+        record = inputs.get(name)
+        if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
+            raise InputError(f"candidate build input identity is invalid: {name}")
+        raw = record.get("path")
+        if not isinstance(raw, str) or not raw:
+            raise InputError(f"candidate build input path is invalid: {name}")
+        candidate = Path(raw)
+        actual = verify_file(candidate, record.get("sha256"), f"candidate build input {name}")
+        return Path(actual["path"])
+
+    package_lock = checked_input("package_lock")
+    prefix_verification_path = checked_input("prefix_verification")
+    source_manifest = checked_input("source_manifest")
+    build_tool_explicit = checked_input("build_tool_explicit")
+    python_builder_manifest = checked_input("python_builder_manifest")
+    libxml2_build_deps_manifest = checked_input("libxml2_build_deps_manifest")
+    private_provider_manifest = checked_input("private_provider_manifest")
+
+    locked_prefix_record = inputs.get("locked_prefix")
+    if not isinstance(locked_prefix_record, dict) or set(locked_prefix_record) != {"path"}:
+        raise InputError("candidate build locked-prefix identity is invalid")
+    locked_prefix = Path(str(locked_prefix_record.get("path", ""))).resolve()
+    if not locked_prefix.is_dir() or locked_prefix.is_symlink():
+        raise InputError(f"candidate build locked prefix is missing or unsafe: {locked_prefix}")
+
+    stock_preflight = inputs.get("stock_abi_preflight")
+    if not isinstance(stock_preflight, dict) or set(stock_preflight) != {
+        "path", "sha256", "selection_fingerprint_sha256"
+    }:
+        raise InputError("candidate build stock ABI preflight identity is invalid")
+    stock_preflight_path = Path(str(stock_preflight.get("path", "")))
+    stock_preflight_identity = verify_file(
+        stock_preflight_path, stock_preflight.get("sha256"), "candidate build stock ABI preflight"
+    )
+    stock_selection_fingerprint = require_sha(
+        stock_preflight.get("selection_fingerprint_sha256"), "candidate build stock ABI selection fingerprint"
+    )
+    verified_preflight = validate_stock_abi_preflight(stock_preflight_path, package_lock)
+    if verified_preflight["selection_fingerprint_sha256"] != stock_selection_fingerprint:
+        raise InputError("candidate build stock ABI selection fingerprint differs from referenced evidence")
+    stock_preflight_payload = load_json(stock_preflight_path)
+    if stock_preflight_payload.get("prefix_verification_sha256") != sha256(prefix_verification_path):
+        raise InputError("candidate build stock ABI preflight does not bind the referenced prefix verification")
+
+    source_hashes = inputs.get("source_sha256")
+    if not isinstance(source_hashes, dict) or set(source_hashes) != set(REQUIRED_SOURCES):
+        raise InputError("candidate build source hash set differs from the fixed source set")
+    normalized_source_hashes = {
+        name: require_sha(source_hashes.get(name), f"candidate build source {name} sha256")
+        for name in sorted(REQUIRED_SOURCES)
+    }
+    source_manifest_payload = load_json(source_manifest)
+    manifest_sources = source_manifest_payload.get("sources")
+    if not isinstance(manifest_sources, dict):
+        raise InputError("candidate build source manifest has no sources object")
+    for name, digest in normalized_source_hashes.items():
+        record = manifest_sources.get(name)
+        if not isinstance(record, dict) or require_sha(
+            record.get("sha256"), f"candidate build source manifest {name} sha256"
+        ) != digest:
+            raise InputError(f"candidate build source hash mismatch for {name}")
+
+    expected_binding = normalize_candidate_output_binding(
+        payload.get("candidate_output_binding"), "candidate build output binding"
+    )
+    expected_binding_sha = require_sha(
+        payload.get("candidate_output_binding_sha256"), "candidate build output binding sha256"
+    )
+    if canonical_json_sha(expected_binding) != expected_binding_sha:
+        raise InputError("candidate build output binding SHA-256 mismatch")
+
+    def binding_file(logical: str, allowed_roots: tuple[str, ...], label: str) -> Path:
+        relative = safe_handoff_relative(logical, label)
+        if len(relative.parts) < 2 or relative.parts[0] not in allowed_roots:
+            raise InputError(f"{label} is outside the candidate roots: {logical}")
+        root_name = relative.parts[0]
+        candidate = roots[root_name].joinpath(*relative.parts[1:])
+        return candidate
+
+    elf_records = []
+    for record in expected_binding["elf"]:
+        candidate = binding_file(record["path"], ("prefix", "audit"), "candidate build ELF path")
+        verify_file(candidate, record["sha256"], "candidate build ELF")
+        elf_records.append({"path": str(candidate.resolve()), "sha256": record["sha256"]})
+    wheels = []
+    wheel_records = []
+    for record in expected_binding["wheels"]:
+        candidate = binding_file(record["path"], ("wheels",), "candidate build wheel path")
+        evidence = verify_file(candidate, record["sha256"], "candidate build wheel")
+        if evidence["size"] != record["bytes"]:
+            raise InputError(f"candidate build wheel byte count changed: {record['path']}")
+        wheels.append(candidate.resolve())
+        wheel_records.append({"path": str(candidate.resolve()), "sha256": record["sha256"], "size": record["bytes"]})
+
+    replacements = collect_candidate_replacements(roots, locked_prefix, wheels)
+    actual_binding = candidate_output_binding(roots, replacements, elf_records, wheel_records)
+    actual_binding_sha = canonical_json_sha(actual_binding)
+    if actual_binding != expected_binding or actual_binding_sha != expected_binding_sha:
+        raise InputError(
+            "candidate build handoff does not match exact live candidate outputs: "
+            f"actual={actual_binding_sha} expected={expected_binding_sha}"
+        )
+
+    return {
+        "payload": payload,
+        "sha256": sha256(path),
+        "roots": roots,
+        "locked_prefix": locked_prefix,
+        "package_lock": package_lock,
+        "prefix_verification": {
+            "verification": {
+                "path": str(prefix_verification_path),
+                "sha256": sha256(prefix_verification_path),
+            }
+        },
+        "stock_abi_preflight": {
+            "path": str(stock_preflight_path.resolve()),
+            "sha256": stock_preflight_identity["sha256"],
+            "selection_fingerprint_sha256": stock_selection_fingerprint,
+        },
+        "source_manifest": source_manifest,
+        "source_evidence": [
+            {"component": name, "sha256": normalized_source_hashes[name]}
+            for name in sorted(REQUIRED_SOURCES)
+        ],
+        "build_tool_explicit": build_tool_explicit,
+        "python_builder_manifest": python_builder_manifest,
+        "libxml2_build_deps_manifest": libxml2_build_deps_manifest,
+        "private_provider_manifest": private_provider_manifest,
+        "wheels": wheels,
+        "elf_records": elf_records,
+        "wheel_records": wheel_records,
+        "candidate_output_binding": actual_binding,
+        "candidate_output_binding_sha256": actual_binding_sha,
+    }
+
+
 def write_package_handoff(
     destination: Path,
     *,
@@ -1215,85 +1599,24 @@ def write_package_handoff(
     handoff_root = destination.parent
     payload_root = handoff_root / "payload"
     payload_root.mkdir(parents=True, exist_ok=False)
-
-    installed = installed_package_records(locked_prefix)
-    owned_by_package = {
-        name: installed_owned_paths(installed[name])
-        for name in set(REBUILD_COMPONENT_OWNERS.values()) | set(WHEEL_OWNERS.values())
-        if name in installed
-    }
-    expected_owners = set(REBUILD_COMPONENT_OWNERS.values()) | set(WHEEL_OWNERS.values())
-    if set(owned_by_package) != expected_owners:
-        missing = sorted(expected_owners - set(owned_by_package))
-        raise InputError(f"locked prefix is missing rebuilt package ownership metadata: {missing}")
-    install_owners = collect_install_owners(roots)
-
+    candidate_replacements = collect_candidate_replacements(roots, locked_prefix, wheels)
     replacements: dict[str, dict] = {}
-
-    def add_payload(destination_relative: PurePosixPath, owner: str, data: bytes, mode: int) -> None:
-        text = destination_relative.as_posix()
-        if text in replacements:
-            raise InputError(f"native rebuild handoff has duplicate replacement destination: {text}")
-        if owner == HANDOFF_PROVIDER_OWNER:
-            if text != "lib/libfenics_cxxrt.so.1":
-                raise InputError(f"private provider has unexpected handoff destination: {text}")
-            replaces_sha = None
-        else:
-            if owner not in owned_by_package or text not in owned_by_package[owner]:
-                raise InputError(f"candidate replacement is not owned by locked package {owner}: {text}")
-            stock = locked_prefix / Path(*destination_relative.parts)
-            if not stock.is_file() or stock.is_symlink():
-                raise InputError(f"candidate replacement stock destination is not a regular file: {owner}: {text}")
-            replaces_sha = sha256(stock)
+    for text, candidate in sorted(candidate_replacements.items()):
+        destination_relative = safe_handoff_relative(text, "candidate replacement destination")
         payload_relative = PurePosixPath("payload") / destination_relative
         payload = handoff_root / Path(*payload_relative.parts)
         payload.parent.mkdir(parents=True, exist_ok=True)
-        payload.write_bytes(data)
-        payload.chmod(mode & 0o777)
+        payload.write_bytes(candidate["data"])
+        payload.chmod(int(candidate["mode"]))
         replacements[text] = {
             "destination": text,
             "payload": payload_relative.as_posix(),
-            "owner": owner,
+            "owner": candidate["owner"],
             "sha256": sha256(payload),
             "bytes": payload.stat().st_size,
-            "mode": mode & 0o777,
-            "replaces_sha256": replaces_sha,
+            "mode": int(candidate["mode"]),
+            "replaces_sha256": candidate["replaces_sha256"],
         }
-
-    for raw_relative, owner in sorted(install_owners.items()):
-        relative = safe_handoff_relative(raw_relative, "candidate install destination")
-        source = roots["prefix"] / Path(*relative.parts)
-        if source.is_symlink():
-            stock = locked_prefix / Path(*relative.parts)
-            if owner != HANDOFF_PROVIDER_OWNER and stock.is_symlink():
-                continue
-            raise InputError(f"candidate handoff does not accept symlink replacements: {relative}")
-        if not source.is_file():
-            raise InputError(f"candidate install manifest path is not a regular file: {relative}")
-        if owner != HANDOFF_PROVIDER_OWNER and not handoff_runtime_prefix_path(relative):
-            if ignored_build_install_path(relative):
-                continue
-            raise InputError(f"candidate install path is outside the runtime handoff boundary: {relative}")
-        add_payload(relative, owner, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
-
-    for wheel in sorted(wheels, key=lambda path: path.name):
-        wheel_owner = next((owner for stem, owner in WHEEL_OWNERS.items() if wheel.name.startswith(stem + "-")), None)
-        if wheel_owner is None:
-            raise InputError(f"candidate wheel has no fixed handoff owner: {wheel.name}")
-        with zipfile.ZipFile(wheel) as bundle:
-            for info in sorted(bundle.infolist(), key=lambda item: item.filename):
-                if info.is_dir():
-                    continue
-                member = safe_handoff_relative(info.filename, f"wheel member in {wheel.name}")
-                zip_mode = (info.external_attr >> 16) & 0o177777
-                if stat.S_ISLNK(zip_mode):
-                    raise InputError(f"candidate wheel contains a symlink: {wheel.name}: {member}")
-                destination_relative = PurePosixPath("lib/python3.12/site-packages") / member
-                mode = zip_mode & 0o777 or 0o644
-                add_payload(destination_relative, wheel_owner, bundle.read(info), mode)
-
-    if not replacements:
-        raise InputError("native rebuild produced no package handoff replacements")
 
     output_binding = candidate_output_binding(roots, replacements, elf_records, wheel_records)
     output_binding_sha = verify_native_closure_candidate_binding(native_closure, output_binding)
@@ -1361,6 +1684,39 @@ def write_package_handoff(
     }
     destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
+
+
+def finalize_candidate_build_handoff(
+    candidate_handoff_path: Path,
+    native_closure_report: Path,
+    destination: Path | None = None,
+) -> tuple[Path, dict]:
+    """Finalize a previously built candidate after an independent closure audit."""
+
+    candidate = validate_candidate_build_handoff(candidate_handoff_path)
+    native_closure = validate_native_closure_report(native_closure_report)
+    verify_native_closure_candidate_binding(native_closure, candidate["candidate_output_binding"])
+    if destination is None:
+        destination = candidate["roots"]["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
+    payload = write_package_handoff(
+        destination,
+        roots=candidate["roots"],
+        locked_prefix=candidate["locked_prefix"],
+        package_lock=candidate["package_lock"],
+        prefix_verification=candidate["prefix_verification"],
+        stock_abi_preflight=candidate["stock_abi_preflight"],
+        source_manifest=candidate["source_manifest"],
+        source_evidence=candidate["source_evidence"],
+        build_tool_explicit=candidate["build_tool_explicit"],
+        python_builder_manifest=candidate["python_builder_manifest"],
+        libxml2_build_deps_manifest=candidate["libxml2_build_deps_manifest"],
+        private_provider_manifest=candidate["private_provider_manifest"],
+        native_closure=native_closure,
+        wheels=candidate["wheels"],
+        elf_records=candidate["elf_records"],
+        wheel_records=candidate["wheel_records"],
+    )
+    return destination, payload
 
 
 def write_provenance(path: Path, *, inputs: dict, outputs: dict, executed: bool) -> None:
@@ -1496,7 +1852,6 @@ def main(argv: list[str] | None = None) -> int:
             "--python-builder-manifest": args.python_builder_manifest,
             "--libxml2-build-deps-manifest": args.libxml2_build_deps_manifest,
             "--private-provider-manifest": args.private_provider_manifest,
-            "--native-closure-report": args.native_closure_report,
         }
         missing_external = [flag for flag, value in required_external.items() if value is None]
         if missing_external:
@@ -1504,7 +1859,6 @@ def main(argv: list[str] | None = None) -> int:
         assert args.python_builder_manifest is not None
         assert args.libxml2_build_deps_manifest is not None
         assert args.private_provider_manifest is not None
-        assert args.native_closure_report is not None
         assert python_builder_evidence is not None
         assert python_builder is not None
         assert python_builder_site is not None
@@ -1512,7 +1866,11 @@ def main(argv: list[str] | None = None) -> int:
         assert libxml2_include is not None
         assert zlib_library is not None
         assert lzma_library is not None
-        closure_evidence = validate_native_closure_report(args.native_closure_report)
+        closure_evidence = (
+            validate_native_closure_report(args.native_closure_report)
+            if args.native_closure_report is not None
+            else None
+        )
         provider_manifest, provider, provider_audit = validate_provider(args.private_provider_manifest, tools)
         evidence_seed = args.scratch_root / "evidence"
         build_tool_verification = evidence_seed / "build-tool-verification.json"
@@ -1531,6 +1889,7 @@ def main(argv: list[str] | None = None) -> int:
         wheels: list[Path] = []
         elf_records: list[dict] = []
         wheel_records: list[dict] = []
+        candidate_build_record: dict | None = None
         handoff_record: dict | None = None
         if args.execute:
             wheels, audits = build_candidate(
@@ -1544,9 +1903,9 @@ def main(argv: list[str] | None = None) -> int:
                 lzma_library,
             )
             elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools)
-            handoff_path = roots["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
-            handoff_payload = write_package_handoff(
-                handoff_path,
+            candidate_build_path = roots["evidence"] / "native-build-handoff.json"
+            candidate_build_payload = write_candidate_build_handoff(
+                candidate_build_path,
                 roots=roots,
                 locked_prefix=args.locked_prefix.resolve(),
                 package_lock=args.package_lock.resolve(),
@@ -1558,19 +1917,46 @@ def main(argv: list[str] | None = None) -> int:
                 python_builder_manifest=args.python_builder_manifest.resolve(),
                 libxml2_build_deps_manifest=args.libxml2_build_deps_manifest.resolve(),
                 private_provider_manifest=args.private_provider_manifest.resolve(),
-                native_closure=closure_evidence,
                 wheels=wheels,
                 elf_records=elf_records,
                 wheel_records=wheel_records,
             )
-            handoff_record = {
-                "path": str(handoff_path),
-                "sha256": sha256(handoff_path),
-                "status": handoff_payload["status"],
-                "replacement_count": len(handoff_payload["replacements"]),
-                "conditional_omissions": [item["package"] for item in handoff_payload["conditional_omissions"]],
+            candidate_build_record = {
+                "path": str(candidate_build_path),
+                "sha256": sha256(candidate_build_path),
+                "status": candidate_build_payload["status"],
+                "candidate_output_binding_sha256": candidate_build_payload["candidate_output_binding_sha256"],
             }
+            if closure_evidence is not None:
+                handoff_path = roots["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
+                handoff_payload = write_package_handoff(
+                    handoff_path,
+                    roots=roots,
+                    locked_prefix=args.locked_prefix.resolve(),
+                    package_lock=args.package_lock.resolve(),
+                    prefix_verification=prefix_evidence,
+                    stock_abi_preflight=stock_abi_evidence,
+                    source_manifest=args.source_manifest.resolve(),
+                    source_evidence=source_evidence,
+                    build_tool_explicit=args.build_tool_explicit.resolve(),
+                    python_builder_manifest=args.python_builder_manifest.resolve(),
+                    libxml2_build_deps_manifest=args.libxml2_build_deps_manifest.resolve(),
+                    private_provider_manifest=args.private_provider_manifest.resolve(),
+                    native_closure=closure_evidence,
+                    wheels=wheels,
+                    elf_records=elf_records,
+                    wheel_records=wheel_records,
+                )
+                handoff_record = {
+                    "path": str(handoff_path),
+                    "sha256": sha256(handoff_path),
+                    "status": handoff_payload["status"],
+                    "replacement_count": len(handoff_payload["replacements"]),
+                    "conditional_omissions": [item["package"] for item in handoff_payload["conditional_omissions"]],
+                }
         provenance_outputs: dict[str, object] = {"elf": elf_records, "wheels": wheel_records}
+        if candidate_build_record is not None:
+            provenance_outputs["candidate_build_handoff"] = candidate_build_record
         if handoff_record is not None:
             provenance_outputs["package_handoff"] = handoff_record
         provenance = roots["evidence"] / "native-rebuild-provenance.json"
@@ -1609,8 +1995,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"rebuild_mode={'execute' if args.execute else 'validate-only'}")
         print(f"provenance={provenance}")
+        if candidate_build_record is not None:
+            print(f"candidate_build_handoff={candidate_build_record['path']}")
         if handoff_record is not None:
             print(f"package_handoff={handoff_record['path']}")
+        elif args.execute:
+            print("native_closure_required_for_package_handoff=true")
         print("source_rebuild_provenance_eligible=false")
         return 0
     except InputError as exc:

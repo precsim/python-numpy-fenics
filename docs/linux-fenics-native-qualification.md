@@ -67,14 +67,23 @@ omission evidence is otherwise valid. The binding fingerprint is carried on
 each omission record in the handoff. Binding paths are canonicalized under
 `prefix/`, `audit/`, and `wheels/` so a prior audit can be compared to a fresh
 deterministic rebuild without depending on scratch-directory locations.
+The rebuild now follows two explicit stages: `rebuild_fenics_native.py
+--execute` writes `evidence/native-build-handoff.json` after collecting exact
+rebuilt ELF, wheel and replacement hashes. An independent closure audit must
+inspect that built candidate before `finalize_fenics_native.py` accepts its
+native-closure report and emits the version-1 package handoff. The finalizer
+rehashes the live candidate and pinned evidence to prevent reusing a closure
+report after any candidate or input change. Both handoffs remain unqualified;
+neither permits source-rebuild provenance or a release without subsequent
+standalone glibc-2.17 ABI/relocation/JIT/PETSc/Poisson qualification.
 Resolving the still-live ICU edge may
 require adding a pinned curl/libcurl rebuild to a future handoff revision. The
 current schema rejects such an unknown replacement owner until its source and
 ownership evidence are defined explicitly.
 
-The next hosted experiment isolates the first ICU branch without rebuilding
-HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with the
-conda-forge recipe's `--with-libpsl` flag changed to `--without-libpsl`, then
+The hosted ICU-edge experiment isolates the first ICU branch without rebuilding
+HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with a fully
+pinned, independent configure argument list containing `--without-libpsl`, then
 requires the libcurl-rooted closure to lose both libpsl and ICU while HDF5
 still resolves to that rebuilt libcurl and an independent MPICH-rooted control
 still reaches hwloc, libxml2 and ICU. The
@@ -86,9 +95,11 @@ rebuild also makes the final post-rebuild closure ICU-free. The hosted probe
 also rechecks the exact 128-record runtime replay, the exact 41-record GCC 14
 build-only replay, the stock ICU ABI failure, x86_64/glibc 2.17, and absence of
 a non-loopback default route before building from the pinned public inputs.
-The pinned feedstock is source/configuration evidence: the probe uses the
-producer's frozen GCC 14/make/pkg-config transaction rather than claiming to
-reproduce every conda-forge feedstock build-environment helper.
+The pinned feedstock is source/configuration evidence. The independent probe
+does not claim that its configure invocation differs from the conda-forge
+recipe by only one flag, or that it reproduces every feedstock environment
+helper. It uses the producer's frozen GCC 14/make/pkg-config transaction and
+records its full configure arguments as experimental provenance.
 
 ## Controlled C++20 runtime feasibility, not production evidence
 
@@ -174,6 +185,16 @@ and pass `provider-manifest.json` to `rebuild_fenics_native.py` through
 `--private-provider-manifest`. A successful reproduction proves only the
 provider identity. Release qualification still requires the rebuilt native
 closure plus standalone relocated fresh-FFCx/PETSc/Poisson on glibc 2.17.
+
+The hosted reproduction at revision `b23c45e` produced a linked-provider
+SHA-256 of `f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c`,
+different from the pinned pre-transform identity
+`c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58`.
+The original controlled proof did not record the full link argv, build
+environment, GCC specs content or absolute prefix used for linking. The
+observed mismatch cannot establish a new trusted provider identity. The
+hosted builder therefore fails closed until an independently reproduced and
+fully audited provider can satisfy the pinned contract.
 
 ## Remaining release blockers
 

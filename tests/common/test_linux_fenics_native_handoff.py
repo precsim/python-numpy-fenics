@@ -42,22 +42,28 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             "package_lock_sha256": mod.sha256_file(lock),
             "prefix_verification_sha256": mod.sha256_file(prefix_evidence),
             "status": "fail",
+            "violation_count": 1,
+            "ceiling_violations": [{"fixture": "violation"}],
+            "unexpected_nonnumeric_requirements": [],
             "violating_packages": list(mod.NATIVE_HANDOFF_EXPECTED_STOCK_VIOLATING_PACKAGES),
             "source_rebuilds_authorized": False,
         }
         report["selection_fingerprint_sha256"] = mod.canonical_json_sha(report)
         preflight.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        candidate_prefix = root / "candidate-prefix"
+        candidate_root = root / "candidate"
+        candidate_prefix = candidate_root / "prefix"
         candidate_lib = candidate_prefix / "lib"
         candidate_lib.mkdir(parents=True)
+        for name in ("wheels", "audit", "evidence"):
+            (candidate_root / name).mkdir()
         provider_candidate = candidate_lib / "libfenics_cxxrt.so.1"
         fmt_candidate = candidate_lib / "libfmt.so.12"
         provider_candidate.write_bytes(b"provider")
         fmt_candidate.write_bytes(b"rebuilt-fmt")
         provider_candidate.chmod(0o644)
         fmt_candidate.chmod(0o644)
-        candidate_build = root / "candidate-build"
+        candidate_build = candidate_root / "build"
         for component in producer.REBUILD_COMPONENT_OWNERS:
             build_dir = candidate_build / component
             build_dir.mkdir(parents=True)
@@ -169,6 +175,17 @@ class NativeRebuildHandoffTests(unittest.TestCase):
         return handoff, prefix, lock, prefix_evidence, {
             "preflight": preflight,
             "records": mod.installed_records(prefix),
+            "candidate_root": candidate_root,
+            "candidate_prefix": candidate_prefix,
+            "candidate_build": candidate_build,
+            "provider_candidate": provider_candidate,
+            "fmt_candidate": fmt_candidate,
+            "source_manifest": source_manifest_path,
+            "source_manifest_data": source_manifest,
+            "build_tool_explicit": build_tool_explicit,
+            "python_builder_manifest": python_builder_manifest,
+            "libxml2_build_deps_manifest": libxml2_build_deps_manifest,
+            "private_provider_manifest": private_provider_manifest,
         }
 
     def load_fixture(self, root: Path) -> dict:
@@ -250,6 +267,211 @@ class NativeRebuildHandoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaisesRegex(producer.InputError, "does not match exact candidate outputs"):
                 self.make_fixture(Path(raw), stale_candidate=True)
+
+    def test_candidate_build_handoff_round_trips_through_independent_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _, prefix, lock, prefix_evidence, extra = self.make_fixture(root)
+            candidate_root = extra["candidate_root"]
+            roots = {
+                name: candidate_root / name
+                for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+            }
+            source_manifest = extra["source_manifest_data"]
+            candidate_handoff = roots["evidence"] / "native-build-handoff.json"
+            payload = producer.write_candidate_build_handoff(
+                candidate_handoff,
+                roots=roots,
+                locked_prefix=prefix,
+                package_lock=lock,
+                prefix_verification={
+                    "verification": {
+                        "path": str(prefix_evidence),
+                        "sha256": producer.sha256(prefix_evidence),
+                    }
+                },
+                stock_abi_preflight={
+                    "path": str(extra["preflight"]),
+                    "sha256": producer.sha256(extra["preflight"]),
+                    "selection_fingerprint_sha256": json.loads(extra["preflight"].read_text())["selection_fingerprint_sha256"],
+                },
+                source_manifest=extra["source_manifest"],
+                source_evidence=[
+                    {"component": name, "sha256": source_manifest["sources"][name]["sha256"]}
+                    for name in producer.REQUIRED_SOURCES
+                ],
+                build_tool_explicit=extra["build_tool_explicit"],
+                python_builder_manifest=extra["python_builder_manifest"],
+                libxml2_build_deps_manifest=extra["libxml2_build_deps_manifest"],
+                private_provider_manifest=extra["private_provider_manifest"],
+                wheels=[],
+                elf_records=[
+                    {
+                        "path": str(extra["provider_candidate"]),
+                        "sha256": producer.sha256(extra["provider_candidate"]),
+                    },
+                    {"path": str(extra["fmt_candidate"]), "sha256": producer.sha256(extra["fmt_candidate"])},
+                ],
+                wheel_records=[],
+            )
+            validated = producer.validate_candidate_build_handoff(candidate_handoff)
+            self.assertEqual(
+                validated["candidate_output_binding_sha256"],
+                payload["candidate_output_binding_sha256"],
+            )
+
+            closure = {
+                "dolfinx_build_flags": {
+                    "DOLFINX_ENABLE_ADIOS2": "OFF",
+                    "DOLFINX_ENABLE_KAHIP": "OFF",
+                },
+                "unresolved_non_system": [],
+                "closure_elf_count": 2,
+                "candidate_output_binding": payload["candidate_output_binding"],
+                "candidate_output_binding_sha256": payload["candidate_output_binding_sha256"],
+                "candidates": {
+                    name: {
+                        "reached_paths": [],
+                        "reverse_direct_noncandidate": [],
+                        "staged_paths": [f"lib/{name}.so"],
+                        "abi_maxima": {},
+                    }
+                    for name in producer.HANDOFF_OMISSION_PACKAGES
+                },
+            }
+            closure["candidates"]["icu"] = {"reached_paths": [], "reverse_direct_noncandidate": []}
+            closure_path = root / "native-closure.json"
+            closure_path.write_text(json.dumps(closure), encoding="utf-8")
+            final_path, final_payload = producer.finalize_candidate_build_handoff(
+                candidate_handoff, closure_path
+            )
+            self.assertTrue(final_path.is_file())
+            self.assertEqual(final_payload["status"], producer.HANDOFF_STATUS)
+            self.assertEqual(
+                final_payload["inputs"]["native_closure"]["candidate_output_binding_sha256"],
+                payload["candidate_output_binding_sha256"],
+            )
+
+    def test_candidate_build_handoff_rejects_changed_live_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _, prefix, lock, prefix_evidence, extra = self.make_fixture(root)
+            candidate_root = extra["candidate_root"]
+            roots = {
+                name: candidate_root / name
+                for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+            }
+            source_manifest = extra["source_manifest_data"]
+            candidate_handoff = roots["evidence"] / "native-build-handoff.json"
+            producer.write_candidate_build_handoff(
+                candidate_handoff,
+                roots=roots,
+                locked_prefix=prefix,
+                package_lock=lock,
+                prefix_verification={
+                    "verification": {
+                        "path": str(prefix_evidence),
+                        "sha256": producer.sha256(prefix_evidence),
+                    }
+                },
+                stock_abi_preflight={
+                    "path": str(extra["preflight"]),
+                    "sha256": producer.sha256(extra["preflight"]),
+                    "selection_fingerprint_sha256": json.loads(extra["preflight"].read_text())["selection_fingerprint_sha256"],
+                },
+                source_manifest=extra["source_manifest"],
+                source_evidence=[
+                    {"component": name, "sha256": source_manifest["sources"][name]["sha256"]}
+                    for name in producer.REQUIRED_SOURCES
+                ],
+                build_tool_explicit=extra["build_tool_explicit"],
+                python_builder_manifest=extra["python_builder_manifest"],
+                libxml2_build_deps_manifest=extra["libxml2_build_deps_manifest"],
+                private_provider_manifest=extra["private_provider_manifest"],
+                wheels=[],
+                elf_records=[
+                    {
+                        "path": str(extra["provider_candidate"]),
+                        "sha256": producer.sha256(extra["provider_candidate"]),
+                    },
+                    {"path": str(extra["fmt_candidate"]), "sha256": producer.sha256(extra["fmt_candidate"])},
+                ],
+                wheel_records=[],
+            )
+            extra["fmt_candidate"].write_bytes(b"candidate-mutated-after-build-handoff")
+            with self.assertRaisesRegex(producer.InputError, "candidate build ELF SHA-256 mismatch"):
+                producer.validate_candidate_build_handoff(candidate_handoff)
+
+    def test_candidate_build_handoff_rejects_tampered_source_and_preflight_bindings(self) -> None:
+        for label, mutate, message in (
+            (
+                "source-hash",
+                lambda data: data["inputs"]["source_sha256"].update(fmt="0" * 64),
+                "source hash mismatch for fmt",
+            ),
+            (
+                "stock-selection-fingerprint",
+                lambda data: data["inputs"]["stock_abi_preflight"].update(
+                    selection_fingerprint_sha256="0" * 64
+                ),
+                "selection fingerprint differs from referenced evidence",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                _, prefix, lock, prefix_evidence, extra = self.make_fixture(root)
+                candidate_root = extra["candidate_root"]
+                roots = {
+                    name: candidate_root / name
+                    for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+                }
+                source_manifest = extra["source_manifest_data"]
+                candidate_handoff = roots["evidence"] / "native-build-handoff.json"
+                producer.write_candidate_build_handoff(
+                    candidate_handoff,
+                    roots=roots,
+                    locked_prefix=prefix,
+                    package_lock=lock,
+                    prefix_verification={
+                        "verification": {
+                            "path": str(prefix_evidence),
+                            "sha256": producer.sha256(prefix_evidence),
+                        }
+                    },
+                    stock_abi_preflight={
+                        "path": str(extra["preflight"]),
+                        "sha256": producer.sha256(extra["preflight"]),
+                        "selection_fingerprint_sha256": json.loads(extra["preflight"].read_text())[
+                            "selection_fingerprint_sha256"
+                        ],
+                    },
+                    source_manifest=extra["source_manifest"],
+                    source_evidence=[
+                        {"component": name, "sha256": source_manifest["sources"][name]["sha256"]}
+                        for name in producer.REQUIRED_SOURCES
+                    ],
+                    build_tool_explicit=extra["build_tool_explicit"],
+                    python_builder_manifest=extra["python_builder_manifest"],
+                    libxml2_build_deps_manifest=extra["libxml2_build_deps_manifest"],
+                    private_provider_manifest=extra["private_provider_manifest"],
+                    wheels=[],
+                    elf_records=[
+                        {
+                            "path": str(extra["provider_candidate"]),
+                            "sha256": producer.sha256(extra["provider_candidate"]),
+                        },
+                        {
+                            "path": str(extra["fmt_candidate"]),
+                            "sha256": producer.sha256(extra["fmt_candidate"]),
+                        },
+                    ],
+                    wheel_records=[],
+                )
+                data = json.loads(candidate_handoff.read_text(encoding="utf-8"))
+                mutate(data)
+                candidate_handoff.write_text(json.dumps(data), encoding="utf-8")
+                with self.assertRaisesRegex(producer.InputError, message):
+                    producer.validate_candidate_build_handoff(candidate_handoff)
 
     def test_rejects_tampered_omission_evidence_and_symlink_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

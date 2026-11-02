@@ -64,10 +64,12 @@
     "files": {
       "recipe/meta.yaml": {
         "git_blob_sha1": "fdc0ab979397f8ae4f79290da9b30c93eeca4bbe",
+        "sha256": "efaabaffbe2f516948bbd3167b307e1fec7e46fb3f02992cd09b320b643187e2",
         "url": "https://raw.githubusercontent.com/conda-forge/curl-feedstock/d770c46d773d7e2c81555d606720c3d6435b216f/recipe/meta.yaml"
       },
       "recipe/build.sh": {
         "git_blob_sha1": "0f0bf7555814eb695a07024e39595cee4a210665",
+        "sha256": "add9d2d7e1f59523431efab07e296340344ae81e8705c5a46bd05f1787d126de",
         "url": "https://raw.githubusercontent.com/conda-forge/curl-feedstock/d770c46d773d7e2c81555d606720c3d6435b216f/recipe/build.sh"
       }
     },
@@ -99,6 +101,20 @@
     },
     "required_baseline_curl_reachability": [
       "libpsl.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "required_baseline_hdf5_reachability": [
+      "libcurl.so",
+      "libpsl.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "required_baseline_hdf5_dt_needed": [
+      "libcurl.so.4"
+    ],
+    "baseline_libpsl_soname": "libpsl.so.5",
+    "required_baseline_libpsl_reachability": [
       "libicuuc.so",
       "libicudata.so"
     ],

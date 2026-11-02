@@ -33,6 +33,10 @@ EXPECTED_FEEDSTOCK_BLOBS = {
     "recipe/meta.yaml": "fdc0ab979397f8ae4f79290da9b30c93eeca4bbe",
     "recipe/build.sh": "0f0bf7555814eb695a07024e39595cee4a210665",
 }
+EXPECTED_FEEDSTOCK_SHA256 = {
+    "recipe/meta.yaml": "efaabaffbe2f516948bbd3167b307e1fec7e46fb3f02992cd09b320b643187e2",
+    "recipe/build.sh": "add9d2d7e1f59523431efab07e296340344ae81e8705c5a46bd05f1787d126de",
+}
 ABI_CEILINGS = {
     "GLIBC": (2, 17),
     "GLIBCXX": (3, 4, 19),
@@ -107,8 +111,7 @@ def load_contract(path: Path) -> dict:
     if source.get("filename") != "curl-8.23.0.tar.bz2":
         raise ProbeError("unexpected curl source filename")
     source_url = source.get("url")
-    source_parsed = urlparse(str(source_url))
-    if not isinstance(source_url, str) or source_parsed.scheme != "https" or source_parsed.hostname != "curl.se":
+    if source_url != "https://curl.se/download/curl-8.23.0.tar.bz2":
         raise ProbeError("curl source must use the pinned public curl.se origin")
 
     feedstock = data.get("feedstock")
@@ -124,9 +127,15 @@ def load_contract(path: Path) -> dict:
         if not isinstance(record, dict) or record.get("git_blob_sha1") != expected_blob:
             raise ProbeError(f"curl feedstock blob identity changed: {relative}")
         require_hash(record.get("git_blob_sha1"), SHA1_RE, f"feedstock blob {relative}")
+        if record.get("sha256") != EXPECTED_FEEDSTOCK_SHA256[relative]:
+            raise ProbeError(f"curl feedstock SHA-256 identity changed: {relative}")
+        require_hash(record.get("sha256"), SHA256_RE, f"feedstock sha256 {relative}")
         raw_url = record.get("url")
-        parsed = urlparse(str(raw_url))
-        if parsed.scheme != "https" or parsed.hostname != "raw.githubusercontent.com" or EXPECTED_FEEDSTOCK_COMMIT not in parsed.path:
+        expected_url = (
+            "https://raw.githubusercontent.com/conda-forge/curl-feedstock/"
+            f"{EXPECTED_FEEDSTOCK_COMMIT}/{relative}"
+        )
+        if raw_url != expected_url:
             raise ProbeError(f"feedstock evidence URL is not pinned to the exact commit: {relative}")
     recipe_evidence = feedstock.get("required_recipe_evidence")
     if recipe_evidence != {"source_sha256": EXPECTED_CURL_SOURCE_SHA256, "configure_flag": "--with-libpsl"}:
@@ -162,6 +171,19 @@ def load_contract(path: Path) -> dict:
         raise ProbeError("ICU-edge ABI ceilings changed")
     if probe.get("required_baseline_curl_reachability") != ["libpsl.so", "libicuuc.so", "libicudata.so"]:
         raise ProbeError("stock libcurl closure contract changed")
+    if probe.get("required_baseline_hdf5_reachability") != [
+        "libcurl.so",
+        "libpsl.so",
+        "libicuuc.so",
+        "libicudata.so",
+    ]:
+        raise ProbeError("stock HDF5 closure contract changed")
+    if probe.get("required_baseline_hdf5_dt_needed") != ["libcurl.so.4"]:
+        raise ProbeError("stock HDF5 direct libcurl edge contract changed")
+    if probe.get("baseline_libpsl_soname") != "libpsl.so.5":
+        raise ProbeError("stock libpsl SONAME contract changed")
+    if probe.get("required_baseline_libpsl_reachability") != ["libicuuc.so", "libicudata.so"]:
+        raise ProbeError("stock libpsl ICU closure contract changed")
     if probe.get("forbidden_candidate_curl_reachability") != ["libpsl.so", "libicuuc.so", "libicudata.so"]:
         raise ProbeError("candidate libcurl closure contract changed")
     if probe.get("required_mpich_control_reachability") != [
@@ -318,7 +340,10 @@ def verify_input_bundle(contract: dict, input_dir: Path) -> dict:
         actual_blob = git_blob_sha1(data)
         if actual_blob != record["git_blob_sha1"]:
             raise ProbeError(f"feedstock git-blob identity mismatch: {relative}: {actual_blob}")
-        feedstock_evidence[relative] = {"git_blob_sha1": actual_blob, "sha256": hashlib.sha256(data).hexdigest()}
+        actual_sha256 = hashlib.sha256(data).hexdigest()
+        if actual_sha256 != record["sha256"]:
+            raise ProbeError(f"feedstock SHA-256 mismatch: {relative}: {actual_sha256}")
+        feedstock_evidence[relative] = {"git_blob_sha1": actual_blob, "sha256": actual_sha256}
 
     meta = (feedstock_root / "recipe" / "meta.yaml").read_text(encoding="utf-8")
     build = (feedstock_root / "recipe" / "build.sh").read_text(encoding="utf-8")
@@ -350,6 +375,8 @@ def fetch_inputs(contract_path: Path, output_dir: Path, evidence_path: Path) -> 
         data = fetch_bytes(record["url"])
         if git_blob_sha1(data) != record["git_blob_sha1"]:
             raise ProbeError(f"downloaded feedstock git-blob mismatch: {relative}")
+        if hashlib.sha256(data).hexdigest() != record["sha256"]:
+            raise ProbeError(f"downloaded feedstock SHA-256 mismatch: {relative}")
         destination = output_dir / "feedstock" / Path(*relative.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
@@ -569,6 +596,8 @@ def has_name_prefix(summary: dict, prefix: str) -> bool:
 def validate_closure_contract(
     contract: dict,
     baseline_curl: dict,
+    baseline_hdf5: dict,
+    baseline_libpsl: dict,
     candidate_curl: dict,
     candidate_hdf5: dict,
     mpich_control: dict,
@@ -579,6 +608,23 @@ def validate_closure_contract(
     ]
     if missing_baseline:
         raise ProbeError(f"stock libcurl closure no longer proves the PSL/ICU edge: missing {missing_baseline}")
+    missing_baseline_hdf5 = [
+        prefix
+        for prefix in probe["required_baseline_hdf5_reachability"]
+        if not has_name_prefix(baseline_hdf5, prefix)
+    ]
+    if missing_baseline_hdf5:
+        raise ProbeError(
+            "stock HDF5 closure no longer proves the HDF5->curl->PSL/ICU edge: "
+            f"missing {missing_baseline_hdf5}"
+        )
+    missing_baseline_libpsl = [
+        prefix
+        for prefix in probe["required_baseline_libpsl_reachability"]
+        if not has_name_prefix(baseline_libpsl, prefix)
+    ]
+    if missing_baseline_libpsl:
+        raise ProbeError(f"stock libpsl closure no longer proves the PSL->ICU edge: missing {missing_baseline_libpsl}")
     if not has_name_prefix(candidate_hdf5, "libcurl.so"):
         raise ProbeError("candidate HDF5 closure does not reach rebuilt libcurl")
     forbidden = [
@@ -605,6 +651,13 @@ def validate_needed_delta(stock: dict, candidate: dict) -> dict:
     if "libstdc++.so.6" in candidate_needed:
         raise ProbeError("rebuilt C libcurl unexpectedly depends on libstdc++.so.6")
     return {"removed": removed, "added": added}
+
+
+def validate_hdf5_needed_contract(contract: dict, hdf5_audit: dict) -> None:
+    needed = set(hdf5_audit["needed"])
+    missing = [name for name in contract["probe"]["required_baseline_hdf5_dt_needed"] if name not in needed]
+    if missing:
+        raise ProbeError(f"stock HDF5 no longer directly needs the curl provider: missing {missing}")
 
 
 def safe_extract(source: Path, destination: Path) -> Path:
@@ -691,16 +744,39 @@ def audit_candidate_closure(summary: dict, readelf: Path) -> list[dict]:
     return records
 
 
-def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path) -> str:
+def validate_linker_resolution_output(output: str, candidate_lib: Path) -> str:
+    if "not found" in output:
+        raise ProbeError(f"ldd -r reported an unresolved candidate HDF5 dependency:\n{output}")
+    if re.search(r"^\s*undefined symbol:", output, flags=re.MULTILINE):
+        raise ProbeError(f"ldd -r reported an undefined symbol in the candidate HDF5 closure:\n{output}")
+
+    matches = re.findall(r"^\s*libcurl\.so\.4\s+=>\s+(\S+)\s+\(", output, flags=re.MULTILINE)
+    if len(matches) != 1:
+        raise ProbeError(f"ldd -r did not report exactly one libcurl.so.4 provider: {matches}")
+    provider = Path(matches[0])
+    expected = candidate_lib / "libcurl.so.4"
+    try:
+        provider_real = provider.resolve(strict=True)
+        expected_real = expected.resolve(strict=True)
+    except OSError as exc:
+        raise ProbeError(f"cannot resolve ldd -r libcurl provider proof: {exc}") from exc
+    if provider_real != expected_real:
+        raise ProbeError(f"ldd -r resolved libcurl.so.4 outside rebuilt candidate: {provider_real} != {expected_real}")
+    return str(provider_real)
+
+
+def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path) -> dict:
     env = {
         "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": os.pathsep.join([str(candidate_lib), str(locked_prefix / "lib")]),
         "LD_BIND_NOW": "1",
     }
     output = run(["ldd", "-r", str(hdf5)], env=env).stdout
-    if "not found" in output:
-        raise ProbeError(f"ldd -r reported an unresolved candidate HDF5 dependency:\n{output}")
-    return hashlib.sha256(output.encode("utf-8")).hexdigest()
+    provider = validate_linker_resolution_output(output, candidate_lib)
+    return {
+        "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
+        "libcurl_provider": provider,
+    }
 
 
 def run_probe(
@@ -749,18 +825,33 @@ def run_probe(
     mpi = find_root(locked_prefix, "libmpi.so.*")
     baseline_curl = closure(stock_curl_path, providers, readelf, allowlist)
     baseline_hdf5 = closure(hdf5, providers, readelf, allowlist)
+    hdf5_audit = baseline_hdf5["audits"][hdf5.resolve()]
+    validate_hdf5_needed_contract(contract, hdf5_audit)
+    stock_libpsl_soname = contract["probe"]["baseline_libpsl_soname"]
+    stock_libpsl_path = providers.get(stock_libpsl_soname)
+    if stock_libpsl_path is None:
+        raise ProbeError(f"stock locked prefix has no {stock_libpsl_soname} provider")
+    baseline_libpsl = closure(stock_libpsl_path, providers, readelf, allowlist)
     candidate_providers = dict(providers)
     candidate_providers.update(candidate_aliases)
     candidate_curl_closure = closure(candidate_curl, candidate_providers, readelf, allowlist)
     candidate_hdf5 = closure(hdf5, candidate_providers, readelf, allowlist)
     mpich_control = closure(mpi, candidate_providers, readelf, allowlist)
-    validate_closure_contract(contract, baseline_curl, candidate_curl_closure, candidate_hdf5, mpich_control)
+    validate_closure_contract(
+        contract,
+        baseline_curl,
+        baseline_hdf5,
+        baseline_libpsl,
+        candidate_curl_closure,
+        candidate_hdf5,
+        mpich_control,
+    )
 
     candidate_path_set = {Path(raw).resolve() for raw in candidate_hdf5["paths"]}
     if candidate_curl.resolve() not in candidate_path_set:
         raise ProbeError("HDF5 candidate closure resolved libcurl somewhere other than the rebuilt provider")
     closure_abi = audit_candidate_closure(candidate_curl_closure, readelf)
-    ldd_sha256 = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix)
+    linker_probe = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix)
 
     feature_env = {
         "PATH": "/usr/bin:/bin",
@@ -794,10 +885,12 @@ def run_probe(
         "baseline_libcurl_closure": {key: value for key, value in baseline_curl.items() if key != "audits"},
         "candidate_libcurl_closure": {key: value for key, value in candidate_curl_closure.items() if key != "audits"},
         "baseline_hdf5_closure": {key: value for key, value in baseline_hdf5.items() if key != "audits"},
+        "baseline_libpsl_closure": {key: value for key, value in baseline_libpsl.items() if key != "audits"},
         "candidate_hdf5_closure": {key: value for key, value in candidate_hdf5.items() if key != "audits"},
         "mpich_icu_control": {key: value for key, value in mpich_control.items() if key != "audits"},
         "candidate_libcurl_strict_abi": closure_abi,
-        "ldd_r_output_sha256": ldd_sha256,
+        "ldd_r_output_sha256": linker_probe["output_sha256"],
+        "ldd_r_libcurl_provider": linker_probe["libcurl_provider"],
         "curl_feature_line": feature_line,
         "capability_impact": contract["capability_impact"],
         "remaining_blocker": "MPICH->hwloc->libxml2->ICU intentionally remains live; final ICU omission requires the separately pinned libxml2 ICU-off rebuild and full overlay qualification",

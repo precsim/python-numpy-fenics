@@ -3,18 +3,6 @@ name: qualify-linux-fenics
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/qualify-linux-fenics.yml"
-      - "scripts/linux/**"
-      - "scripts/common/**"
-      - "runtime/linux/**"
-      - "locks/linux/**"
-      - "tests/fenics/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/linux/**"
-      - "specs/02-core-numpy-profiles.md"
-      - "README.md"
   push:
     branches:
       - main
@@ -45,6 +33,7 @@ env:
 
 jobs:
   qualify-overlay:
+    name: qualify-linux-fenics
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -66,6 +55,7 @@ jobs:
           set -euo pipefail
           python3 -m unittest tests.common.test_linux_fenics_python_builder
           python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
+          python3 -m unittest tests.common.test_linux_fenics_native_handoff
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
@@ -773,7 +763,75 @@ jobs:
             "$provider/provider-manifest.json" \
             > "$provider/reproduction.sha256"
 
-      - name: Keep Linux FEniCS release gate closed until rebuilt overlay handoff exists
+      - name: Build exact selective native candidate offline on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          scratch="$prototype/rebuild-candidate"
+          rm -rf "$scratch"
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
+            --volume "$MAMBA_ROOT_PREFIX:$MAMBA_ROOT_PREFIX:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(uname -m)" = x86_64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              exec /opt/python/cp312-cp312/bin/python scripts/linux/rebuild_fenics_native.py \
+                --source-manifest locks/linux/linux-x86_64-fenics-rebuild-sources.json \
+                --source-dir "$1" \
+                --package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
+                --source-explicit locks/linux/linux-x86_64-fenics-explicit.txt \
+                --package-cache "$2" \
+                --locked-prefix "$3" \
+                --build-tool-explicit locks/linux/linux-x86_64-fenics-build-tools-explicit.txt \
+                --build-tool-prefix "$4" \
+                --build-tool-package-cache "$2" \
+                --python-builder-manifest "/workspace/$5" \
+                --libxml2-build-deps-manifest "/workspace/$6" \
+                --private-provider-manifest /workspace/build/linux-fenics-overlay/native-rebuild-prototype/cxx-provider/provider-manifest.json \
+                --stock-abi-preflight /workspace/build/linux-fenics-overlay/stock-native-abi-preflight.json \
+                --scratch-root /workspace/build/linux-fenics-overlay/native-rebuild-prototype/rebuild-candidate \
+                --execute
+            ' -- \
+              "$FENICS_REBUILD_SOURCE_DIR" \
+              "$FENICS_PACKAGE_CACHE" \
+              "$FENICS_LOCKED_PREFIX" \
+              "$FENICS_BUILD_TOOL_PREFIX" \
+              "$FENICS_PYTHON_BUILDER_MANIFEST" \
+              "$FENICS_LIBXML2_BUILD_DEPS_MANIFEST" \
+            2>&1 | tee "$prototype/native-rebuild-candidate.log"
+
+          handoff="$scratch/evidence/native-build-handoff.json"
+          test -f "$handoff"
+          python3 - "$handoff" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert data["format_version"] == 1
+          assert data["kind"] == "linux-fenics-native-build-candidate-handoff"
+          assert data["status"] == "candidate-built-unqualified"
+          assert data["source_rebuild_provenance_eligible"] is False
+          assert re.fullmatch(r"[0-9a-f]{64}", data["candidate_output_binding_sha256"])
+          assert data["qualification"] == {
+              "full_native_closure": "not-run",
+              "hosted_linux_glibc217": "not-run",
+              "jit": "not-run",
+              "poisson": "not-run",
+              "relocation": "not-run",
+          }
+          print(f"candidate_output_binding_sha256={data['candidate_output_binding_sha256']}")
+          PY
+          sha256sum "$handoff" > "$scratch/evidence/native-build-handoff.sha256"
+          echo "FENICS_NATIVE_BUILD_HANDOFF=$handoff" >> "$GITHUB_ENV"
+
+      - name: Keep Linux FEniCS release gate closed pending independent candidate qualification
         shell: bash
         run: |
           set -euo pipefail
@@ -781,12 +839,11 @@ jobs:
           cat > "$blocker" <<'EOF'
           Linux FEniCS selective native rebuild remains unqualified.
           Required before the release path can proceed:
-          - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
-          - hosted exercise of the native-rebuild handoff plus ICU/curl closure resolution
-          - integrate the pinned libcurl --without-libpsl ICU-edge result without treating its reduced PSL capability as general curl equivalence
-          - post-rebuild native-closure report proving KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
-          - package_fenics_overlay.py handoff for rebuilt native outputs and wheels
-          - standalone glibc 2.17 relocation/JIT/PETSc/Poisson qualification
+          - independently audit the exact native-build-handoff candidate and bind its candidate_output_binding_sha256 to a post-rebuild native-closure report
+          - prove KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
+          - finalize the candidate into the strict package_fenics_overlay.py native-rebuild handoff only after that closure proof passes
+          - package the finalized candidate and pass standalone glibc 2.17 ABI/relocation/fresh-FFCx-JIT/PETSc/Poisson qualification
+          - promote source-rebuild provenance/release eligibility only from those positive, artifact-bound qualification results
           EOF
           cat "$blocker" >&2
           exit 1
@@ -809,7 +866,8 @@ jobs:
               exec bash scripts/linux/test-fenics-overlay.sh \
                 --archive "/workspace/dist/$OVERLAY_ASSET" \
                 --base-runtime /workspace/out/linux-x64/numpy \
-                --base-qualification /workspace/dist/qualification-linux-x64-numpy-base.json
+                --base-qualification /workspace/dist/qualification-linux-x64-numpy-base.json \
+                --evidence /workspace/build/linux-fenics-overlay/standalone-overlay-qualification.json
             ' 2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/public-base-overlay-test.log"
 
       - name: Repackage overlay and prove deterministic identity
@@ -900,7 +958,7 @@ jobs:
             --check hostile_ambient_state=pass \
             --check relocation=pass \
             --check fresh_ffcx_jit=pass \
-            --check serial_petsc_solve=pass \
+            --check serial_petsc_poisson=pass \
             --check mpich_provider=pass \
             --check native_closure=pass \
             --check native_symbol_ceilings=pass \

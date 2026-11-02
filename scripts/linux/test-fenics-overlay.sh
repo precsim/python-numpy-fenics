@@ -2,18 +2,20 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: scripts/linux/test-fenics-overlay.sh --archive <overlay.tar.gz> --base-runtime <numpy-runtime> --base-qualification <qualification.json>" >&2
+    echo "usage: scripts/linux/test-fenics-overlay.sh --archive <overlay.tar.gz> --base-runtime <numpy-runtime> --base-qualification <qualification.json> [--evidence <standalone-qualification.json>]" >&2
     exit 2
 }
 
 archive=""
 base_runtime=""
 base_qualification=""
+evidence=""
 while (($#)); do
     case "$1" in
         --archive) archive="$2"; shift 2 ;;
         --base-runtime) base_runtime="$2"; shift 2 ;;
         --base-qualification) base_qualification="$2"; shift 2 ;;
+        --evidence) evidence="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "unknown argument: $1" >&2; usage ;;
     esac
@@ -225,6 +227,15 @@ base_qualification = pathlib.Path(sys.argv[8])
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def rooted_file(relative, label):
+    path = pathlib.PurePosixPath(str(relative))
+    if not path.parts or path.is_absolute() or ".." in path.parts:
+        raise SystemExit(f"unsafe native rebuild candidate {label} path: {relative!r}")
+    return root.joinpath(*path.parts)
+
+producer = manifest.get("producer", {})
+candidate = producer.get("native_rebuild_candidate")
 aggregate = hashlib.sha256()
 for rel, identity in sorted(numpy_entries.items()):
     if isinstance(identity, dict):
@@ -237,7 +248,7 @@ if (
     or manifest.get("profile") != "fenics"
     or manifest.get("architecture") != "x86_64"
     or manifest.get("python_abi") != "cp312"
-    or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
+    or producer.get("repository") != "precsim/python-numpy-fenics"
     or manifest.get("numpy", {}).get("version") != "2.5.2"
     or manifest.get("numpy", {}).get("producer_payload_excluded") is not True
     or manifest.get("numpy", {}).get("base_tree_sha256") != aggregate.hexdigest()
@@ -247,9 +258,50 @@ if (
     or manifest.get("native", {}).get("gcc_ceiling") != "4.8.0"
     or manifest.get("native", {}).get("mpi", {}).get("implementation") != "mpich"
     or manifest.get("native", {}).get("mpi", {}).get("provider_count") != 1
-    or manifest.get("producer", {}).get("source_rebuilds") != []
+    or producer.get("source_rebuilds") != []
 ):
     raise SystemExit(f"invalid Linux FEniCS overlay manifest: {manifest!r}")
+if candidate is None:
+    if producer.get("omitted_packages") not in (None, []):
+        raise SystemExit("stock overlay unexpectedly declares native-rebuild omissions")
+else:
+    expected_qualification = {
+        "full_native_closure": "not-run",
+        "hosted_linux_glibc217": "not-run",
+        "jit": "not-run",
+        "poisson": "not-run",
+        "relocation": "not-run",
+    }
+    if (
+        candidate.get("status") != "candidate-unqualified"
+        or candidate.get("source_rebuild_provenance_eligible") is not False
+        or candidate.get("qualification") != expected_qualification
+        or set(producer.get("omitted_packages", [])) != {"kahip", "libadios2", "zeromq"}
+    ):
+        raise SystemExit(f"invalid unqualified native rebuild candidate metadata: {candidate!r}")
+    handoff = candidate.get("handoff", {})
+    stock_preflight = candidate.get("stock_abi_preflight", {})
+    for label, record in (("handoff", handoff), ("stock ABI preflight", stock_preflight)):
+        relative = record.get("path")
+        expected_sha = record.get("sha256")
+        if not isinstance(relative, str) or not re.fullmatch(r"[0-9a-f]{64}", str(expected_sha or "")):
+            raise SystemExit(f"native rebuild candidate has invalid {label} identity: {record!r}")
+        path = rooted_file(relative, label)
+        if not path.is_file() or sha(path) != expected_sha:
+            raise SystemExit(f"native rebuild candidate {label} hash mismatch: {path}")
+    replacements = candidate.get("replacements")
+    if not isinstance(replacements, list) or not replacements:
+        raise SystemExit("native rebuild candidate has no staged replacements")
+    destinations = [str(item.get("destination", "")) for item in replacements if isinstance(item, dict)]
+    if len(destinations) != len(replacements) or destinations != sorted(destinations) or len(destinations) != len(set(destinations)):
+        raise SystemExit("native rebuild candidate replacement destinations are not uniquely sorted")
+    for item in replacements:
+        relative = pathlib.PurePosixPath(str(item["destination"]))
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            raise SystemExit(f"unsafe native rebuild replacement destination: {relative}")
+        path = root.joinpath("fenics-runtime", "conda", *relative.parts)
+        if not path.is_file() or sha(path) != item.get("sha256") or path.stat().st_size != item.get("bytes"):
+            raise SystemExit(f"native rebuild candidate replacement identity mismatch: {relative}")
 toolchain = manifest.get("jit_toolchain", {})
 packages = toolchain.get("packages", {})
 for name in (
@@ -310,21 +362,45 @@ for path, key in (
 package_provenance = json.loads(package_provenance_path.read_text(encoding="utf-8"))
 if package_provenance.get("solver_used_by_packager") is not False or package_provenance.get("source_rebuilds") != []:
     raise SystemExit("overlay provenance indicates solver use or source rebuilding")
+if candidate is None:
+    if package_provenance.get("native_rebuild_candidate") is not None or source_provenance.get("native_rebuild_candidate") is not None:
+        raise SystemExit("stock overlay provenance unexpectedly contains a native rebuild candidate")
+else:
+    if package_provenance.get("native_rebuild_candidate") != candidate or source_provenance.get("native_rebuild_candidate") != candidate:
+        raise SystemExit("native rebuild candidate identity differs across manifest and provenance")
 relocation = package_provenance.get("prefix_relocation", {})
 entries = relocation.get("entries")
+entry_count = relocation.get("entry_count")
+text_entry_count = relocation.get("text_entry_count")
+binary_entry_count = relocation.get("binary_entry_count")
 if (
     relocation.get("format_version") != 1
     or relocation.get("generic_marker") != "@FENICS_RUNTIME_PREFIX@"
-    or relocation.get("entry_count") != 396
-    or relocation.get("text_entry_count") != 173
-    or relocation.get("binary_entry_count") != 223
     or not isinstance(entries, list)
-    or len(entries) != relocation.get("entry_count")
+    or not all(isinstance(value, int) and value >= 0 for value in (entry_count, text_entry_count, binary_entry_count))
+    or len(entries) != entry_count
+    or text_entry_count + binary_entry_count != entry_count
+    or not entries
 ):
     raise SystemExit(f"invalid metadata-driven prefix relocation evidence: {relocation!r}")
+if candidate is None and (
+    entry_count != 396
+    or text_entry_count != 173
+    or binary_entry_count != 223
+):
+    raise SystemExit(f"stock prefix relocation inventory changed unexpectedly: {relocation!r}")
 by_path = {entry.get("path"): entry for entry in entries if isinstance(entry, dict)}
 if len(by_path) != len(entries):
     raise SystemExit("prefix relocation provenance contains duplicate or invalid paths")
+replacement_paths = set()
+if candidate is not None:
+    replacement_paths = {
+        (pathlib.PurePosixPath("fenics-runtime/conda") / pathlib.PurePosixPath(item["destination"])).as_posix()
+        for item in candidate["replacements"]
+    }
+    overlap = sorted(replacement_paths.intersection(by_path))
+    if overlap:
+        raise SystemExit(f"rebuilt replacement paths were also prefix-relocated from stock metadata: {overlap!r}")
 required_relocations = {
     "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
@@ -332,6 +408,8 @@ required_relocations = {
     "fenics-runtime/conda/lib/python3.12/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
 }
 for relative, expected in required_relocations.items():
+    if relative in replacement_paths:
+        continue
     entry = by_path.get(relative)
     actual = None if entry is None else (entry.get("package"), entry.get("mode"), entry.get("replacement"))
     if actual != expected:
@@ -705,6 +783,76 @@ for record in census.get("census", []):
             )
 print("fenics_native_dependency_resolution=pass")
 PY
+
+if [[ -n "$evidence" ]]; then
+    mkdir -p "$(dirname "$evidence")"
+    python3 - "$archive" "$overlay_manifest" "$evidence" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+archive = Path(sys.argv[1]).resolve()
+manifest_path = Path(sys.argv[2]).resolve()
+output = Path(sys.argv[3]).resolve()
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+candidate = manifest.get("producer", {}).get("native_rebuild_candidate")
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+checks = {
+    "glibc_floor": "pass",
+    "architecture": "pass",
+    "public_numpy_base_identity": "pass",
+    "hostile_ambient_state": "pass",
+    "relocation": "pass",
+    "native_symbol_ceilings": "pass",
+    "native_dependency_resolution": "pass",
+    "fresh_ffcx_jit": "pass",
+    "serial_petsc_poisson": "pass",
+}
+payload = {
+    "format_version": 1,
+    "kind": "linux-fenics-standalone-overlay-qualification",
+    "artifact": archive.name,
+    "artifact_sha256": sha256(archive),
+    "manifest_sha256": sha256(manifest_path),
+    "platform": "linux-x64",
+    "architecture": "x86_64",
+    "glibc": "2.17",
+    "producer_revision": manifest.get("producer", {}).get("revision"),
+    "standalone_runtime_qualified": True,
+    "source_rebuild_provenance_eligible": candidate is None,
+    "release_eligible": candidate is None,
+    "checks": checks,
+}
+if candidate is not None:
+    handoff = candidate.get("handoff", {})
+    inputs = candidate.get("inputs")
+    native_closure = inputs.get("native_closure") if isinstance(inputs, dict) else None
+    binding = native_closure.get("candidate_output_binding_sha256") if isinstance(native_closure, dict) else None
+    if not re.fullmatch(r"[0-9a-f]{64}", str(handoff.get("sha256", ""))):
+        raise SystemExit("qualified native rebuild candidate has no valid handoff hash")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(binding or "")):
+        raise SystemExit("qualified native rebuild candidate has no valid output-binding hash")
+    payload["native_rebuild_candidate"] = {
+        "status": candidate.get("status"),
+        "handoff_sha256": handoff["sha256"],
+        "candidate_output_binding_sha256": binding,
+        "conditional_omissions": [item.get("package") for item in candidate.get("conditional_omissions", [])],
+    }
+output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(f"standalone_qualification={output}")
+print(f"standalone_runtime_qualified={str(payload['standalone_runtime_qualified']).lower()}")
+print(f"release_eligible={str(payload['release_eligible']).lower()}")
+PY
+fi
 
 echo "fenics_public_overlay_test=pass"
 echo "fenics_numpy_base_identity=pass"

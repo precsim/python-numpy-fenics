@@ -27,6 +27,10 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             {name: record["git_blob_sha1"] for name, record in contract["feedstock"]["files"].items()},
             mod.EXPECTED_FEEDSTOCK_BLOBS,
         )
+        self.assertEqual(
+            {name: record["sha256"] for name, record in contract["feedstock"]["files"].items()},
+            mod.EXPECTED_FEEDSTOCK_SHA256,
+        )
         lock = mod.verify_runtime_lock(contract, RUNTIME_LOCK)
         self.assertEqual(lock["record_count"], 128)
         self.assertEqual(lock["packages"]["libcurl"]["version"], "8.23.0")
@@ -47,6 +51,26 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             path = Path(raw) / "contract.json"
             path.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaisesRegex(mod.ProbeError, "must not assert a feedstock configure delta"):
+                mod.load_contract(path)
+
+    def test_contract_rejects_feedstock_content_or_origin_drift(self) -> None:
+        data = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        data["feedstock"]["files"]["recipe/build.sh"]["sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "contract.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(mod.ProbeError, "SHA-256 identity changed"):
+                mod.load_contract(path)
+
+        data = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        data["feedstock"]["files"]["recipe/build.sh"]["url"] = (
+            "https://raw.githubusercontent.com/example/curl-feedstock/"
+            f"{mod.EXPECTED_FEEDSTOCK_COMMIT}/recipe/build.sh"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "contract.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(mod.ProbeError, "URL is not pinned to the exact commit"):
                 mod.load_contract(path)
 
     def test_dt_needed_delta_must_remove_only_libpsl(self) -> None:
@@ -81,6 +105,14 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             "libicuuc.so.78",
             "libicudata.so.78",
         )
+        stock_hdf5 = closure_names(
+            "libhdf5.so.310",
+            "libcurl.so.4",
+            "libpsl.so.5",
+            "libicuuc.so.78",
+            "libicudata.so.78",
+        )
+        stock_libpsl = closure_names("libpsl.so.5", "libicuuc.so.78", "libicudata.so.78")
         candidate_curl = closure_names("libcurl.so.4", "libssl.so.3")
         candidate_hdf5 = closure_names(
             "libhdf5.so.310", "libcurl.so.4", "libmpi.so.12", "libicuuc.so.78", "libicudata.so.78"
@@ -92,27 +124,101 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             "libicuuc.so.78",
             "libicudata.so.78",
         )
-        mod.validate_closure_contract(contract, stock_curl, candidate_curl, candidate_hdf5, mpich_control)
+        mod.validate_closure_contract(
+            contract, stock_curl, stock_hdf5, stock_libpsl, candidate_curl, candidate_hdf5, mpich_control
+        )
 
         candidate_with_icu = copy.deepcopy(candidate_curl)
         candidate_with_icu["reached_names"].append("libicuuc.so.78")
         with self.assertRaisesRegex(mod.ProbeError, "still reaches"):
-            mod.validate_closure_contract(contract, stock_curl, candidate_with_icu, candidate_hdf5, mpich_control)
+            mod.validate_closure_contract(
+                contract, stock_curl, stock_hdf5, stock_libpsl, candidate_with_icu, candidate_hdf5, mpich_control
+            )
 
         broken_control = closure_names("libmpi.so.12", "libhwloc.so.15", "libxml2.so.16")
         with self.assertRaisesRegex(mod.ProbeError, "control disappeared"):
-            mod.validate_closure_contract(contract, stock_curl, candidate_curl, candidate_hdf5, broken_control)
+            mod.validate_closure_contract(
+                contract, stock_curl, stock_hdf5, stock_libpsl, candidate_curl, candidate_hdf5, broken_control
+            )
 
     def test_stock_libcurl_must_first_prove_the_documented_icu_edge(self) -> None:
         contract = mod.load_contract(CONTRACT)
         incomplete_stock = closure_names("libcurl.so.4", "libpsl.so.5")
+        stock_hdf5 = closure_names(
+            "libhdf5.so.310", "libcurl.so.4", "libpsl.so.5", "libicuuc.so.78", "libicudata.so.78"
+        )
+        stock_libpsl = closure_names("libpsl.so.5", "libicuuc.so.78", "libicudata.so.78")
         candidate_curl = closure_names("libcurl.so.4")
         candidate_hdf5 = closure_names("libhdf5.so.310", "libcurl.so.4", "libmpi.so.12", "libicuuc.so.78")
         control = closure_names(
             "libmpi.so.12", "libhwloc.so.15", "libxml2.so.16", "libicuuc.so.78", "libicudata.so.78"
         )
         with self.assertRaisesRegex(mod.ProbeError, "stock libcurl closure no longer proves"):
-            mod.validate_closure_contract(contract, incomplete_stock, candidate_curl, candidate_hdf5, control)
+            mod.validate_closure_contract(
+                contract, incomplete_stock, stock_hdf5, stock_libpsl, candidate_curl, candidate_hdf5, control
+            )
+
+    def test_stock_hdf5_must_prove_the_documented_curl_psl_icu_edge(self) -> None:
+        contract = mod.load_contract(CONTRACT)
+        stock_curl = closure_names("libcurl.so.4", "libpsl.so.5", "libicuuc.so.78", "libicudata.so.78")
+        incomplete_hdf5 = closure_names("libhdf5.so.310", "libcurl.so.4")
+        stock_libpsl = closure_names("libpsl.so.5", "libicuuc.so.78", "libicudata.so.78")
+        candidate_curl = closure_names("libcurl.so.4")
+        candidate_hdf5 = closure_names("libhdf5.so.310", "libcurl.so.4", "libmpi.so.12", "libicuuc.so.78")
+        control = closure_names(
+            "libmpi.so.12", "libhwloc.so.15", "libxml2.so.16", "libicuuc.so.78", "libicudata.so.78"
+        )
+        with self.assertRaisesRegex(mod.ProbeError, "stock HDF5 closure no longer proves"):
+            mod.validate_closure_contract(
+                contract, stock_curl, incomplete_hdf5, stock_libpsl, candidate_curl, candidate_hdf5, control
+            )
+
+    def test_hdf5_direct_curl_and_libpsl_icu_segments_are_required(self) -> None:
+        contract = mod.load_contract(CONTRACT)
+        mod.validate_hdf5_needed_contract(contract, {"needed": ["libcurl.so.4", "libmpi.so.12"]})
+        with self.assertRaisesRegex(mod.ProbeError, "directly needs the curl provider"):
+            mod.validate_hdf5_needed_contract(contract, {"needed": ["libmpi.so.12"]})
+
+        stock_curl = closure_names("libcurl.so.4", "libpsl.so.5", "libicuuc.so.78", "libicudata.so.78")
+        stock_hdf5 = closure_names(
+            "libhdf5.so.310", "libcurl.so.4", "libpsl.so.5", "libicuuc.so.78", "libicudata.so.78"
+        )
+        incomplete_libpsl = closure_names("libpsl.so.5")
+        candidate_curl = closure_names("libcurl.so.4")
+        candidate_hdf5 = closure_names("libhdf5.so.310", "libcurl.so.4", "libmpi.so.12", "libicuuc.so.78")
+        control = closure_names(
+            "libmpi.so.12", "libhwloc.so.15", "libxml2.so.16", "libicuuc.so.78", "libicudata.so.78"
+        )
+        with self.assertRaisesRegex(mod.ProbeError, "PSL->ICU edge"):
+            mod.validate_closure_contract(
+                contract,
+                stock_curl,
+                stock_hdf5,
+                incomplete_libpsl,
+                candidate_curl,
+                candidate_hdf5,
+                control,
+            )
+
+    def test_ldd_resolution_must_use_the_rebuilt_libcurl_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            candidate_lib = root / "candidate" / "lib"
+            candidate_lib.mkdir(parents=True)
+            expected = candidate_lib / "libcurl.so.4"
+            expected.write_bytes(b"candidate")
+            output = f"\tlibcurl.so.4 => {expected} (0x00007f00)\n\tlibc.so.6 => /lib64/libc.so.6 (0x00007e00)\n"
+            self.assertEqual(mod.validate_linker_resolution_output(output, candidate_lib), str(expected.resolve()))
+
+            stock = root / "locked" / "libcurl.so.4"
+            stock.parent.mkdir(parents=True)
+            stock.write_bytes(b"stock")
+            wrong_output = f"\tlibcurl.so.4 => {stock} (0x00007f00)\n"
+            with self.assertRaisesRegex(mod.ProbeError, "outside rebuilt candidate"):
+                mod.validate_linker_resolution_output(wrong_output, candidate_lib)
+
+            with self.assertRaisesRegex(mod.ProbeError, "exactly one libcurl.so.4 provider"):
+                mod.validate_linker_resolution_output("\tlibc.so.6 => /lib64/libc.so.6 (0x00007e00)\n", candidate_lib)
 
     def test_hosted_evidence_binds_verified_runtime_build_tools_and_stock_failure(self) -> None:
         prefix = {
