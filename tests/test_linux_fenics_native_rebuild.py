@@ -187,45 +187,59 @@ class FenicsNativeRebuildTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.InputError, "violating package set"):
                 mod.validate_stock_abi_preflight(path, lock)
 
-    def test_libxml2_build_deps_require_complete_hashed_headers(self) -> None:
+    def test_libxml2_build_deps_are_bound_to_checked_in_package_pins(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            prefix = Path(raw) / "deps"
-            (prefix / "include" / "lzma").mkdir(parents=True)
-            (prefix / "lib").mkdir()
-            files = {
-                "include/zlib.h": b"zlib",
-                "include/zconf.h": b"zconf",
-                "include/lzma.h": b"lzma",
-                "include/lzma/base.h": b"base",
-                "lib/libz.so.1": b"z",
-                "lib/liblzma.so.5": b"lz",
-            }
-            for relative, payload in files.items():
-                path = prefix / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(payload)
+            root = Path(raw)
+            prefix = root / "prefix"
+            prefix.mkdir()
+            deps_lock_path = ROOT / "locks" / "linux" / "linux-x86_64-fenics-libxml2-build-deps.json"
+            package_lock = ROOT / "locks" / "linux" / "linux-x86_64-fenics-package-lock.json"
+            deps_lock = json.loads(deps_lock_path.read_text(encoding="utf-8"))
+            identity_fields = ("name", "version", "build", "build_number", "subdir", "channel", "url", "sha256", "md5")
+            headers = dict(deps_lock["output"]["headers"])
+            headers["include/zlib.h"] = "0" * 64
             manifest = {
                 "format_version": 1,
                 "kind": "fenics-libxml2-build-deps",
-                "prefix": str(prefix),
-                "headers": {relative: digest(payload) for relative, payload in files.items() if relative.startswith("include/")},
-                "libraries": {
-                    "zlib": {"relative_path": "lib/libz.so.1", "sha256": digest(files["lib/libz.so.1"])},
-                    "lzma": {"relative_path": "lib/liblzma.so.5", "sha256": digest(files["lib/liblzma.so.5"])},
+                "target": deps_lock["target"],
+                "policy": deps_lock["policy"],
+                "prefix": "prefix",
+                "headers": headers,
+                "libraries": deps_lock["output"]["libraries"],
+                "source_packages": {
+                    "development": [
+                        {field: record[field] for field in identity_fields}
+                        for record in deps_lock["development_packages"]
+                    ],
+                    "runtime": [
+                        {field: record[field] for field in identity_fields}
+                        for record in deps_lock["runtime_packages"]
+                    ],
                 },
-                "production_frozen": False,
+                "input_evidence": {
+                    "build_deps_lock_sha256": digest(deps_lock_path.read_bytes()),
+                    "fenics_package_lock_sha256": digest(package_lock.read_bytes()),
+                    "fenics_prefix_verification_sha256": "1" * 64,
+                    "fenics_prefix_verified_package_count": 128,
+                    "development_replay_input_format": "@EXPLICIT-url-plus-sha256",
+                    "dependency_solver_used": False,
+                    "development_archives": [
+                        {
+                            "name": record["name"],
+                            "filename": record["url"].rsplit("/", 1)[-1],
+                            "sha256": record["sha256"],
+                            "cache_paths": [record["url"].rsplit("/", 1)[-1]],
+                        }
+                        for record in deps_lock["development_packages"]
+                    ],
+                },
+                "tree": {"file_count": 19, "tree_sha256": "2" * 64},
+                "production_frozen": True,
             }
-            manifest_path = Path(raw) / "deps.json"
+            manifest_path = root / "deps.json"
             manifest_path.write_text(json.dumps(manifest))
-            evidence, include, zlib, lzma = mod.validate_libxml2_build_deps(manifest_path)
-            self.assertFalse(evidence["production_frozen"])
-            self.assertEqual(include, prefix / "include")
-            self.assertEqual(zlib, (prefix / "lib/libz.so.1").resolve())
-            self.assertEqual(lzma, (prefix / "lib/liblzma.so.5").resolve())
-            del manifest["headers"]["include/lzma/base.h"]
-            manifest_path.write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(mod.InputError, "header set is incomplete"):
-                mod.validate_libxml2_build_deps(manifest_path)
+            with self.assertRaisesRegex(mod.InputError, "header hashes differ"):
+                mod.validate_libxml2_build_deps(manifest_path, package_lock)
 
     def test_provenance_never_claims_completed_source_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

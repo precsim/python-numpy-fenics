@@ -65,6 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest tests.common.test_linux_fenics_python_builder
+          python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
@@ -543,6 +544,59 @@ jobs:
           test -f "$builder/manifest.json"
           echo "FENICS_PYTHON_BUILDER_MANIFEST=$builder/manifest.json" >> "$GITHUB_ENV"
 
+      - name: Replay and prepare pinned libxml2 build dependencies without solving
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock=locks/linux/linux-x86_64-fenics-libxml2-build-deps.json
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          transaction="$prototype/libxml2-build-deps-explicit.txt"
+          dev_prefix="$RUNNER_TEMP/linux-fenics-libxml2-devel"
+          prepared="$prototype/libxml2-build-deps"
+          rm -rf "$dev_prefix" "$prepared"
+
+          python3 scripts/linux/prepare_fenics_libxml2_build_deps.py explicit \
+            --lock "$lock" \
+            --fenics-package-lock "$FENICS_LOCK_FILE" \
+            --output "$transaction" \
+            | tee "$prototype/libxml2-build-deps-explicit.log"
+          grep -Fx 'dependency_solver=disabled' "$prototype/libxml2-build-deps-explicit.log"
+
+          # This is an exact two-record @EXPLICIT URL+SHA256 replay. No channel,
+          # repodata or dependency solve participates in the development prefix.
+          CONDA_SUBDIR=linux-64 "$MAMBA_EXE" create -y \
+            -p "$dev_prefix" \
+            --file "$transaction" \
+            2>&1 | tee "$prototype/libxml2-build-deps-replay.log"
+
+          python3 scripts/linux/prepare_fenics_libxml2_build_deps.py prepare \
+            --lock "$lock" \
+            --fenics-package-lock "$FENICS_LOCK_FILE" \
+            --fenics-prefix-evidence "$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
+            --fenics-prefix "$FENICS_LOCKED_PREFIX" \
+            --development-prefix "$dev_prefix" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --output-dir "$prepared" \
+            --manifest "$prepared/manifest.json" \
+            | tee "$prototype/libxml2-build-deps-prepare.log"
+          python3 - "$prepared/manifest.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert data["production_frozen"] is True
+          assert data["policy"]["dependency_solver_used"] is False
+          assert data["policy"]["index_access"] is False
+          assert data["policy"]["network_access_after_replay"] is False
+          assert data["input_evidence"]["dependency_solver_used"] is False
+          assert data["tree"]["file_count"] == 19
+          assert len(data["headers"]) == 17
+          assert [item["name"] for item in data["source_packages"]["development"]] == ["zlib", "liblzma-devel"]
+          assert [item["name"] for item in data["source_packages"]["runtime"]] == ["libzlib", "liblzma"]
+          print(f"libxml2_build_deps_tree_sha256={data['tree']['tree_sha256']}")
+          PY
+          echo "FENICS_LIBXML2_BUILD_DEPS_MANIFEST=$prepared/manifest.json" >> "$GITHUB_ENV"
+
       - name: Replay and verify pinned 41-record native build-tool lock
         shell: bash
         run: |
@@ -665,6 +719,7 @@ jobs:
             --build-tool-prefix "$FENICS_BUILD_TOOL_PREFIX" \
             --build-tool-package-cache "$FENICS_PACKAGE_CACHE" \
             --python-builder-manifest "$FENICS_PYTHON_BUILDER_MANIFEST" \
+            --libxml2-build-deps-manifest "$FENICS_LIBXML2_BUILD_DEPS_MANIFEST" \
             --stock-abi-preflight "$FENICS_STOCK_ABI_PREFLIGHT" \
             --scratch-root "$scratch" \
             --validate-public-inputs-only \
@@ -679,7 +734,6 @@ jobs:
           assert data["source_rebuild_provenance_eligible"] is False
           assert data["outputs"]["public_input_validation_only"] is True
           assert data["inputs"]["deferred_full_rebuild_inputs"] == [
-              "libxml2_build_deps_manifest",
               "private_provider_manifest",
               "native_closure_report",
           ]
@@ -727,7 +781,6 @@ jobs:
           cat > "$blocker" <<'EOF'
           Linux FEniCS selective native rebuild remains unqualified.
           Required before the release path can proceed:
-          - reproducible pinned libxml2 build-dependency manifest
           - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
           - hosted exercise of the native-rebuild handoff plus ICU/curl closure resolution
           - integrate the pinned libcurl --without-libpsl ICU-edge result without treating its reduced PSL capability as general curl equivalence

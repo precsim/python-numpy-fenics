@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+from urllib.parse import urlparse
 import zipfile
 
 
@@ -428,48 +429,120 @@ def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
     )
 
 
-def validate_libxml2_build_deps(path: Path) -> tuple[dict, Path, Path, Path]:
+def validate_libxml2_build_deps(path: Path, package_lock: Path) -> tuple[dict, Path, Path, Path]:
     manifest = load_json(path)
     if manifest.get("format_version") != 1 or manifest.get("kind") != "fenics-libxml2-build-deps":
         raise InputError("unsupported libxml2 build-dependency manifest identity")
-    prefix = Path(str(manifest.get("prefix", ""))).resolve()
+    repo = Path(__file__).resolve().parents[2]
+    build_deps_lock_path = repo / "locks" / "linux" / "linux-x86_64-fenics-libxml2-build-deps.json"
+    build_deps_lock = load_json(build_deps_lock_path)
+    if manifest.get("target") != build_deps_lock.get("target"):
+        raise InputError("libxml2 build-dependency target differs from the checked-in build-deps lock")
+    if manifest.get("policy") != build_deps_lock.get("policy"):
+        raise InputError("libxml2 build-dependency policy differs from the checked-in build-deps lock")
+    input_evidence = manifest.get("input_evidence")
+    if not isinstance(input_evidence, dict):
+        raise InputError("libxml2 build-dependency manifest has no input evidence")
+    if input_evidence.get("build_deps_lock_sha256") != sha256(build_deps_lock_path):
+        raise InputError("libxml2 build-dependency lock identity mismatch")
+    if input_evidence.get("fenics_package_lock_sha256") != sha256(package_lock):
+        raise InputError("libxml2 build-dependency FEniCS package-lock identity mismatch")
+    require_sha(input_evidence.get("fenics_prefix_verification_sha256"), "libxml2 build-dependency prefix verification sha256")
+    if (
+        input_evidence.get("fenics_prefix_verified_package_count") != 128
+        or input_evidence.get("development_replay_input_format") != "@EXPLICIT-url-plus-sha256"
+        or input_evidence.get("dependency_solver_used") is not False
+    ):
+        raise InputError("libxml2 build-dependency input evidence does not prove the exact no-solve replay")
+    development_lock = build_deps_lock.get("development_packages")
+    runtime_lock = build_deps_lock.get("runtime_packages")
+    if not isinstance(development_lock, list) or not isinstance(runtime_lock, list):
+        raise InputError("checked-in libxml2 build-dependency package records are invalid")
+    identity_fields = ("name", "version", "build", "build_number", "subdir", "channel", "url", "sha256", "md5")
+    expected_source_packages = {
+        "development": [{field: record.get(field) for field in identity_fields} for record in development_lock],
+        "runtime": [{field: record.get(field) for field in identity_fields} for record in runtime_lock],
+    }
+    if manifest.get("source_packages") != expected_source_packages:
+        raise InputError("libxml2 build-dependency source package identities differ from the checked-in lock")
+    archives = input_evidence.get("development_archives")
+    if not isinstance(archives, list) or len(archives) != len(development_lock):
+        raise InputError("libxml2 build-dependency development archive evidence is incomplete")
+    for archive, record in zip(archives, development_lock, strict=True):
+        expected_filename = Path(urlparse(str(record.get("url", ""))).path).name
+        if (
+            not isinstance(archive, dict)
+            or archive.get("name") != record.get("name")
+            or archive.get("filename") != expected_filename
+            or archive.get("sha256") != record.get("sha256")
+            or not isinstance(archive.get("cache_paths"), list)
+            or not archive.get("cache_paths")
+        ):
+            raise InputError(f"libxml2 build-dependency archive evidence differs for {record.get('name')}")
+
+    prefix = resolve_manifest_path(path, manifest.get("prefix"), "libxml2 build-dependency prefix")
     if not prefix.is_dir():
         raise InputError(f"libxml2 build-dependency prefix is missing: {prefix}")
     headers = manifest.get("headers")
-    if not isinstance(headers, dict):
+    expected_headers = build_deps_lock.get("output", {}).get("headers")
+    if not isinstance(headers, dict) or not isinstance(expected_headers, dict):
         raise InputError("libxml2 build-dependency manifest has no headers object")
-    required_headers = {"include/zlib.h", "include/zconf.h", "include/lzma.h"}
-    actual_lzma_headers = {
-        path.relative_to(prefix).as_posix() for path in sorted((prefix / "include" / "lzma").glob("*.h")) if path.is_file()
-    }
-    expected_headers = required_headers | actual_lzma_headers
-    if set(headers) != expected_headers:
-        raise InputError("libxml2 build-dependency header set is incomplete or has unexpected files")
+    if headers != expected_headers:
+        raise InputError("libxml2 build-dependency header hashes differ from the checked-in package pins")
     header_evidence = {}
     for relative, expected_sha in sorted(headers.items()):
         header_evidence[relative] = verify_file(prefix / relative, expected_sha, f"libxml2 build header {relative}")
     libraries = manifest.get("libraries")
+    expected_libraries = build_deps_lock.get("output", {}).get("libraries")
     if not isinstance(libraries, dict) or set(libraries) != {"zlib", "lzma"}:
         raise InputError("libxml2 build-dependency libraries must be exactly zlib and lzma")
+    if not isinstance(expected_libraries, dict):
+        raise InputError("checked-in libxml2 build-dependency library contract is invalid")
     library_paths = {}
     library_evidence = {}
     for name in ("zlib", "lzma"):
         record = libraries[name]
+        expected_record = expected_libraries.get(name)
         if not isinstance(record, dict) or not isinstance(record.get("relative_path"), str):
             raise InputError(f"invalid libxml2 build library record: {name}")
+        if not isinstance(expected_record, dict) or record != expected_record:
+            raise InputError(f"libxml2 build library record differs from the checked-in package pins: {name}")
         relative = Path(record["relative_path"])
         if relative.is_absolute() or ".." in relative.parts:
             raise InputError(f"invalid libxml2 build library path: {relative}")
         library = prefix / relative
         library_evidence[name] = verify_file(library, record.get("sha256"), f"libxml2 build library {name}")
         library_paths[name] = library.resolve()
+    expected_files = set(headers) | {record["relative_path"] for record in libraries.values()}
+    actual_files = {
+        candidate.relative_to(prefix).as_posix()
+        for candidate in prefix.rglob("*")
+        if candidate.is_file()
+    }
+    if actual_files != expected_files:
+        raise InputError(
+            f"libxml2 build-dependency output file set differs: missing={sorted(expected_files-actual_files)} extra={sorted(actual_files-expected_files)}"
+        )
+    actual_tree_sha, actual_file_count = tree_sha256(prefix)
+    tree = manifest.get("tree")
+    if (
+        not isinstance(tree, dict)
+        or tree.get("file_count") != actual_file_count
+        or tree.get("tree_sha256") != actual_tree_sha
+    ):
+        raise InputError("libxml2 build-dependency tree identity mismatch")
+    if manifest.get("production_frozen") is not True:
+        raise InputError("libxml2 build-dependency manifest is not production-frozen")
     evidence = {
         "format_version": 1,
         "kind": "fenics-libxml2-build-deps",
         "prefix": str(prefix),
         "headers": header_evidence,
         "libraries": library_evidence,
-        "production_frozen": manifest.get("production_frozen") is True,
+        "source_packages": expected_source_packages,
+        "input_evidence": input_evidence,
+        "tree": {"file_count": actual_file_count, "tree_sha256": actual_tree_sha},
+        "production_frozen": True,
     }
     return evidence, prefix / "include", library_paths["zlib"], library_paths["lzma"]
 
@@ -1207,9 +1280,20 @@ def main(argv: list[str] | None = None) -> int:
             python_builder_evidence, python_builder, python_builder_site = validate_python_builder(
                 args.python_builder_manifest
             )
+        libxml2_build_evidence: dict | None = None
+        libxml2_include: Path | None = None
+        zlib_library: Path | None = None
+        lzma_library: Path | None = None
+        if args.libxml2_build_deps_manifest is not None:
+            libxml2_build_evidence, libxml2_include, zlib_library, lzma_library = validate_libxml2_build_deps(
+                args.libxml2_build_deps_manifest,
+                args.package_lock,
+            )
         if args.validate_public_inputs_only:
             if args.python_builder_manifest is None or python_builder_evidence is None:
                 raise InputError("--validate-public-inputs-only requires --python-builder-manifest")
+            if args.libxml2_build_deps_manifest is None or libxml2_build_evidence is None:
+                raise InputError("--validate-public-inputs-only requires --libxml2-build-deps-manifest")
             prefix_evidence = verify_locked_prefix(
                 args.package_lock,
                 args.source_explicit,
@@ -1235,6 +1319,11 @@ def main(argv: list[str] | None = None) -> int:
                         "sha256": sha256(args.python_builder_manifest),
                         "identity": python_builder_evidence,
                     },
+                    "libxml2_build_deps_manifest": {
+                        "path": str(args.libxml2_build_deps_manifest.resolve()),
+                        "sha256": sha256(args.libxml2_build_deps_manifest),
+                        "identity": libxml2_build_evidence,
+                    },
                     "sources": source_evidence,
                     "recipe_source_bindings": recipe_bindings,
                     "spdlog_patch": patch_evidence,
@@ -1242,7 +1331,6 @@ def main(argv: list[str] | None = None) -> int:
                     "locked_prefix": {"path": str(args.locked_prefix.resolve()), "verification": prefix_evidence},
                     "stock_abi_preflight": stock_abi_evidence,
                     "deferred_full_rebuild_inputs": [
-                        "libxml2_build_deps_manifest",
                         "private_provider_manifest",
                         "native_closure_report",
                     ],
@@ -1271,10 +1359,11 @@ def main(argv: list[str] | None = None) -> int:
         assert python_builder_evidence is not None
         assert python_builder is not None
         assert python_builder_site is not None
+        assert libxml2_build_evidence is not None
+        assert libxml2_include is not None
+        assert zlib_library is not None
+        assert lzma_library is not None
         closure_evidence = validate_native_closure_report(args.native_closure_report)
-        libxml2_build_evidence, libxml2_include, zlib_library, lzma_library = validate_libxml2_build_deps(
-            args.libxml2_build_deps_manifest
-        )
         provider_manifest, provider, provider_audit = validate_provider(args.private_provider_manifest, tools)
         evidence_seed = args.scratch_root / "evidence"
         build_tool_verification = evidence_seed / "build-tool-verification.json"

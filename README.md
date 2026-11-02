@@ -74,16 +74,21 @@ capturing the required stock ABI failure. The prototype binds that immutable
 preflight evidence, fetches the pinned public Basix/DOLFINx dependency sources
 by SHA-256, prepares the Python wheel builder from a fixed seven-wheel public
 closure on the already qualified NumPy CPython 3.12 runtime, replays the separate
-41-record build-only toolchain lock, compiles a C++20 probe offline in the pinned
-glibc 2.17 image, and records a fail-closed public-input provenance skeleton.
+41-record build-only toolchain lock, prepares the libxml2 zlib/liblzma build-only
+inputs from a two-record `@EXPLICIT` development-header transaction plus the
+already verified runtime `libzlib`/`liblzma` packages, compiles a C++20 probe
+offline in the pinned glibc 2.17 image, and records a fail-closed public-input
+provenance skeleton.
 The builder reuses the existing NumPy-profile `pip` and `packaging` pins, uses
 only SHA-bound pure wheels, performs no dependency solve, and is validated with
-networking disabled. That skeleton is not a qualified source rebuild. Full
-execution still requires separately reproducible libxml2 build-dependency,
-private C++ provider, and native-closure evidence inputs. ICU remains live in
-the stock native closure, and the overlay packager does not yet accept rebuilt
-native outputs, so the hosted release path fails closed after recording the
-prototype evidence.
+networking disabled. The libxml2 build-dependency producer similarly uses exact
+conda-forge package URLs and SHA-256 digests with no channel/index solve, hashes
+the downloaded development archives, and copies only the pinned regular headers
+and versioned shared libraries. That skeleton is not a qualified source rebuild.
+Full execution still requires separately reproducible private C++ provider and
+native-closure evidence inputs. ICU remains live in the stock native closure,
+and the overlay packager does not yet accept rebuilt native outputs, so the
+hosted release path fails closed after recording the prototype evidence.
 
 ## CI
 
