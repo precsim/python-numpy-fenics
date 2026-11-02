@@ -490,6 +490,7 @@ jobs:
             --check native_closure=pass \
             --check tcl_tk_8_6_18=pass \
             --check numpy_absent=pass \
+            --check relocation=pass \
             --check private_consumer_checkout=not-applicable
 
           if [[ "$QUALIFY_NUMPY" == "true" ]]; then
@@ -506,6 +507,7 @@ jobs:
               --check private_openblas=pass \
               --check blas_lapack_functional=pass \
               --check native_closure=pass \
+              --check relocation=pass \
               --check private_consumer_checkout=not-applicable
           fi
 

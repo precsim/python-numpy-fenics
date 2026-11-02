@@ -124,6 +124,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "accelerate": "pass",
         "blas_lapack_functional": "pass",
         "relocated_tcl_tk": "pass",
+        "relocation": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -134,6 +135,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "accelerate": "pass",
         "blas_lapack_functional": "pass",
         "relocated_tcl_tk": "pass",
+        "relocation": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -171,6 +173,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "tcl_tk_8_6_18": "pass",
         "native_closure": "pass",
         "numpy_absent": "pass",
+        "relocation": "pass",
         "private_consumer_checkout": "not-applicable",
     },
     ("linux-x64", "numpy"): {
@@ -181,6 +184,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "private_openblas": "pass",
         "blas_lapack_functional": "pass",
         "native_closure": "pass",
+        "relocation": "pass",
         "private_consumer_checkout": "not-applicable",
     },
     ("linux-x64", "fenics"): {

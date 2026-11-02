@@ -197,9 +197,9 @@ identity_path.write_text(json.dumps(identity, indent=2, sort_keys=True)+"\n", en
 print(f"core_tree_sha256={identity['sha256']}")
 PY
 
-"$helper_python" - "$sources_manifest" "$verified_inputs" "$image_ref" \
+"$core_python" -I -S - "$sources_manifest" "$verified_inputs" "$image_ref" \
     "$input_dir" "$numpy_source" "$openblas_source" "$wheelhouse" "$devtoolset_rpm_dir" <<'PY'
-import hashlib, json, pathlib, re, sys, zipfile
+import hashlib, json, pathlib, platform, re, subprocess, sys, zipfile
 manifest_path = pathlib.Path(sys.argv[1]).resolve()
 output_path = pathlib.Path(sys.argv[2])
 image_ref, input_dir_arg, numpy_arg, openblas_arg = sys.argv[3:7]
@@ -308,10 +308,20 @@ for tag in observed_tags:
     declared_floors.append(f"2.{int(match.group(1))}")
 if declared_floors!=policy["declared_glibc_floors"] or any(int(value.split(".",1)[1])<=17 for value in declared_floors):
     fail(f"NumPy binary candidate does not prove a glibc floor above 2.17: {declared_floors!r}")
+glibc=subprocess.run(["getconf","GNU_LIBC_VERSION"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)
+host={
+    "python_version":platform.python_version(),
+    "python_abi":f"cp{sys.version_info.major}{sys.version_info.minor}",
+    "architecture":platform.machine(),
+    "glibc":glibc.stdout.strip().removeprefix("glibc ") if glibc.returncode==0 else "",
+}
+if host!={"python_version":"3.14.10","python_abi":"cp314","architecture":"x86_64","glibc":"2.17"}:
+    fail(f"NumPy binary candidate qualification host differs from target runtime: {host!r}")
 binary_candidate.update({
     "verified_path":str(candidate_path),
     "verified_sha256":candidate_digest,
     "observed_wheel_tags":observed_tags,
+    "qualification_host":host,
     "decision":"reject-binary-and-authorize-source-rebuild",
 })
 wheels=[]
@@ -1295,6 +1305,7 @@ data = {
         "target_glibc_floor": verified_inputs["binary_candidate"]["rejection_policy"]["target_glibc_floor"],
         "declared_glibc_floors": verified_inputs["binary_candidate"]["rejection_policy"]["declared_glibc_floors"],
         "reason": verified_inputs["binary_candidate"]["rejection_policy"]["reason"],
+        "qualification_host": verified_inputs["binary_candidate"]["qualification_host"],
         "decision": verified_inputs["binary_candidate"]["decision"],
     },
     "core": {

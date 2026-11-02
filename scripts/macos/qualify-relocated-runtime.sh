@@ -149,10 +149,53 @@ lib._dyld_image_count.restype = ctypes.c_uint32
 lib._dyld_get_image_name.argtypes = [ctypes.c_uint32]
 lib._dyld_get_image_name.restype = ctypes.c_char_p
 images = set()
+image_names = set()
 for index in range(lib._dyld_image_count()):
     raw = lib._dyld_get_image_name(index)
     if raw:
-        images.add(pathlib.Path(os.fsdecode(raw)).resolve())
+        decoded = os.fsdecode(raw)
+        image_names.add(decoded)
+        images.add(pathlib.Path(decoded).resolve())
+
+numpy_evidence = None
+if profile == "numpy":
+    site_packages = python_home / "lib/python3.14/site-packages"
+    sys.path.insert(0, str(site_packages))
+    import numpy
+    import numpy._core._multiarray_umath as multiarray
+
+    if numpy.__version__ != "2.5.2":
+        raise SystemExit(f"relocated NumPy version mismatch: {numpy.__version__}")
+    for module_path in (numpy.__file__, multiarray.__file__):
+        resolved = pathlib.Path(module_path).resolve()
+        if site_packages not in resolved.parents:
+            raise SystemExit(f"relocated NumPy module escaped staged site-packages: {resolved}")
+    matrix = numpy.array([[1.0, 2.0], [3.0, 4.0]], dtype=numpy.float64)
+    vector = numpy.array([1.0, 2.0], dtype=numpy.float64)
+    if not numpy.allclose(numpy.matmul(matrix, vector), numpy.array([5.0, 11.0])):
+        raise SystemExit("relocated NumPy matmul Accelerate probe failed")
+    system = numpy.array([[3.0, 1.0], [1.0, 2.0]], dtype=numpy.float64)
+    rhs = numpy.array([9.0, 8.0], dtype=numpy.float64)
+    if not numpy.allclose(numpy.linalg.solve(system, rhs), numpy.array([2.0, 3.0])):
+        raise SystemExit("relocated NumPy linalg.solve Accelerate probe failed")
+    images = set()
+    image_names = set()
+    for index in range(lib._dyld_image_count()):
+        raw = lib._dyld_get_image_name(index)
+        if raw:
+            decoded = os.fsdecode(raw)
+            image_names.add(decoded)
+            images.add(pathlib.Path(decoded).resolve())
+    accelerate_path = "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate"
+    if accelerate_path not in image_names:
+        raise SystemExit("relocated NumPy process did not map Apple Accelerate")
+    numpy_evidence = {
+        "version": numpy.__version__,
+        "site_packages": "Python.framework/Versions/3.14/lib/python3.14/site-packages",
+        "matmul": "pass",
+        "linalg_solve": "pass",
+        "accelerate_provider": accelerate_path,
+    }
 
 expected_tcl = (python_home / "lib/libtcl8.6.dylib").resolve()
 expected_tk = (python_home / "lib/libtk8.6.dylib").resolve()
@@ -214,6 +257,7 @@ payload = {
         "provider_sha256": provider_sha["tk"],
     },
     "tcl_tk_provider_isolation": "pass",
+    "numpy": numpy_evidence,
     "hostile_environment": {
         "python_path": "poisoned",
         "user_base": "poisoned",
@@ -227,6 +271,8 @@ print(f"relocated_tcl_provider={expected_tcl.relative_to(runtime).as_posix()}")
 print(f"relocated_tk_provider={expected_tk.relative_to(runtime).as_posix()}")
 print("relocated_tcl_tk_provider_isolation=pass")
 print("relocated_tcl_tk=pass")
+if profile == "numpy":
+    print("relocated_numpy=pass")
 PY
 
 echo "relocation_evidence=$output"

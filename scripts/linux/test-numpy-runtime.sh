@@ -166,6 +166,7 @@ import re
 import stat
 import subprocess
 import sys
+import zipfile
 
 runtime = pathlib.Path(sys.argv[1]).resolve()
 core = pathlib.Path(sys.argv[2]).resolve()
@@ -528,6 +529,33 @@ if binary_candidate != {
     "rejection_policy": expected_binary_policy,
 }:
     fail(f"NumPy binary candidate lock differs from the required cp314/glibc evidence: {binary_candidate!r}")
+candidate_path = input_root / binary_candidate["filename"]
+if not candidate_path.is_file() or candidate_path.is_symlink():
+    fail(f"NumPy binary candidate is missing or invalid: {candidate_path}")
+if sha256(candidate_path) != binary_candidate["sha256"]:
+    fail("NumPy binary candidate SHA-256 differs from the committed lock")
+with zipfile.ZipFile(candidate_path) as archive:
+    wheel_metadata = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+    if len(wheel_metadata) != 1:
+        fail(f"NumPy binary candidate has unexpected WHEEL metadata paths: {wheel_metadata!r}")
+    wheel_text = archive.read(wheel_metadata[0]).decode("utf-8")
+observed_binary_tags = sorted(
+    line.split(":", 1)[1].strip()
+    for line in wheel_text.splitlines()
+    if line.startswith("Tag:")
+)
+if observed_binary_tags != expected_binary_tags:
+    fail(f"NumPy binary candidate WHEEL tags differ from the committed lock: {observed_binary_tags!r}")
+observed_binary_floors = []
+for tag in observed_binary_tags:
+    match = re.search(r"manylinux_2_([0-9]+)_x86_64$", tag)
+    if match is None:
+        fail(f"NumPy binary candidate has unsupported platform tag: {tag}")
+    observed_binary_floors.append(f"2.{int(match.group(1))}")
+if observed_binary_floors != ["2.27", "2.28"] or any(
+    int(value.split(".", 1)[1]) <= 17 for value in observed_binary_floors
+):
+    fail(f"NumPy binary candidate no longer proves incompatibility with glibc 2.17: {observed_binary_floors!r}")
 if sources_manifest.get("build_policy") != {
     "network_disabled_after_input_verification": True,
     "pep517_build_isolation": False,
@@ -648,10 +676,16 @@ binary_rejection = data.get("binary_candidate_rejection", {})
 if binary_rejection != {
     "filename": binary_candidate["filename"],
     "sha256": binary_candidate["sha256"],
-    "observed_wheel_tags": expected_binary_tags,
+    "observed_wheel_tags": observed_binary_tags,
     "target_glibc_floor": "2.17",
-    "declared_glibc_floors": ["2.27", "2.28"],
+    "declared_glibc_floors": observed_binary_floors,
     "reason": "declared-manylinux-glibc-floor-above-target",
+    "qualification_host": {
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
+        "architecture": "x86_64",
+        "glibc": "2.17",
+    },
     "decision": "reject-binary-and-authorize-source-rebuild",
 }:
     fail(f"NumPy provenance does not bind binary-first rebuild authorization: {binary_rejection!r}")
@@ -659,8 +693,9 @@ closed_candidate = data.get("closed_inputs", {}).get("binary_candidate", {})
 if (
     closed_candidate.get("filename") != binary_candidate["filename"]
     or closed_candidate.get("verified_sha256") != binary_candidate["sha256"]
-    or closed_candidate.get("observed_wheel_tags") != expected_binary_tags
+    or closed_candidate.get("observed_wheel_tags") != observed_binary_tags
     or closed_candidate.get("rejection_policy") != expected_binary_policy
+    or closed_candidate.get("qualification_host") != binary_rejection["qualification_host"]
     or closed_candidate.get("decision") != "reject-binary-and-authorize-source-rebuild"
 ):
     fail(f"NumPy closed inputs do not retain binary-candidate rejection evidence: {closed_candidate!r}")
@@ -1374,6 +1409,20 @@ run_numpy_probe native
 
 numpy_cpu_mask="X86_V2,X86_V3"
 run_numpy_probe masked NPY_DISABLE_CPU_FEATURES="$numpy_cpu_mask"
+
+relocated_runtime="$poison/relocated-numpy-runtime"
+cp -a "$runtime" "$relocated_runtime"
+original_runtime="$runtime"
+original_python="$python"
+original_provider="$provider"
+runtime="$relocated_runtime"
+python="$runtime/bin/python3.14"
+provider="$runtime/$provider_rel"
+run_numpy_probe native
+runtime="$original_runtime"
+python="$original_python"
+provider="$original_provider"
+echo "linux_glibc217_numpy_relocation=pass"
 
 printf 'linux_glibc217_numpy_image=%s\n' "$expected_image"
 printf 'linux_glibc217_numpy_glibc=%s\n' "$glibc_identity"

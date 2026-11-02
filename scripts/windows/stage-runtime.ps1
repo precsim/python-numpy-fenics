@@ -4,6 +4,7 @@ param(
     [string]$CoreRuntime = '',
     [ValidateSet('core','numpy')]
     [string]$RuntimeProfile = 'core',
+    [string]$CpythonBinaryLock = '',
     [string]$CpythonBinaryAsset = '',
     [string]$CpythonSource = '',
     [string]$TclSource = '',
@@ -26,9 +27,14 @@ $ExpectedNumpy = '2.5.2'
 $ExpectedWheel = 'numpy-2.5.2-cp314-cp314-win_amd64.whl'
 $ExpectedWheelSha256 = '7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d'
 $ExpectedTclTk = '8.6.18'
+$ExpectedCpythonBinaryAssetId = 678419363
 $ExpectedCpythonBinaryAsset = 'python-3.14.10-win32-x64.zip'
+$ExpectedCpythonBinaryAssetBytes = 33210246
 $ExpectedCpythonBinaryAssetSha256 = '6cc56cec3d548538f418dfe2d8e18fdfcc6d2565616c82ebbde7a82ae1bb2692'
 $ExpectedCpythonBinaryRelease = '3.14.10-40336797752'
+$ExpectedCpythonInstaller = 'python-3.14.10-amd64.exe'
+$ExpectedCpythonInstallerBytes = 33498520
+$ExpectedCpythonInstallerSha256 = '92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965'
 $ExpectedCpythonSource = 'Python-3.14.10.tgz'
 $ExpectedCpythonSourceUrl = 'https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz'
 $ExpectedCpythonSourceSha256 = '9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192'
@@ -139,8 +145,8 @@ if ($RuntimeProfile -eq 'core') {
     if (-not $Python) {
         throw 'Core profile requires -Python'
     }
-    if (-not $CpythonBinaryAsset -or -not $CpythonSource -or -not $TclSource -or -not $TkSource -or -not $TclTkLock) {
-        throw 'Core profile requires -CpythonBinaryAsset, -CpythonSource, -TclSource, -TkSource, and -TclTkLock'
+    if (-not $CpythonBinaryLock -or -not $CpythonBinaryAsset -or -not $CpythonSource -or -not $TclSource -or -not $TkSource -or -not $TclTkLock) {
+        throw 'Core profile requires -CpythonBinaryLock, -CpythonBinaryAsset, -CpythonSource, -TclSource, -TkSource, and -TclTkLock'
     }
     if ($CoreRuntime) {
         throw '-CoreRuntime is valid only for the numpy profile'
@@ -150,7 +156,7 @@ if ($RuntimeProfile -eq 'core') {
     if ($Python) {
         throw 'NumPy profile derives from -CoreRuntime and does not accept -Python'
     }
-    if ($CpythonBinaryAsset -or $CpythonSource -or $TclSource -or $TkSource -or $TclTkLock) {
+    if ($CpythonBinaryLock -or $CpythonBinaryAsset -or $CpythonSource -or $TclSource -or $TkSource -or $TclTkLock) {
         throw 'CPython binary/source and Tcl/Tk source inputs are valid only for the core profile'
     }
     if (-not $CoreRuntime) {
@@ -201,9 +207,33 @@ if ($RuntimeProfile -eq 'core') {
         }
     }
 
+    $cpythonBinaryLockPath = (Resolve-Path -LiteralPath $CpythonBinaryLock -ErrorAction Stop).Path
+    $cpythonBinaryLockSha = (Get-FileHash -LiteralPath $cpythonBinaryLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $cpythonBinaryLockPayload = Get-Content -LiteralPath $cpythonBinaryLockPath -Raw | ConvertFrom-Json
+    $lockedArchive = $cpythonBinaryLockPayload.upstream.archive_asset
+    $lockedInstaller = $cpythonBinaryLockPayload.upstream.installer
+    if ($cpythonBinaryLockPayload.schema_version -ne 1 -or
+        $cpythonBinaryLockPayload.component -ne 'cpython-binary' -or
+        $cpythonBinaryLockPayload.version -ne $ExpectedPython -or
+        $cpythonBinaryLockPayload.python_abi -ne $ExpectedPythonAbi -or
+        $cpythonBinaryLockPayload.platform -ne 'win-x64' -or
+        $cpythonBinaryLockPayload.upstream.repository -ne 'actions/python-versions' -or
+        $cpythonBinaryLockPayload.upstream.release -ne $ExpectedCpythonBinaryRelease -or
+        $lockedArchive.id -ne $ExpectedCpythonBinaryAssetId -or
+        $lockedArchive.filename -ne $ExpectedCpythonBinaryAsset -or
+        $lockedArchive.bytes -ne $ExpectedCpythonBinaryAssetBytes -or
+        $lockedArchive.sha256 -ne $ExpectedCpythonBinaryAssetSha256 -or
+        $lockedInstaller.filename -ne $ExpectedCpythonInstaller -or
+        $lockedInstaller.bytes -ne $ExpectedCpythonInstallerBytes -or
+        $lockedInstaller.sha256 -ne $ExpectedCpythonInstallerSha256) {
+        throw 'CPython binary lock identity differs from the producer baseline'
+    }
     $cpythonBinaryAssetPath = (Resolve-Path -LiteralPath $CpythonBinaryAsset -ErrorAction Stop).Path
     if ([IO.Path]::GetFileName($cpythonBinaryAssetPath) -ne $ExpectedCpythonBinaryAsset) {
         throw "Unexpected CPython binary asset: $([IO.Path]::GetFileName($cpythonBinaryAssetPath))"
+    }
+    if ((Get-Item -LiteralPath $cpythonBinaryAssetPath).Length -ne $ExpectedCpythonBinaryAssetBytes) {
+        throw 'CPython binary asset byte count mismatch'
     }
     $cpythonBinaryAssetSha = (Get-FileHash -LiteralPath $cpythonBinaryAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($cpythonBinaryAssetSha -ne $ExpectedCpythonBinaryAssetSha256) {
@@ -568,9 +598,17 @@ $manifest = [ordered]@{
         dll_sha256 = $dllHash
         binary_asset = if ($RuntimeProfile -eq 'core') {
             [ordered]@{
+                lock_sha256 = $cpythonBinaryLockSha
                 release = $ExpectedCpythonBinaryRelease
+                asset_id = $ExpectedCpythonBinaryAssetId
                 filename = $ExpectedCpythonBinaryAsset
+                bytes = $ExpectedCpythonBinaryAssetBytes
                 sha256 = $ExpectedCpythonBinaryAssetSha256
+                installer = [ordered]@{
+                    filename = $ExpectedCpythonInstaller
+                    bytes = $ExpectedCpythonInstallerBytes
+                    sha256 = $ExpectedCpythonInstallerSha256
+                }
             }
         } else {
             $null

@@ -261,6 +261,7 @@ jobs:
             --check accelerate=pass \
             --check blas_lapack_functional=pass \
             --check relocated_tcl_tk=pass \
+            --check relocation=pass \
             --check native_closure=pass \
             --check macos_floor=pass \
             --check private_consumer_checkout=not-applicable

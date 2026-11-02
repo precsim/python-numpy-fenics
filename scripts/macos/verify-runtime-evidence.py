@@ -142,6 +142,14 @@ def verify(runtime: Path, profile: str, arch: str) -> dict[str, str]:
         or evidence.get("tcl_tk_provider_isolation") != "pass"
     ):
         raise SystemExit("macOS relocation evidence metadata is invalid")
+    if profile == "numpy" and evidence.get("numpy") != {
+        "version": "2.5.2",
+        "site_packages": "Python.framework/Versions/3.14/lib/python3.14/site-packages",
+        "matmul": "pass",
+        "linalg_solve": "pass",
+        "accelerate_provider": "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
+    }:
+        raise SystemExit("macOS NumPy relocation evidence is invalid")
     tcl_tk = provenance.get("tcl_tk", {})
     if not isinstance(tcl_tk, dict):
         raise SystemExit("macOS provenance Tcl/Tk metadata is invalid")
