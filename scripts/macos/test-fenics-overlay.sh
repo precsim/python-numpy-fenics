@@ -109,7 +109,8 @@ ditto -x -k "$overlay_zip" "$runtime"
 
 overlay_manifest="$runtime/fenics-embed-manifest.json"
 [[ -f "$overlay_manifest" ]] || { echo "FEnICS overlay manifest is missing after extraction" >&2; exit 1; }
-python3 - "$overlay_manifest" "$target_arch" <<'PY'
+python3 - "$overlay_manifest" "$target_arch" "$base_manifest" "$work/numpy-before.json" <<'PY'
+import hashlib
 import json
 import pathlib
 import re
@@ -117,15 +118,28 @@ import sys
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 arch = sys.argv[2]
+base_manifest = pathlib.Path(sys.argv[3])
+numpy_before = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
 expected_platform = "macos-arm64" if arch == "arm64" else "macos-x64"
+tree = hashlib.sha256()
+for relative, identity in sorted(numpy_before.items()):
+    if isinstance(identity, dict):
+        record = f"L\0{relative}\0{identity['symlink']}\n"
+    else:
+        record = f"F\0{relative}\0{identity}\n"
+    tree.update(record.encode("utf-8"))
+numpy_identity = manifest.get("numpy", {})
 if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != expected_platform
     or manifest.get("python_abi") != "cp312"
     or manifest.get("profile") != "fenics"
     or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
-    or manifest.get("numpy", {}).get("version") != "2.5.2"
-    or not manifest.get("numpy", {}).get("producer_payload_excluded")
+    or numpy_identity.get("version") != "2.5.2"
+    or not numpy_identity.get("producer_payload_excluded")
+    or numpy_identity.get("base_manifest_sha256") != hashlib.sha256(base_manifest.read_bytes()).hexdigest()
+    or numpy_identity.get("base_tree_sha256") != tree.hexdigest()
+    or numpy_identity.get("base_entry_count") != len(numpy_before)
 ):
     raise SystemExit(f"invalid FEnICS overlay manifest: {manifest!r}")
 for entry in manifest.get("files", []):

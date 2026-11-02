@@ -3,21 +3,6 @@ name: qualify-windows-fenics
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - "runtime/windows/fenics_embed_runtime.py"
-      - "scripts/windows/package-fenics-overlay.ps1"
-      - "scripts/windows/package_lock.py"
-      - "scripts/windows/test-fenics-overlay.ps1"
-      - "scripts/windows/stage-runtime.ps1"
-      - "scripts/windows/test-runtime.ps1"
-      - "scripts/common/**"
-      - "locks/windows/**"
-      - "tests/fenics/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/windows/**"
-      - ".github/workflows/qualify-windows-fenics.yml"
-      - "README.md"
   push:
     branches:
       - main
@@ -45,6 +30,7 @@ concurrency:
 
 jobs:
   qualify:
+    name: qualify-windows-fenics
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -137,7 +123,7 @@ jobs:
       - name: Package embedded-runtime overlay
         shell: pwsh
         run: |
-          .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -Output .\dist -Version 0.1.0
+          .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -BaseRuntime .\out\win-x64\numpy -Output .\dist -Version 0.1.0
           $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
           $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$zip.sha256" -Value "$sha  $([IO.Path]::GetFileName($zip))" -Encoding utf8NoBOM

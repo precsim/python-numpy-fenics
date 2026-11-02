@@ -3,23 +3,6 @@ name: qualify-macos-fenics
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/qualify-macos-fenics.yml"
-      - "scripts/macos/package_lock.py"
-      - "scripts/macos/package_fenics_overlay.py"
-      - "scripts/macos/stage-core-runtime.sh"
-      - "scripts/macos/stage-numpy-runtime.sh"
-      - "scripts/macos/inspect-macos-runtime.sh"
-      - "scripts/macos/test-fenics-overlay.sh"
-      - "scripts/macos/test-conda-clang-jit.sh"
-      - "scripts/common/**"
-      - "runtime/macos_fenics_embed_runtime.py"
-      - "locks/macos/**"
-      - "tests/fenics/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/macos/**"
-      - "README.md"
   push:
     branches:
       - main
@@ -44,6 +27,7 @@ concurrency:
 
 jobs:
   qualify-overlay:
+    name: qualify-macos-fenics-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -291,6 +275,7 @@ jobs:
             --prefix "$FENICS_LOCKED_PREFIX" \
             --lock "$FENICS_LOCK_FILE" \
             --package-cache "$FENICS_PACKAGE_CACHE" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
             --arch "$TARGET_ARCH" \
             --output dist \
             --version 0.1.0 \
@@ -321,6 +306,7 @@ jobs:
             --prefix "$FENICS_LOCKED_PREFIX" \
             --lock "$FENICS_LOCK_FILE" \
             --package-cache "$FENICS_PACKAGE_CACHE" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
             --arch "$TARGET_ARCH" \
             --output dist-repeat \
             --version 0.1.0 \

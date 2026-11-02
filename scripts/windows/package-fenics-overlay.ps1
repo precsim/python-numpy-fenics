@@ -3,6 +3,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Prefix,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseRuntime,
     [string]$Output = "dist",
     [string]$Version = "0.1.0"
 )
@@ -21,6 +23,94 @@ function Write-Utf8NoBom {
     [IO.File]::WriteAllText([IO.Path]::GetFullPath($Path), $Text, $utf8NoBom)
 }
 
+function Get-NumpyBaseIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Runtime,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedRevision,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedVersion
+    )
+
+    $runtimePath = (Resolve-Path -LiteralPath $Runtime -ErrorAction Stop).Path
+    $manifestPath = Join-Path $runtimePath "runtime-manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Qualified NumPy base runtime manifest is missing: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.format_version -ne 1 -or
+        $manifest.platform -ne "win-x64" -or
+        $manifest.profile -ne "numpy" -or
+        $manifest.python_abi -ne "cp312" -or
+        $manifest.version -ne $ExpectedVersion -or
+        $manifest.producer.repository -ne "precsim/python-numpy-fenics" -or
+        $manifest.producer.revision -ne $ExpectedRevision) {
+        throw "FEniCS overlay NumPy base runtime identity is invalid"
+    }
+
+    $entries = @()
+    $seen = @{}
+    foreach ($entry in @($manifest.files)) {
+        $normalized = ([string]$entry.path).Replace("\", "/")
+        if (-not $normalized -or $normalized.StartsWith("/") -or $normalized -match '(^|/)\.\.(/|$)') {
+            throw "Qualified NumPy base manifest contains unsafe path: $normalized"
+        }
+        $prefix = "Lib/site-packages/"
+        if (-not $normalized.StartsWith($prefix)) {
+            continue
+        }
+        $relative = $normalized.Substring($prefix.Length)
+        if ($relative -notmatch '^(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)') {
+            continue
+        }
+        if ($seen.ContainsKey($relative)) {
+            throw "Qualified NumPy base manifest contains duplicate NumPy path: $relative"
+        }
+        $seen[$relative] = $true
+
+        $kindProperty = $entry.PSObject.Properties["kind"]
+        $kind = if ($null -eq $kindProperty) { "file" } else { [string]$kindProperty.Value }
+        if ($kind -eq "file") {
+            $shaProperty = $entry.PSObject.Properties["sha256"]
+            $sha = if ($null -eq $shaProperty) { "" } else { ([string]$shaProperty.Value).ToLowerInvariant() }
+            if ($sha -notmatch '^[0-9a-f]{64}$') {
+                throw "Qualified NumPy base manifest has invalid SHA-256 for $relative"
+            }
+            $entries += [pscustomobject]@{ relative = $relative; record = "F`0$relative`0$sha`n" }
+        } elseif ($kind -eq "symlink") {
+            $targetProperty = $entry.PSObject.Properties["target"]
+            $target = if ($null -eq $targetProperty) { "" } else { [string]$targetProperty.Value }
+            if (-not $target) {
+                throw "Qualified NumPy base manifest has invalid symlink target for $relative"
+            }
+            $entries += [pscustomobject]@{ relative = $relative; record = "L`0$relative`0$target`n" }
+        } else {
+            throw "Qualified NumPy base manifest has unsupported kind for $relative`: $kind"
+        }
+    }
+    $entries = @($entries | Sort-Object relative)
+    if ($entries.Count -eq 0) {
+        throw "Qualified NumPy base manifest contains no NumPy payload"
+    }
+
+    $hasher = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        foreach ($entry in $entries) {
+            $hasher.AppendData($utf8NoBom.GetBytes([string]$entry.record))
+        }
+        $treeHash = ([BitConverter]::ToString($hasher.GetHashAndReset())).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+    }
+    [pscustomobject]@{
+        manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        tree_sha256 = $treeHash
+        entry_count = $entries.Count
+    }
+}
+
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $prefixPath = (Resolve-Path -LiteralPath $Prefix -ErrorAction Stop).Path
 $python = Join-Path $prefixPath "python.exe"
@@ -34,6 +124,14 @@ if (-not (Test-Path -LiteralPath $condaMeta -PathType Container)) {
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Embedded-runtime version must be X.Y.Z, got $Version"
 }
+$producerRevision = if ($env:PRODUCER_REVISION) {
+    $env:PRODUCER_REVISION
+} elseif ($env:GITHUB_SHA) {
+    $env:GITHUB_SHA
+} else {
+    "local"
+}
+$baseIdentity = Get-NumpyBaseIdentity -Runtime $BaseRuntime -ExpectedRevision $producerRevision -ExpectedVersion $Version
 
 $records = @(
     Get-ChildItem -LiteralPath $condaMeta -Filter "*.json" -File |
@@ -263,18 +361,17 @@ try {
         profile = "fenics"
         producer = [ordered]@{
             repository = "precsim/python-numpy-fenics"
-            revision = if ($env:PRODUCER_REVISION) {
-                $env:PRODUCER_REVISION
-            } elseif ($env:GITHUB_SHA) {
-                $env:GITHUB_SHA
-            } else {
-                "local"
-            }
+            revision = $producerRevision
         }
         python = [ordered]@{
             version = $probe.python
         }
-        numpy = [ordered]@{ version = $probe.numpy }
+        numpy = [ordered]@{
+            version = $probe.numpy
+            base_manifest_sha256 = $baseIdentity.manifest_sha256
+            base_tree_sha256 = $baseIdentity.tree_sha256
+            base_entry_count = $baseIdentity.entry_count
+        }
         layering = [ordered]@{
             base_profile = "numpy"
             producer_python_included = $false

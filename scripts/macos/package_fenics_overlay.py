@@ -98,6 +98,83 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def numpy_base_identity(
+    base_runtime: Path,
+    *,
+    expected_platform: str,
+    expected_revision: str,
+    expected_version: str,
+) -> dict[str, Any]:
+    manifest_path = base_runtime / "runtime-manifest.json"
+    if not manifest_path.is_file():
+        raise SystemExit(f"qualified NumPy base runtime manifest is missing: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise SystemExit(f"qualified NumPy base runtime manifest is invalid JSON: {manifest_path}: {exc}") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format_version") != 1
+        or manifest.get("platform") != expected_platform
+        or manifest.get("profile") != "numpy"
+        or manifest.get("python_abi") != "cp312"
+        or manifest.get("version") != expected_version
+        or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
+        or manifest.get("producer", {}).get("revision") != expected_revision
+    ):
+        raise SystemExit(f"FEniCS overlay NumPy base runtime identity is invalid: {manifest_path}")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise SystemExit(f"qualified NumPy base runtime manifest has no file inventory: {manifest_path}")
+
+    prefix = "Python.framework/Versions/3.12/lib/python3.12/site-packages/"
+    entries: dict[str, tuple[str, str]] = {}
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise SystemExit(f"qualified NumPy base runtime manifest contains a non-object file entry: {manifest_path}")
+        raw_path = str(entry.get("path", "")).replace("\\", "/")
+        path = PurePosixPath(raw_path)
+        if not raw_path or path.is_absolute() or ".." in path.parts:
+            raise SystemExit(f"qualified NumPy base runtime manifest contains unsafe path: {raw_path!r}")
+        if not raw_path.startswith(prefix):
+            continue
+        relative = raw_path[len(prefix):]
+        if not (
+            relative.startswith("numpy/")
+            or relative.startswith("numpy.libs/")
+            or re.match(r"^numpy-[^/]+\.dist-info/", relative)
+        ):
+            continue
+        if relative in entries:
+            raise SystemExit(f"qualified NumPy base runtime manifest contains duplicate NumPy path: {relative}")
+        kind = str(entry.get("kind", "file"))
+        if kind == "file":
+            digest = str(entry.get("sha256", "")).lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise SystemExit(f"qualified NumPy base runtime manifest has invalid SHA-256 for {relative}")
+            entries[relative] = ("F", digest)
+        elif kind == "symlink":
+            target = entry.get("target")
+            if not isinstance(target, str) or not target:
+                raise SystemExit(f"qualified NumPy base runtime manifest has invalid symlink target for {relative}")
+            entries[relative] = ("L", target)
+        else:
+            raise SystemExit(f"qualified NumPy base runtime manifest has unsupported kind for {relative}: {kind!r}")
+    if not entries:
+        raise SystemExit("qualified NumPy base runtime manifest contains no NumPy payload")
+
+    aggregate = hashlib.sha256()
+    for relative, (kind, identity) in sorted(entries.items()):
+        aggregate.update(kind.encode("ascii") + b"\0")
+        aggregate.update(relative.encode("utf-8") + b"\0")
+        aggregate.update(identity.encode("utf-8") + b"\n")
+    return {
+        "manifest_sha256": sha256_file(manifest_path),
+        "tree_sha256": aggregate.hexdigest(),
+        "entry_count": len(entries),
+    }
+
+
 def safe_relative(raw: str) -> PurePosixPath:
     value = raw.replace("\\", "/")
     path = PurePosixPath(value)
@@ -828,6 +905,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--prefix", required=True)
 parser.add_argument("--lock", required=True)
 parser.add_argument("--package-cache", required=True)
+parser.add_argument("--base-runtime", required=True)
 parser.add_argument("--arch", required=True, choices=("arm64", "x86_64"))
 parser.add_argument("--output", required=True)
 parser.add_argument("--version", default="0.1.0")
@@ -840,12 +918,22 @@ if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
 prefix = Path(args.prefix).resolve()
 lock_path = Path(args.lock).resolve()
 package_cache = Path(args.package_cache).resolve()
+base_runtime = Path(args.base_runtime).resolve()
 output = Path(args.output).resolve()
 bootstrap_source = Path(__file__).resolve().parents[2] / "runtime" / "macos_fenics_embed_runtime.py"
+asset_arch = "arm64" if args.arch == "arm64" else "x64"
+expected_platform = f"macos-{asset_arch}"
 
-for required in (prefix / "conda-meta", lock_path, package_cache, bootstrap_source):
+for required in (prefix / "conda-meta", lock_path, package_cache, base_runtime, bootstrap_source):
     if not required.exists():
         raise SystemExit(f"required producer input is missing: {required}")
+
+base_identity = numpy_base_identity(
+    base_runtime,
+    expected_platform=expected_platform,
+    expected_revision=args.producer_revision,
+    expected_version=args.version,
+)
 
 lock = load_lock(lock_path, args.arch)
 records = installed_records(prefix)
@@ -1041,7 +1129,6 @@ try:
             | {"overlay_ownership": ownership}
         )
 
-    asset_arch = "arm64" if args.arch == "arm64" else "x64"
     asset_name = f"fenics-embed-runtime-v{args.version}-macos-{asset_arch}-cp312.zip"
     manifest = {
         "format_version": 1,
@@ -1057,6 +1144,9 @@ try:
             "version": "2.5.2",
             "ownership": "consumer-numpy-profile",
             "producer_payload_excluded": True,
+            "base_manifest_sha256": base_identity["manifest_sha256"],
+            "base_tree_sha256": base_identity["tree_sha256"],
+            "base_entry_count": base_identity["entry_count"],
         },
         "producer": {
             "repository": "precsim/python-numpy-fenics",

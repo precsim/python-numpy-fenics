@@ -19,6 +19,7 @@ if (-not (Test-Path -LiteralPath $baseManifestPath -PathType Leaf)) {
     throw "Qualified NumPy base runtime manifest is missing: $baseManifestPath"
 }
 $baseManifest = Get-Content -LiteralPath $baseManifestPath -Raw | ConvertFrom-Json
+$baseManifestHash = (Get-FileHash -LiteralPath $baseManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($baseManifest.format_version -ne 1 -or
     $baseManifest.platform -ne "win-x64" -or
     $baseManifest.python_abi -ne "cp312" -or
@@ -64,6 +65,16 @@ try {
     if ($numpyBefore.Count -eq 0) {
         throw "Qualified NumPy base runtime contains no NumPy distribution files"
     }
+    $treeHasher = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        foreach ($relative in @($numpyBefore.Keys | Sort-Object)) {
+            $treeHasher.AppendData($utf8NoBom.GetBytes("F`0$relative`0$($numpyBefore[$relative])`n"))
+        }
+        $baseTreeHash = ([BitConverter]::ToString($treeHasher.GetHashAndReset())).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $treeHasher.Dispose()
+    }
 
     Expand-Archive -LiteralPath $zipPath -DestinationPath $runtimeRoot
 
@@ -76,6 +87,9 @@ try {
         throw "Embedded-runtime manifest identity is invalid"
     }
     if ($manifest.numpy.version -ne "2.5.2" -or
+        $manifest.numpy.base_manifest_sha256 -ne $baseManifestHash -or
+        $manifest.numpy.base_tree_sha256 -ne $baseTreeHash -or
+        $manifest.numpy.base_entry_count -ne $numpyBefore.Count -or
         $manifest.layering.base_profile -ne "numpy" -or
         $manifest.layering.producer_python_included -ne $false -or
         $manifest.layering.producer_numpy_included -ne $false -or
