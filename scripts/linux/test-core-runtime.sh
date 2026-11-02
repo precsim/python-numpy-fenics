@@ -84,6 +84,7 @@ required=(
     "$runtime/LICENSES/Certifi.txt"
     "$runtime/LICENSES/Libxcrypt/LICENSING.txt"
     "$runtime/LICENSES/Libxcrypt/COPYING.LIB.txt"
+    "$runtime/LICENSES/Zstd.txt"
     "$provenance"
 )
 for path in "${required[@]}"; do
@@ -133,6 +134,18 @@ if find "$runtime" -mindepth 1 \( -name 'libX11.so*' -o -name 'libX11*.a' -o -na
     echo "controlled runtime must not bundle a competing X11/XCB provider" >&2
     exit 1
 fi
+mapfile -t zstd_extension_candidates < <(find "$dynload" -maxdepth 1 -type f -name '_zstd*.so' -print | sort)
+[[ ${#zstd_extension_candidates[@]} -eq 1 ]] || {
+    echo "expected exactly one staged _zstd extension; found ${#zstd_extension_candidates[@]}" >&2
+    exit 1
+}
+zstd_provider="$runtime/lib/libzstd.so.1"
+[[ -f "$zstd_provider" ]] || { echo "producer-owned zstd provider is missing: $zstd_provider" >&2; exit 1; }
+zstd_needed="$(readelf -dW "${zstd_extension_candidates[0]}" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')"
+grep -Fx 'libzstd.so.1' <<<"$zstd_needed" >/dev/null || {
+    echo "_zstd does not dynamically depend on producer libzstd.so.1" >&2
+    exit 1
+}
 
 poison="$(mktemp -d)"
 cleanup() {
@@ -188,6 +201,9 @@ SOURCE_PINS = (
     ("libxcrypt-4.5.2.tar.xz",
      "https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz",
      "71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071"),
+    ("zstd-1.5.7.tar.gz",
+     "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
+     "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"),
     ("tcl8.6.18-src.tar.gz",
      "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
      "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e"),
@@ -584,11 +600,18 @@ expected_configure = {
 for key, expected in expected_configure.items():
     if set(build.get(key, [])) != expected:
         fail(f"provenance configure flags differ for {key}: {build.get(key)!r}")
+if build.get("zstd_build") != {
+    "makefile": "zstd-1.5.7/lib/Makefile",
+    "prefix": "<build>/zstd-prefix",
+    "targets": ["install"],
+}:
+    fail(f"provenance zstd build contract is invalid: {build.get('zstd_build')!r}")
 for key in ("cflags", "ldflags", "closed_input_policy"):
     if not isinstance(build.get(key), str) or not build[key].strip():
         fail(f"provenance build metadata is missing {key}")
 if (
-    "one hash-verified libxcrypt license/provenance archive" not in build["closed_input_policy"]
+    "five build source archives" not in build["closed_input_policy"]
+    or "one hash-verified libxcrypt license/provenance archive" not in build["closed_input_policy"]
     or "seven hash-verified matching CentOS 7 development RPMs installed offline" not in build["closed_input_policy"]
     or "eight hash-verified CentOS 7 runtime RPMs used only for fallback license/provenance evidence" not in build["closed_input_policy"]
 ):
@@ -598,6 +621,7 @@ if build.get("development_header_overlay") != expected_dev_rpms:
 if build.get("cpython_pkg_config_path") != [
     "<build>/openssl-prefix/lib/pkgconfig",
     "<build>/openssl-prefix/lib64/pkgconfig",
+    "<build>/zstd-prefix/lib/pkgconfig",
     "<build>/tcltk-prefix/lib/pkgconfig",
     "/usr/local/lib/pkgconfig",
 ]:
@@ -712,6 +736,7 @@ expected_retained = {
     "lzma", "_lzma", "zlib", "readline", "curses", "_curses", "curses.panel", "encodings",
     "_curses_panel", "multiprocessing", "zoneinfo", "hashlib", "decimal", "dbm",
     "_dbm", "_gdbm", "uuid", "_uuid", "pyexpat", "xml.parsers.expat", "tkinter", "_tkinter",
+    "compression.zstd", "_zstd",
 }
 if set(python_meta.get("retained_module_probe", [])) != expected_retained:
     fail("provenance retained-module surface differs from the phase-01 contract")
@@ -838,6 +863,7 @@ source_licenses = data.get("licenses", {}).get("source_components", {})
 for component, relative in {
     "cpython": "LICENSES/CPython.txt",
     "openssl": "LICENSES/OpenSSL.txt",
+    "zstd": "LICENSES/Zstd.txt",
     "tcl": "LICENSES/TclTk/Tcl.txt",
     "tk": "LICENSES/TclTk/Tk.txt",
 }.items():
@@ -977,6 +1003,7 @@ expected_source_built = {
     "lib/libpython3.14.so.1.0": "cpython",
     "lib/libssl.so.3": "openssl",
     "lib/libcrypto.so.3": "openssl",
+    "lib/libzstd.so.1": "zstd",
     "lib/tcltk/libtcl8.6.so": "tcl",
     "lib/tcltk/libtk8.6.so": "tk",
 }

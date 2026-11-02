@@ -85,6 +85,9 @@ jobs:
             --output "$input_dir/libxcrypt-4.5.2.tar.xz" \
             https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz
           curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/zstd-1.5.7.tar.gz" \
+            https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+          curl --fail --location --retry 3 --retry-all-errors \
             --output "$input_dir/bzip2-devel-1.0.6-13.el7.x86_64.rpm" \
             https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm
           curl --fail --location --retry 3 --retry-all-errors \
@@ -137,6 +140,7 @@ jobs:
           de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032  Python-3.14.10.tar.xz
           603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz
           71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071  libxcrypt-4.5.2.tar.xz
+          eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz
           28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700  bzip2-devel-1.0.6-13.el7.x86_64.rpm
           1fd32866a2a82f5abc19142b59dce8fd961bc1d32e3bedfa0de7a950066fdaa5  bzip2-libs-1.0.6-13.el7.x86_64.rpm
           fc02a803f89c0d68de96bcc7a46d7cdf8768e62577b27aed9c531e6fb2818c30  gdbm-devel-1.10-8.el7.x86_64.rpm
@@ -153,7 +157,7 @@ jobs:
           4b698de5fd7e0a64306106f3018e9d00dedc1f7a46d354339f012c97d004bd0c  xz-libs-5.2.2-2.el7_9.x86_64.rpm
           2bee86d12902723756eafa82ba6cc322136c4a67a78e0104ac988e14eb7fb5a1  zlib-1.2.7-21.el7_9.x86_64.rpm
           EOF
-            sha256sum Python-3.14.10.tar.xz openssl-3.5.9.tar.gz libxcrypt-4.5.2.tar.xz *.rpm tcl8.6.18-src.tar.gz tk8.6.18-src.tar.gz
+            sha256sum Python-3.14.10.tar.xz openssl-3.5.9.tar.gz libxcrypt-4.5.2.tar.xz zstd-1.5.7.tar.gz *.rpm tcl8.6.18-src.tar.gz tk8.6.18-src.tar.gz
           ) | tee ci-artifact/source-inputs.sha256
 
       - name: Build controlled runtime in pinned glibc 2.17 container
@@ -177,6 +181,7 @@ jobs:
                 --python-source /inputs/Python-3.14.10.tar.xz \
                 --openssl-source /inputs/openssl-3.5.9.tar.gz \
                 --libxcrypt-source /inputs/libxcrypt-4.5.2.tar.xz \
+                --zstd-source /inputs/zstd-1.5.7.tar.gz \
                 --dev-rpm-dir /inputs \
                 --tcl-source /inputs/tcl8.6.18-src.tar.gz \
                 --tk-source /inputs/tk8.6.18-src.tar.gz
