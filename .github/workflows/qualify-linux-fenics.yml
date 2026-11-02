@@ -573,6 +573,39 @@ jobs:
           print("hosted_public_input_skeleton=pass")
           PY
 
+      - name: Reproduce pinned private C++ runtime provider on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          provider="$prototype/cxx-provider"
+          mkdir -p "$provider"
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
+            --volume "$MAMBA_ROOT_PREFIX:$MAMBA_ROOT_PREFIX" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              /workspace/out/linux-x64/numpy/bin/python3.12 \
+                scripts/linux/build_fenics_cxx_provider.py \
+                --runtime-prefix "$1" \
+                --runtime-prefix-evidence "$2" \
+                --package-cache "$3" \
+                --output-dir /workspace/build/linux-fenics-overlay/native-rebuild-prototype/cxx-provider \
+                --manifest /workspace/build/linux-fenics-overlay/native-rebuild-prototype/cxx-provider/provider-manifest.json
+            ' -- \
+              "$FENICS_LOCKED_PREFIX" \
+              "/workspace/$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
+              "$FENICS_PACKAGE_CACHE" \
+            2>&1 | tee "$provider/reproduction.log"
+          test -f "$provider/provider-manifest.json"
+          sha256sum "$provider/libfenics_cxxrt.so.1" \
+            "$provider/provider-manifest.json" \
+            > "$provider/reproduction.sha256"
+
       - name: Keep Linux FEniCS release gate closed until rebuilt overlay handoff exists
         shell: bash
         run: |
