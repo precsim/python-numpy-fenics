@@ -386,6 +386,53 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
     ]
     if len(python_records) != 1 or python_records[0].get("kind") != "file":
         raise BuilderInputError("base runtime manifest does not bind one regular bin/python3.12")
+
+    # The builder executes code from the staged base, including its stdlib and
+    # shared libraries. A pinned executable alone cannot establish the staged
+    # runtime identity: verify the entire producer manifest before execution.
+    manifest_files = runtime_manifest.get("files")
+    if not isinstance(manifest_files, list):
+        raise BuilderInputError("base runtime manifest has no files array")
+    expected_paths: set[str] = set()
+    for record in manifest_files:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise BuilderInputError("base runtime manifest has an invalid file record")
+        relative = PurePosixPath(record["path"])
+        name = relative.as_posix()
+        if (
+            relative.is_absolute()
+            or name in ("", ".", "runtime-manifest.json")
+            or ".." in relative.parts
+            or "\\" in name
+            or name != record["path"]
+            or name in expected_paths
+        ):
+            raise BuilderInputError(f"invalid or duplicate base runtime manifest path: {name!r}")
+        expected_paths.add(name)
+        path = base_runtime.joinpath(*relative.parts)
+        kind = record.get("kind")
+        if kind == "file":
+            if path.is_symlink() or not path.is_file():
+                raise BuilderInputError(f"base runtime manifest regular file missing: {name}")
+            if record.get("bytes") != path.stat().st_size or record.get("sha256") != sha256_file(path):
+                raise BuilderInputError(f"base runtime file differs from runtime-manifest.json: {name}")
+        elif kind == "symlink":
+            if not path.is_symlink() or os.readlink(path) != record.get("target"):
+                raise BuilderInputError(f"base runtime symlink differs from runtime-manifest.json: {name}")
+            resolved = path.resolve()
+            if base_runtime.resolve() not in resolved.parents and resolved != base_runtime.resolve():
+                raise BuilderInputError(f"base runtime symlink escapes qualified runtime: {name}")
+        else:
+            raise BuilderInputError(f"unsupported base runtime manifest file kind: {name}")
+    actual_paths = {
+        path.relative_to(base_runtime).as_posix()
+        for path in base_runtime.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    actual_paths.discard("runtime-manifest.json")
+    if actual_paths != expected_paths:
+        raise BuilderInputError("staged base runtime file inventory differs from runtime-manifest.json")
+
     base_python = base_runtime / "bin" / "python3.12"
     if not base_python.is_file() or base_python.is_symlink():
         raise BuilderInputError(f"base runtime Python is missing or not a regular file: {base_python}")

@@ -128,6 +128,9 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             python = runtime / "bin" / "python3.12"
             python.parent.mkdir(parents=True)
             python.write_bytes(b"qualified-cpython-fixture")
+            stdlib = runtime / "lib" / "python3.12" / "site.py"
+            stdlib.parent.mkdir(parents=True)
+            stdlib.write_bytes(b"qualified-stdlib-fixture")
             revision = "1" * 40
             manifest = {
                 "format_version": 1,
@@ -140,6 +143,12 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                     "kind": "file",
                     "bytes": python.stat().st_size,
                     "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+                    "owners": ["python-numpy-fenics"],
+                }, {
+                    "path": "lib/python3.12/site.py",
+                    "kind": "file",
+                    "bytes": stdlib.stat().st_size,
+                    "sha256": hashlib.sha256(stdlib.read_bytes()).hexdigest(),
                     "owners": ["python-numpy-fenics"],
                 }],
             }
@@ -176,6 +185,14 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
 
             python.write_bytes(b"changed")
             with self.assertRaisesRegex(BuilderInputError, "differs from runtime-manifest"):
+                validate_base_runtime(runtime, archive, qualification)
+            python.write_bytes(b"qualified-cpython-fixture")
+            stdlib.write_bytes(b"tampered-stdlib-fixture")
+            with self.assertRaisesRegex(BuilderInputError, "file differs from runtime-manifest"):
+                validate_base_runtime(runtime, archive, qualification)
+            stdlib.write_bytes(b"qualified-stdlib-fixture")
+            (runtime / "lib" / "python3.12" / "unrecorded.py").write_bytes(b"unexpected")
+            with self.assertRaisesRegex(BuilderInputError, "file inventory differs"):
                 validate_base_runtime(runtime, archive, qualification)
 
 
