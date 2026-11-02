@@ -899,6 +899,93 @@ def version_text(value: tuple[int, ...] | None) -> str | None:
     return None if value is None else ".".join(str(part) for part in value)
 
 
+def write_stock_abi_preflight(
+    destination: Path,
+    stage_root: Path,
+    package_lock_sha256: str,
+    prefix_verification_sha256: str,
+    maxima: dict[str, tuple[int, ...] | None],
+    ceiling_violations: list[dict[str, Any]],
+    unexpected_nonnumeric_requirements: list[dict[str, Any]],
+    sysroot_nonnumeric_requirements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist exact stock ABI selection evidence, even when packaging fails.
+
+    This report describes the immutable stock closure; it never authorizes a
+    replacement, certifies a source rebuild, or changes any acceptance gate.
+    Paths are stage-relative so the fingerprint survives scratch relocation.
+    """
+    affected_paths = sorted(
+        {str(item["path"]) for item in ceiling_violations + unexpected_nonnumeric_requirements}
+    )
+    file_hashes = {
+        relative: sha256_file(stage_root / Path(*PurePosixPath(relative).parts))
+        for relative in affected_paths
+    }
+    violations = sorted(
+        (
+            {
+                **item,
+                "owners": sorted(set(item.get("owners", []))),
+                "file_sha256": file_hashes[str(item["path"])],
+            }
+            for item in ceiling_violations
+        ),
+        key=lambda item: (item["path"], item["required"], item["ceiling"]),
+    )
+    unexpected = sorted(
+        (
+            {
+                **item,
+                "owners": sorted(set(item.get("owners", []))),
+                "file_sha256": file_hashes[str(item["path"])],
+            }
+            for item in unexpected_nonnumeric_requirements
+        ),
+        key=lambda item: (item["path"], item["required"]),
+    )
+    scoped_sysroot = sorted(
+        sysroot_nonnumeric_requirements,
+        key=lambda item: (item["path"], item["required"]),
+    )
+    report: dict[str, Any] = {
+        "format_version": 1,
+        "stage": "stock-binary-closure-before-selective-rebuild",
+        "package_lock_sha256": package_lock_sha256,
+        "prefix_verification_sha256": prefix_verification_sha256,
+        "symbol_ceilings": {
+            namespace: version_text(ceiling)
+            for namespace, ceiling in REQUIRED_SYMBOL_CEILINGS.items()
+        },
+        "measured_maximum_versions": {
+            namespace: version_text(maxima[namespace]) for namespace in REQUIRED_SYMBOL_CEILINGS
+        },
+        "status": "fail" if violations or unexpected else "pass",
+        "violation_count": len(violations),
+        "violating_file_count": len(affected_paths),
+        "violating_packages": sorted(
+            {owner for item in violations + unexpected for owner in item["owners"]}
+        ),
+        "ceiling_violations": violations,
+        "unexpected_nonnumeric_requirements": unexpected,
+        "sysroot_scoped_nonnumeric_requirements": scoped_sysroot,
+        "source_rebuilds_authorized": False,
+    }
+    report["selection_fingerprint_sha256"] = sha256_bytes(
+        json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", prefix=f".{destination.name}.",
+        suffix=".tmp", dir=destination.parent, delete=False,
+    ) as output:
+        temporary = Path(output.name)
+        json.dump(report, output, indent=2, sort_keys=True)
+        output.write("\n")
+    os.replace(temporary, destination)
+    return report
+
+
 def set_relative_runpaths(stage_root: Path, private_prefix: Path) -> list[Path]:
     sysroot = private_prefix / "x86_64-conda-linux-gnu" / "sysroot"
     dynamic_elfs: list[Path] = []
@@ -934,6 +1021,9 @@ def audit_elf(
     private_prefix: Path,
     base_provenance: dict[str, Any],
     owners: dict[str, list[str]],
+    abi_preflight_path: Path | None = None,
+    package_lock_sha256: str = "",
+    prefix_verification_sha256: str = "",
 ) -> dict[str, Any]:
     sysroot = private_prefix / "x86_64-conda-linux-gnu" / "sysroot"
     all_elfs = [path for path in sorted(stage_root.rglob("*")) if is_elf(path)]
@@ -1013,6 +1103,17 @@ def audit_elf(
                     sysroot_nonnumeric_requirements.append(requirement)
                 else:
                     unexpected_nonnumeric_requirements.append(requirement)
+    if abi_preflight_path is not None:
+        write_stock_abi_preflight(
+            abi_preflight_path,
+            stage_root,
+            package_lock_sha256,
+            prefix_verification_sha256,
+            maxima,
+            ceiling_violations,
+            unexpected_nonnumeric_requirements,
+            sysroot_nonnumeric_requirements,
+        )
     if unexpected_nonnumeric_requirements:
         raise SystemExit(
             "stock FEniCS package closure requires unsupported nonnumeric ABI symbol versions: "
@@ -1334,6 +1435,10 @@ def main() -> int:
     parser.add_argument("--base-runtime", required=True, help="qualified public linux-x64 NumPy runtime")
     parser.add_argument("--base-qualification", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--abi-preflight-evidence",
+        help="write deterministic locked-stock native ABI selection evidence before rejecting violations",
+    )
     parser.add_argument("--version", default="0.1.0")
     parser.add_argument("--producer-revision", default=os.environ.get("PRODUCER_REVISION", os.environ.get("GITHUB_SHA", "local")))
     args = parser.parse_args()
@@ -1469,7 +1574,15 @@ def main() -> int:
         reject_absolute_prefix_references(stage_root, [prefix, stage_root])
         prefix_relocation = finalize_prefix_relocation_evidence(stage_root, prefix_relocation_entries)
 
-        census = audit_elf(stage_root, private_prefix, base_info["provenance"], owners)
+        census = audit_elf(
+            stage_root,
+            private_prefix,
+            base_info["provenance"],
+            owners,
+            Path(args.abi_preflight_evidence).resolve() if args.abi_preflight_evidence else None,
+            sha256_file(lock_path),
+            sha256_file(evidence_path),
+        )
         provenance_root = stage_root / "fenics-runtime" / "provenance"
         provenance_root.mkdir(parents=True, exist_ok=True)
         lock_copy = provenance_root / lock_path.name

@@ -415,6 +415,7 @@ jobs:
             --lock "$FENICS_LOCK_FILE" \
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
+            --abi-preflight-evidence "$FENICS_OVERLAY_EVIDENCE/stock-native-abi-preflight.json" \
             --output dist \
             --version 0.1.0 \
             --producer-revision "$PRODUCER_REVISION" \
