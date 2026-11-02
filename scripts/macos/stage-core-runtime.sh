@@ -266,6 +266,37 @@ staged_app_executable="$runtime/Python.framework/Versions/3.12/Resources/Python.
     exit 1
 }
 rewrite_dylib_dep "$staged_app_executable" Python '@loader_path/../../../../Python'
+# Relocate absolute references between libraries supplied by the pinned
+# CPython framework. The source distribution also contains libraries such as
+# libform and libncurses whose install names point at /Library/Frameworks.
+framework_version="$runtime/Python.framework/Versions/3.12"
+while IFS= read -r -d '' binary; do
+    if ! file -b "$binary" | grep -q 'Mach-O'; then
+        continue
+    fi
+    framework_dependencies="$(otool -L "$binary" | awk 'NR > 1 && $1 ~ /^\/Library\/Frameworks\/Python\.framework\/Versions\/3\.12\// {print $1}' | sort -u)"
+    [[ -n "$framework_dependencies" ]] || continue
+    while IFS= read -r original; do
+        [[ -n "$original" ]] || continue
+        relative_to_framework="${original#/Library/Frameworks/Python.framework/Versions/3.12/}"
+        provider="$framework_version/$relative_to_framework"
+        [[ -f "$provider" ]] || {
+            echo "pinned Python framework dependency is absent: $binary -> $original" >&2
+            exit 1
+        }
+        relative_provider="$(python3 - "$provider" "$binary" <<'PY'
+import os
+import sys
+print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))
+PY
+)"
+        replacement="@loader_path/$relative_provider"
+        printf '%s\t%s\t%s\n' "$binary" "$original" "$replacement" >> "$install_changes"
+        install_name_tool -change "$original" "$replacement" "$binary"
+    done <<< "$framework_dependencies"
+    codesign --force --sign - "$binary" >/dev/null
+    codesign --verify --strict "$binary"
+done < <(find "$framework_version" -type f -print0)
 # The pinned universal distribution includes optional architecture-specific
 # launchers. Keep only helpers usable by this output profile, and relocate
 # their framework imports before the full-tree Mach-O closure audit.
