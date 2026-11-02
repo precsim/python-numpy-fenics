@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 
@@ -21,6 +22,17 @@ GENERATED_ROOTS = {
     "out",
     "tmp",
 }
+
+ACTION_USE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
+PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[a-fA-F0-9]{40}\Z")
+
+
+def unpinned_actions(workflow: str) -> list[str]:
+    return [
+        action
+        for action in ACTION_USE.findall(workflow)
+        if not action.startswith("./") and not PINNED_ACTION.fullmatch(action)
+    ]
 
 
 def main() -> int:
@@ -75,6 +87,11 @@ def main() -> int:
             if "python-matlab-octave-bridge" in text:
                 errors.append(
                     f"workflow references a private consumer repository: {path.relative_to(ROOT)}"
+                )
+            for action in unpinned_actions(text):
+                errors.append(
+                    f"workflow action must use an immutable 40-character commit SHA: "
+                    f"{path.relative_to(ROOT)}: {action}"
                 )
 
     if errors:
