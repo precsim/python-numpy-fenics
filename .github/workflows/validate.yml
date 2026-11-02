@@ -26,6 +26,9 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q scripts runtime tests
 
+      - name: Test public producer policy checks
+        run: python -m unittest discover -s tests/common -v
+
       - name: Check shell syntax
         shell: bash
         run: |
