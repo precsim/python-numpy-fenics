@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -35,6 +36,18 @@ def unpinned_actions(workflow: str) -> list[str]:
     ]
 
 
+def private_source_directories(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for directory, child_dirs, _ in os.walk(root):
+        parent = Path(directory)
+        for name in child_dirs:
+            if name.casefold() == "private":
+                found.append((parent / name).relative_to(root))
+        if parent == root:
+            child_dirs[:] = [name for name in child_dirs if name not in GENERATED_ROOTS]
+    return found
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -46,6 +59,9 @@ def main() -> int:
             errors.append(
                 f"private-consumer source root must not exist: {path.relative_to(ROOT)}"
             )
+
+    for relative in private_source_directories(ROOT):
+        errors.append(f"nested private source directory must not exist: {relative}")
 
     required = [
         ROOT / ".github" / "workflows" / "validate.yml",

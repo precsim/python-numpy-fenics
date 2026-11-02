@@ -33,6 +33,13 @@ def write_zip(root: Path, output: Path) -> None:
                 archive.writestr(info, os.readlink(path).encode("utf-8"))
                 continue
             if path.is_dir():
+                # Preserve empty runtime directories (notably site-packages) so
+                # extraction recreates the same qualified runtime layout.
+                info = zipfile.ZipInfo(rel + "/", ZIP_TIME)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                info.compress_type = zipfile.ZIP_STORED
+                archive.writestr(info, b"")
                 continue
             info = zipfile.ZipInfo(rel, ZIP_TIME)
             info.create_system = 3

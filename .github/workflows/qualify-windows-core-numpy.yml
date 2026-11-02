@@ -10,6 +10,10 @@ on:
       - ".github/workflows/qualify-windows-core-numpy.yml"
       - "scripts/windows/stage-runtime.ps1"
       - "scripts/windows/test-runtime.ps1"
+      - "scripts/windows/verify_core_layer.py"
+      - "scripts/windows/pe_native_closure.py"
+      - "tests/common/test_windows_core_layer.py"
+      - "tests/common/test_windows_pe_native_closure.py"
       - "scripts/common/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
@@ -58,11 +62,21 @@ jobs:
           }
           "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Test Windows layering and PE closure contracts
+        run: >-
+          python -m unittest
+          tests.common.test_windows_core_layer
+          tests.common.test_windows_pe_native_closure
+          -v
+
       - name: Stage core and NumPy runtimes
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path .\build\windows-qualification | Out-Null
           .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -Output .\out\win-x64\core
-          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy
+          python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\core --profile core --output .\out\win-x64\core\provenance\pe-native-closure-core.json --seal-manifest
+          .\scripts\windows\stage-runtime.ps1 -CoreRuntime .\out\win-x64\core -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy -LayerEvidence .\build\windows-qualification\numpy-core-layer-staged.json
+          python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\numpy --profile numpy --output .\out\win-x64\numpy\provenance\pe-native-closure-numpy.json --seal-manifest
 
       - name: Qualify relocated runtimes with hostile ambient state
         shell: pwsh
@@ -72,7 +86,17 @@ jobs:
             $relocated = Join-Path $env:RUNNER_TEMP "qualified runtime with spaces $profile"
             Remove-Item -LiteralPath $relocated -Recurse -Force -ErrorAction SilentlyContinue
             Copy-Item -LiteralPath $source -Destination $relocated -Recurse
-            .\scripts\windows\test-runtime.ps1 -Runtime $relocated -RuntimeProfile $profile
+            $closure = ".\build\windows-qualification\pe-native-closure-$profile.json"
+            if ($profile -eq "numpy") {
+              .\scripts\windows\test-runtime.ps1 -Runtime $relocated -RuntimeProfile $profile -CoreRuntime .\out\win-x64\core -LayerEvidence .\build\windows-qualification\numpy-core-layer-relocated.json -NativeClosureOutput $closure
+            } else {
+              .\scripts\windows\test-runtime.ps1 -Runtime $relocated -RuntimeProfile $profile -NativeClosureOutput $closure
+            }
+          }
+          $staged = (Get-FileHash -LiteralPath .\build\windows-qualification\numpy-core-layer-staged.json -Algorithm SHA256).Hash
+          $relocated = (Get-FileHash -LiteralPath .\build\windows-qualification\numpy-core-layer-relocated.json -Algorithm SHA256).Hash
+          if ($staged -ne $relocated) {
+            throw "relocated NumPy core-layer evidence differs from staged evidence"
           }
 
       - name: Package deterministic producer runtimes
@@ -86,8 +110,8 @@ jobs:
             $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
             Set-Content -LiteralPath "$archive.sha256" -Value "$sha  $([IO.Path]::GetFileName($archive))" -Encoding utf8NoBOM
           }
-          python scripts/common/write_qualification.py --platform win-x64 --profile core --artifact dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --output dist/qualification-win-x64-core.json --check isolated_cpython=pass --check tkinter=pass --check numpy_absent=pass --check relocation=pass --check private_consumer_checkout=not-applicable
-          python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_contract=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+          python scripts/common/write_qualification.py --platform win-x64 --profile core --artifact dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --output dist/qualification-win-x64-core.json --check isolated_cpython=pass --check tkinter=pass --check numpy_absent=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+          python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_identity=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified producer runtimes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -95,6 +119,7 @@ jobs:
           name: python-runtime-win-x64-cp312
           path: |
             dist/
+            build/windows-qualification/
             out/win-x64/core/runtime-manifest.json
             out/win-x64/numpy/runtime-manifest.json
           if-no-files-found: error

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import tarfile
@@ -156,7 +157,11 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
             archive = root / "python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz"
             with tarfile.open(archive, "w:gz") as bundle:
-                bundle.add(manifest_path, arcname="runtime-manifest.json")
+                # Match the workflow's `tar -C "$runtime_root" .` member layout,
+                # including the leading ./ on files beneath the archive root.
+                bundle.add(runtime, arcname=".")
+            with tarfile.open(archive, "r:gz") as bundle:
+                self.assertIn("./runtime-manifest.json", [member.name for member in bundle.getmembers()])
             qualification = root / "qualification.json"
             qualification.write_text(json.dumps({
                 "format_version": 1,
@@ -193,6 +198,61 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             stdlib.write_bytes(b"qualified-stdlib-fixture")
             (runtime / "lib" / "python3.12" / "unrecorded.py").write_bytes(b"unexpected")
             with self.assertRaisesRegex(BuilderInputError, "file inventory differs"):
+                validate_base_runtime(runtime, archive, qualification)
+
+    def test_base_runtime_archive_rejects_traversal_member(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            runtime = root / "runtime"
+            python = runtime / "bin" / "python3.12"
+            python.parent.mkdir(parents=True)
+            python.write_bytes(b"qualified-cpython-fixture")
+            revision = "2" * 40
+            manifest = {
+                "format_version": 1,
+                "platform": "linux-x64",
+                "profile": "numpy",
+                "python_abi": "cp312",
+                "producer": {"repository": "precsim/python-numpy-fenics", "revision": revision},
+                "files": [{
+                    "path": "bin/python3.12",
+                    "kind": "file",
+                    "bytes": python.stat().st_size,
+                    "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+                    "owners": ["python-numpy-fenics"],
+                }],
+            }
+            manifest_path = runtime / "runtime-manifest.json"
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+            archive = root / "python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.add(runtime, arcname=".")
+                escaped = tarfile.TarInfo("../escape")
+                escaped.size = 1
+                bundle.addfile(escaped, io.BytesIO(b"x"))
+            qualification = root / "qualification.json"
+            qualification.write_text(json.dumps({
+                "format_version": 1,
+                "producer_repository": "precsim/python-numpy-fenics",
+                "producer_revision": revision,
+                "workflow_run_id": "fixture",
+                "platform": "linux-x64",
+                "profile": "numpy",
+                "artifact": archive.name,
+                "artifact_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "checks": {
+                    "pinned_manylinux": "pass",
+                    "glibc_floor": "pass",
+                    "inherited_core_identity": "pass",
+                    "numpy_source_build": "pass",
+                    "private_openblas": "pass",
+                    "blas_lapack_functional": "pass",
+                    "native_closure": "pass",
+                    "private_consumer_checkout": "not-applicable",
+                },
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(BuilderInputError, "unsafe member path"):
                 validate_base_runtime(runtime, archive, qualification)
 
 

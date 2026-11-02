@@ -62,7 +62,7 @@ rm -rf "$output_runtime"
 ditto "$core_runtime" "$output_runtime"
 runtime="$output_runtime"
 numpy_wheel="$(cd "$(dirname "$numpy_wheel")" && pwd -P)/$(basename "$numpy_wheel")"
-[[ -n "$census_output" ]] || census_output="$runtime/numpy-native-census.json"
+[[ -n "$census_output" ]] || census_output="$runtime/numpy-native-census-macos.json"
 
 case "$target_arch" in
     arm64)
@@ -126,6 +126,7 @@ rm -rf "$work"
 mkdir -p "$work/overlay"
 core_map="$work/core-shared-map.json"
 payload_manifest="$work/numpy-payload-manifest-macos.json"
+payload_census="$runtime/numpy-payload-native-census-macos.json"
 
 core_provenance="$core_runtime/build-provenance-macos.json"
 core_provenance_sha="$(shasum -a 256 "$core_provenance" | awk '{print $1}')"
@@ -329,12 +330,14 @@ cp "$payload_manifest" "$runtime/numpy-payload-manifest-macos.json"
 
 bash "$root/scripts/macos/inspect-macos-runtime.sh" \
     --root "$site_packages" \
-    --output "$census_output" \
+    --output "$payload_census" \
     --arch "$target_arch" \
+    --executable "$staged_python" \
+    --max-minos 14.0 \
     --strict
 
 accelerate_static="$work/accelerate-static.json"
-python3 - "$runtime" "$site_packages" "$census_output" "$accelerate_static" <<'PY'
+python3 - "$runtime" "$site_packages" "$payload_census" "$accelerate_static" <<'PY'
 import json
 import pathlib
 import subprocess
@@ -445,7 +448,7 @@ evidence = {
 output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
-python3 - "$runtime" "$core_map" "$provenance" "$census_output" "$payload_manifest" \
+python3 - "$runtime" "$core_map" "$provenance" "$payload_census" "$payload_manifest" \
     "$accelerate_static" "$expected_wheel" "$expected_numpy_url" "$actual_numpy_size" \
     "$actual_numpy_sha" "$expected_tag" "$target_arch" "$core_provenance_sha" \
     "$core_profile_sha" <<'PY'
@@ -526,7 +529,10 @@ accelerate = json.loads(accelerate_path.read_text(encoding="utf-8"))
 measured_minos = census.get("target_measured_max_minos")
 if measured_minos is None:
     raise SystemExit("NumPy native census did not record a macOS compatibility floor")
-if tuple(int(part) for part in measured_minos.split(".")) > (14, 0):
+measured_key = [int(part) for part in measured_minos.split(".")]
+while len(measured_key) > 1 and measured_key[-1] == 0:
+    measured_key.pop()
+if tuple(measured_key) > (14,):
     raise SystemExit(
         f"NumPy native payload raises the qualified macOS 14.0 floor: {measured_minos}"
     )
@@ -547,6 +553,7 @@ provenance["numpy"] = {
     "native_macho_count": census.get("macho_count"),
     "native_measured_max_minos": census.get("target_measured_max_minos"),
     "native_census": pathlib.Path(census_path).name,
+    "native_census_sha256": hashlib.sha256(census_path.read_bytes()).hexdigest(),
     "accelerate_static": accelerate,
 }
 provenance["numpy"]["architecture"] = target_arch
@@ -689,10 +696,71 @@ after_core_profile_sha="$(shasum -a 256 "$core_profile" | awk '{print $1}')"
     exit 1
 }
 
+bash "$root/scripts/macos/inspect-macos-runtime.sh" \
+    --root "$runtime" \
+    --output "$census_output" \
+    --arch "$target_arch" \
+    --max-minos 14.0 \
+    --strict
+
+numpy_relocation="$runtime/numpy-relocation-qualification-macos.json"
+bash "$root/scripts/macos/qualify-relocated-runtime.sh" \
+    --runtime "$runtime" \
+    --arch "$target_arch" \
+    --profile numpy \
+    --output "$numpy_relocation"
+
+python3 - "$provenance" "$census_output" "$numpy_relocation" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+provenance_path = pathlib.Path(sys.argv[1]).resolve()
+census_path = pathlib.Path(sys.argv[2]).resolve()
+relocation_path = pathlib.Path(sys.argv[3]).resolve()
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+census = json.loads(census_path.read_text(encoding="utf-8"))
+relocation = json.loads(relocation_path.read_text(encoding="utf-8"))
+if "core_native_closure" not in provenance:
+    provenance["core_native_closure"] = provenance.get("native_closure")
+if "core_relocation_qualification" not in provenance:
+    provenance["core_relocation_qualification"] = provenance.get("relocation_qualification")
+provenance["native_closure"] = {
+    "status": "pass",
+    "census_path": census_path.name,
+    "census_sha256": sha256(census_path),
+    "macho_count": census["macho_count"],
+    "bundled_dependency_count": census["bundled_dependency_count"],
+    "system_dependency_count": census["system_dependency_count"],
+    "max_allowed_minos": census["max_allowed_minos"],
+    "target_measured_max_minos": census["target_measured_max_minos"],
+}
+provenance["relocation_qualification"] = {
+    "status": "pass",
+    "evidence_path": relocation_path.name,
+    "evidence_sha256": sha256(relocation_path),
+    "relocated_tcl_tk": relocation["status"],
+}
+provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+python3 "$root/scripts/macos/verify-runtime-evidence.py" \
+    --runtime "$runtime" \
+    --profile numpy \
+    --arch "$target_arch"
+
 echo "runtime_profile=numpy"
 echo "core_runtime=$core_runtime"
 echo "numpy_runtime=$runtime"
 echo "numpy_wheel=$expected_wheel"
 echo "numpy_wheel_sha256=$actual_numpy_sha"
 echo "numpy_native_census=$census_output"
+echo "native_closure=pass"
+echo "macos_floor=pass"
+echo "relocated_tcl_tk=pass"
 echo "macos_numpy_runtime_staging=pass"

@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import tempfile
 
-from scripts.common.validate_repo import unpinned_actions
+from scripts.common.validate_repo import private_source_directories, unpinned_actions
 
 
 class WorkflowActionPinTests(unittest.TestCase):
+    def test_nested_private_directories_are_checked_even_under_named_build_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git" / "Private").mkdir(parents=True)
+            (root / "scripts" / "build" / "PRIVATE").mkdir(parents=True)
+            self.assertEqual(
+                private_source_directories(root),
+                [Path("scripts/build/PRIVATE")],
+            )
+
     def test_pinned_actions_and_local_actions_are_permitted(self) -> None:
         workflow = "\n".join(
             [

@@ -192,6 +192,10 @@ jobs:
           mkdir -p dist
           for profile in core numpy; do
             root="out/macos-$TARGET_ARCH/$profile"
+            python3 scripts/macos/verify-runtime-evidence.py \
+              --runtime "$root" \
+              --profile "$profile" \
+              --arch "$TARGET_ARCH"
             python3 scripts/common/write_runtime_manifest.py \
               --root "$root" \
               --platform "$ARTIFACT_PLATFORM" \
@@ -210,6 +214,8 @@ jobs:
             --check pinned_cpython_asset=pass \
             --check relocated_framework=pass \
             --check tkinter=pass \
+            --check relocated_tcl_tk=pass \
+            --check native_closure=pass \
             --check macos_floor=pass \
             --check numpy_absent=pass \
             --check private_consumer_checkout=not-applicable
@@ -223,6 +229,7 @@ jobs:
             --check pinned_numpy_wheel=pass \
             --check accelerate=pass \
             --check blas_lapack_functional=pass \
+            --check relocated_tcl_tk=pass \
             --check native_closure=pass \
             --check macos_floor=pass \
             --check private_consumer_checkout=not-applicable
@@ -234,8 +241,13 @@ jobs:
           path: |
             dist/
             out/macos-${{ matrix.target_arch }}/core/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/core/core-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/core/core-relocation-qualification-macos.json
             out/macos-${{ matrix.target_arch }}/core/runtime-manifest.json
             out/macos-${{ matrix.target_arch }}/numpy/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-relocation-qualification-macos.json
             out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-manifest-macos.json
             out/macos-${{ matrix.target_arch }}/numpy/runtime-manifest.json
           if-no-files-found: error

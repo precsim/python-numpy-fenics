@@ -63,14 +63,16 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "isolated_cpython": "pass",
         "tkinter": "pass",
         "numpy_absent": "pass",
+        "pe_native_closure": "pass",
         "relocation": "pass",
         "private_consumer_checkout": "not-applicable",
     },
     ("win-x64", "numpy"): {
-        "inherited_core_contract": "pass",
+        "inherited_core_identity": "pass",
         "pinned_numpy_wheel": "pass",
         "openblas": "pass",
         "blas_lapack_functional": "pass",
+        "pe_native_closure": "pass",
         "relocation": "pass",
         "private_consumer_checkout": "not-applicable",
     },
@@ -91,6 +93,8 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_cpython_asset": "pass",
         "relocated_framework": "pass",
         "tkinter": "pass",
+        "relocated_tcl_tk": "pass",
+        "native_closure": "pass",
         "macos_floor": "pass",
         "numpy_absent": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -99,6 +103,8 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_cpython_asset": "pass",
         "relocated_framework": "pass",
         "tkinter": "pass",
+        "relocated_tcl_tk": "pass",
+        "native_closure": "pass",
         "macos_floor": "pass",
         "numpy_absent": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -108,6 +114,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_numpy_wheel": "pass",
         "accelerate": "pass",
         "blas_lapack_functional": "pass",
+        "relocated_tcl_tk": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -117,6 +124,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_numpy_wheel": "pass",
         "accelerate": "pass",
         "blas_lapack_functional": "pass",
+        "relocated_tcl_tk": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -232,6 +240,15 @@ def is_forbidden_private_source_path(parts: tuple[str, ...]) -> bool:
     if not lowered:
         return False
     if lowered[0] in PRIVATE_SOURCE_ROOTS:
+        return True
+    for index, part in enumerate(lowered):
+        if part != "private":
+            continue
+        # PETSc ships public package headers under include/petsc/private.
+        # This is a third-party implementation namespace, not a private
+        # downstream consumer source tree.
+        if index >= 2 and lowered[index - 2 : index] == ("include", "petsc"):
+            continue
         return True
     joined = "/".join(lowered)
     return any(marker in joined for marker in PRIVATE_SOURCE_MARKERS)
@@ -623,7 +640,7 @@ def main() -> int:
             raise SystemExit(
                 f"artifact version does not match producer pre-release tag {args.tag}: {artifact_name}"
             )
-        matches = find_by_name(source_root, artifact_name)
+        matches = find_by_name(run_dir, artifact_name)
         if len(matches) != 1:
             raise SystemExit(
                 f"qualification artifact lookup is ambiguous for {artifact_name}: {matches}"

@@ -384,6 +384,68 @@ if foreign:
 print(f"staged_python_prefix={sys.prefix}")
 PY
 
+core_census="$runtime/core-native-census-macos.json"
+bash "$root/scripts/macos/inspect-macos-runtime.sh" \
+    --root "$runtime" \
+    --output "$core_census" \
+    --arch "$target_arch" \
+    --max-minos 14.0 \
+    --strict
+
+core_relocation="$runtime/core-relocation-qualification-macos.json"
+bash "$root/scripts/macos/qualify-relocated-runtime.sh" \
+    --runtime "$runtime" \
+    --arch "$target_arch" \
+    --profile core \
+    --output "$core_relocation"
+
+python3 - "$runtime/build-provenance-macos.json" "$core_census" "$core_relocation" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+provenance_path = pathlib.Path(sys.argv[1]).resolve()
+census_path = pathlib.Path(sys.argv[2]).resolve()
+relocation_path = pathlib.Path(sys.argv[3]).resolve()
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+census = json.loads(census_path.read_text(encoding="utf-8"))
+relocation = json.loads(relocation_path.read_text(encoding="utf-8"))
+provenance["native_closure"] = {
+    "status": "pass",
+    "census_path": census_path.name,
+    "census_sha256": sha256(census_path),
+    "macho_count": census["macho_count"],
+    "bundled_dependency_count": census["bundled_dependency_count"],
+    "system_dependency_count": census["system_dependency_count"],
+    "max_allowed_minos": census["max_allowed_minos"],
+    "target_measured_max_minos": census["target_measured_max_minos"],
+}
+provenance["relocation_qualification"] = {
+    "status": "pass",
+    "evidence_path": relocation_path.name,
+    "evidence_sha256": sha256(relocation_path),
+    "relocated_tcl_tk": relocation["status"],
+}
+provenance["tcl_tk"]["relocation_qualification"] = {
+    "status": relocation["status"],
+    "tcl_script_root": relocation["tcl"]["script_root"],
+    "tk_script_root": relocation["tk"]["script_root"],
+    "tcl_provider": relocation["tcl"]["provider"],
+    "tk_provider": relocation["tk"]["provider"],
+}
+provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+python3 "$root/scripts/macos/verify-runtime-evidence.py" \
+    --runtime "$runtime" \
+    --profile core \
+    --arch "$target_arch"
+
 echo "macos_runtime=$runtime"
 echo "python_archive_asset_id=$archive_asset_id"
 echo "python_checksum_asset_id=$hash_asset_id"
@@ -391,4 +453,7 @@ echo "python_archive_sha256=$archive_sha"
 echo "runtime_profile=core"
 echo "numpy_bundled=false"
 echo "tcl_tk_staging=pass"
+echo "native_closure=pass"
+echo "macos_floor=pass"
+echo "relocated_tcl_tk=pass"
 echo "macos_runtime_staging=pass"

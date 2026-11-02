@@ -370,6 +370,16 @@ def tree_evidence(root: Path) -> dict:
     return {"tree_sha256": digest.hexdigest(), "file_count": len(files), "files": files}
 
 
+def normalized_tar_member_name(raw_name: str) -> str:
+    if not raw_name or "\\" in raw_name:
+        raise BuilderInputError(f"qualified NumPy archive contains unsafe member path: {raw_name!r}")
+    path = PurePosixPath(raw_name)
+    normalized = path.as_posix()
+    if path.is_absolute() or ".." in path.parts:
+        raise BuilderInputError(f"qualified NumPy archive contains unsafe member path: {raw_name!r}")
+    return normalized
+
+
 def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualification_path: Path) -> tuple[dict, Path]:
     runtime_manifest_path = base_runtime / "runtime-manifest.json"
     runtime_manifest = load_json(runtime_manifest_path)
@@ -466,7 +476,20 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
     if not isinstance(runtime_revision, str) or qualification.get("producer_revision") != runtime_revision:
         raise BuilderInputError("base runtime and qualification producer revisions differ")
     with tarfile.open(base_archive, "r:gz") as archive:
-        matches = [member for member in archive.getmembers() if member.name == "runtime-manifest.json" and member.isfile()]
+        matches = []
+        seen_archive_paths: set[str] = set()
+        for member in archive.getmembers():
+            normalized_name = normalized_tar_member_name(member.name)
+            if normalized_name != ".":
+                if normalized_name in seen_archive_paths:
+                    raise BuilderInputError(
+                        f"qualified NumPy archive contains duplicate normalized member path: {normalized_name}"
+                    )
+                seen_archive_paths.add(normalized_name)
+            if normalized_name == "runtime-manifest.json":
+                if not member.isfile():
+                    raise BuilderInputError("qualified NumPy archive runtime-manifest.json is not a regular file")
+                matches.append(member)
         if len(matches) != 1:
             raise BuilderInputError("qualified NumPy archive does not contain exactly one runtime-manifest.json")
         stream = archive.extractfile(matches[0])

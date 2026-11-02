@@ -1,24 +1,26 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Python,
+    [string]$Python = '',
+    [string]$CoreRuntime = '',
     [ValidateSet('core','numpy')]
     [string]$RuntimeProfile = 'core',
     [string]$NumpyWheel = '',
     [Parameter(Mandatory = $true)]
     [string]$Output,
+    [string]$LayerEvidence = '',
     [string]$Version = '0.1.0'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $ExpectedPython = '3.12.10'
 $ExpectedNumpy = '2.5.2'
 $ExpectedWheel = 'numpy-2.5.2-cp312-cp312-win_amd64.whl'
 $ExpectedWheelSha256 = '28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4'
 
-$pythonPath = (Resolve-Path -LiteralPath $Python -ErrorAction Stop).Path
+$outputPath = [IO.Path]::GetFullPath($Output)
 $infoScript = @'
 import json, pathlib, platform, struct, sys
 p = pathlib.Path(sys.prefix).resolve()
@@ -29,32 +31,77 @@ print(json.dumps({
     "prefix": str(p),
 }))
 '@
+$corePath = $null
+if ($RuntimeProfile -eq 'core') {
+    if (-not $Python) {
+        throw 'Core profile requires -Python'
+    }
+    if ($CoreRuntime) {
+        throw '-CoreRuntime is valid only for the numpy profile'
+    }
+    $pythonPath = (Resolve-Path -LiteralPath $Python -ErrorAction Stop).Path
+} else {
+    if ($Python) {
+        throw 'NumPy profile derives from -CoreRuntime and does not accept -Python'
+    }
+    if (-not $CoreRuntime) {
+        throw 'NumPy profile requires -CoreRuntime'
+    }
+    $corePath = (Resolve-Path -LiteralPath $CoreRuntime -ErrorAction Stop).Path
+    if ([string]::Equals($corePath, $outputPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'NumPy output must differ from the qualified core runtime'
+    }
+    $coreManifestPath = Join-Path $corePath 'runtime-manifest.json'
+    if (-not (Test-Path -LiteralPath $coreManifestPath -PathType Leaf)) {
+        throw "Qualified core runtime manifest is missing: $coreManifestPath"
+    }
+    $coreManifest = Get-Content -LiteralPath $coreManifestPath -Raw | ConvertFrom-Json
+    if ($coreManifest.format_version -ne 1 -or
+        $coreManifest.platform -ne 'win-x64' -or
+        $coreManifest.python_abi -ne 'cp312' -or
+        $coreManifest.profile -ne 'core' -or
+        $coreManifest.producer.repository -ne 'precsim/python-numpy-fenics') {
+        throw 'Qualified core runtime manifest identity is invalid'
+    }
+    $pythonPath = Join-Path $corePath 'python.exe'
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw "Qualified core Python is missing: $pythonPath"
+    }
+}
+
 $info = ($infoScript | & $pythonPath -I -S -) | ConvertFrom-Json
 if ($info.implementation -ne 'CPython' -or $info.version -ne $ExpectedPython -or $info.pointer_bits -ne 64) {
     throw "Expected 64-bit CPython $ExpectedPython, got $($info.implementation) $($info.version)"
 }
 
-$source = (Resolve-Path -LiteralPath ([string]$info.prefix)).Path
-$outputPath = [IO.Path]::GetFullPath($Output)
 Remove-Item -LiteralPath $outputPath -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 
-foreach ($name in @('python.exe','python312.dll','python3.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE.txt')) {
-    $candidate = Join-Path $source $name
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-        Copy-Item -LiteralPath $candidate -Destination (Join-Path $outputPath $name)
+if ($RuntimeProfile -eq 'core') {
+    $source = (Resolve-Path -LiteralPath ([string]$info.prefix)).Path
+    foreach ($name in @('python.exe','python312.dll','python3.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE.txt')) {
+        $candidate = Join-Path $source $name
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            Copy-Item -LiteralPath $candidate -Destination (Join-Path $outputPath $name)
+        }
     }
-}
-foreach ($name in @('Lib','DLLs','tcl','Include','libs')) {
-    $candidate = Join-Path $source $name
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-        Copy-Item -LiteralPath $candidate -Destination (Join-Path $outputPath $name) -Recurse
+    foreach ($name in @('Lib','DLLs','tcl','Include','libs')) {
+        $candidate = Join-Path $source $name
+        if (Test-Path -LiteralPath $candidate -PathType Container) {
+            Copy-Item -LiteralPath $candidate -Destination (Join-Path $outputPath $name) -Recurse
+        }
     }
+} else {
+    Get-ChildItem -LiteralPath $corePath -Force | Copy-Item -Destination $outputPath -Recurse -Force
 }
 
 $sitePackages = Join-Path $outputPath 'Lib\site-packages'
-Remove-Item -LiteralPath $sitePackages -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
+if ($RuntimeProfile -eq 'core') {
+    Remove-Item -LiteralPath $sitePackages -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
+} elseif (-not (Test-Path -LiteralPath $sitePackages -PathType Container)) {
+    throw "Qualified core site-packages directory is missing: $sitePackages"
+}
 
 $numpy = $null
 if ($RuntimeProfile -eq 'numpy') {
@@ -136,17 +183,36 @@ print(json.dumps({"version": numpy.__version__, "blas": "openblas"}))
     throw '-NumpyWheel is valid only for the numpy profile'
 }
 
-Set-Content -LiteralPath (Join-Path $outputPath 'RUNTIME_PROFILE') -Value $RuntimeProfile -Encoding utf8NoBOM -NoNewline
+[IO.File]::WriteAllText((Join-Path $outputPath 'RUNTIME_PROFILE'), $RuntimeProfile, $Utf8NoBom)
+
+$coreIdentity = $null
+if ($RuntimeProfile -eq 'numpy') {
+    $layerEvidencePath = if ($LayerEvidence) {
+        [IO.Path]::GetFullPath($LayerEvidence)
+    } else {
+        "$outputPath.core-layer.json"
+    }
+    $verifyLayer = Join-Path $PSScriptRoot 'verify_core_layer.py'
+    & $pythonPath -I -S $verifyLayer --core $corePath --numpy $outputPath --output $layerEvidencePath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'NumPy runtime does not preserve the qualified core identity'
+    }
+    $coreIdentity = Get-Content -LiteralPath $layerEvidencePath -Raw | ConvertFrom-Json
+}
 
 $pythonHash = (Get-FileHash -LiteralPath (Join-Path $outputPath 'python.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
 $dllHash = (Get-FileHash -LiteralPath (Join-Path $outputPath 'python312.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+$relativePrefix = $outputPath.TrimEnd('\') + '\'
 $files = @(
     Get-ChildItem -LiteralPath $outputPath -File -Recurse -Force |
         Where-Object { $_.Name -ne 'runtime-manifest.json' } |
         Sort-Object FullName |
         ForEach-Object {
+            if (-not $_.FullName.StartsWith($relativePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Runtime file escaped output root: $($_.FullName)"
+            }
             [ordered]@{
-                path = [IO.Path]::GetRelativePath($outputPath, $_.FullName).Replace('\','/')
+                path = $_.FullName.Substring($relativePrefix.Length).Replace('\','/')
                 bytes = $_.Length
                 sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
                 owners = @('python-numpy-fenics')
@@ -176,11 +242,21 @@ $manifest = [ordered]@{
         executable_sha256 = $pythonHash
         dll_sha256 = $dllHash
     }
+    base_core = if ($coreIdentity) {
+        [ordered]@{
+            manifest_sha256 = [string]$coreIdentity.core_manifest_sha256
+            inherited_tree_sha256 = [string]$coreIdentity.inherited_tree_sha256
+            inherited_file_count = [int]$coreIdentity.inherited_file_count
+            excluded_paths = @($coreIdentity.excluded_paths)
+        }
+    } else {
+        $null
+    }
     numpy = $numpy
     files = $files
 }
-$manifest | ConvertTo-Json -Depth 8 |
-    Set-Content -LiteralPath (Join-Path $outputPath 'runtime-manifest.json') -Encoding utf8NoBOM
+$manifestJson = ($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine
+[IO.File]::WriteAllText((Join-Path $outputPath 'runtime-manifest.json'), $manifestJson, $Utf8NoBom)
 
 Write-Host "runtime_profile=$RuntimeProfile"
 Write-Host "runtime=$outputPath"

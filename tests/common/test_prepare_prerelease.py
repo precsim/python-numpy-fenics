@@ -6,6 +6,7 @@ import io
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -220,11 +221,14 @@ class PreparePrereleaseTests(unittest.TestCase):
             with zipfile.ZipFile(good, "w") as archive:
                 archive.writestr("runtime/package.py", b"ok")
                 archive.writestr("runtime/src/public_header.cpp", b"public")
+                archive.writestr("fenics-runtime/conda/include/petsc/private/petscimpl.h", b"public dependency")
             prerelease.validate_archive_members(good)
 
             forbidden_members = (
                 "src/private_backend.cpp",
                 "private/backend.cpp",
+                "fenics-runtime/private/backend.cpp",
+                "runtime/src/private/backend.cpp",
                 "runtime/python-matlab-octave-bridge/backend.cpp",
                 "runtime/private_bridge.mexw64",
                 "../consumer-secret.txt",
@@ -384,6 +388,12 @@ class PreparePrereleaseTests(unittest.TestCase):
                 "--tag",
                 "runtime-v0.1.0-rc1",
             ]
+            # An unrelated downloaded workflow may contain the same basename;
+            # each qualification must resolve its own run's artifact.
+            foreign_run = incoming / "unrelated-run"
+            foreign_run.mkdir()
+            first_artifact = next(incoming.glob("run-*/*.zip"))
+            shutil.copy2(first_artifact, foreign_run / first_artifact.name)
             with mock.patch("sys.argv", argv):
                 self.assertEqual(prerelease.main(), 0)
 
