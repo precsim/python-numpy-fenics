@@ -64,6 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m unittest tests.common.test_linux_fenics_python_builder
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
@@ -499,6 +500,49 @@ jobs:
             | tee "$prototype/icu-edge-public-inputs.log"
           echo "FENICS_ICU_EDGE_INPUT_DIR=$input_dir" >> "$GITHUB_ENV"
 
+      - name: Fetch and verify pinned public Python builder wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_dir="$RUNNER_TEMP/linux-fenics-python-builder-wheels"
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          rm -rf "$wheel_dir"
+          mkdir -p "$wheel_dir"
+          python3 scripts/linux/prepare_fenics_python_builder.py fetch \
+            --lock locks/linux/linux-x86_64-fenics-python-builder-wheels.json \
+            --numpy-source-manifest locks/linux/linux-glibc217-numpy-sources.json \
+            --fenics-package-lock "$FENICS_LOCK_FILE" \
+            --output-dir "$wheel_dir" \
+            --evidence "$prototype/python-builder-wheel-inputs.json" \
+            | tee "$prototype/python-builder-wheel-fetch.log"
+          echo "FENICS_PYTHON_BUILDER_WHEELS=$wheel_dir" >> "$GITHUB_ENV"
+
+      - name: Prepare pinned Python wheel builder offline on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          builder="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/python-builder"
+          rm -rf "$builder"
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /opt/python/cp312-cp312/bin/python \
+              scripts/linux/prepare_fenics_python_builder.py prepare \
+              --lock locks/linux/linux-x86_64-fenics-python-builder-wheels.json \
+              --numpy-source-manifest locks/linux/linux-glibc217-numpy-sources.json \
+              --fenics-package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
+              --base-runtime out/linux-x64/numpy \
+              --base-archive dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+              --base-qualification dist/qualification-linux-x64-numpy-base.json \
+              --wheel-dir "$FENICS_PYTHON_BUILDER_WHEELS" \
+              --output-dir "$builder" \
+              --manifest "$builder/manifest.json" \
+            | tee "$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/python-builder-prepare.log"
+          test -f "$builder/manifest.json"
+          echo "FENICS_PYTHON_BUILDER_MANIFEST=$builder/manifest.json" >> "$GITHUB_ENV"
+
       - name: Replay and verify pinned 41-record native build-tool lock
         shell: bash
         run: |
@@ -620,6 +664,7 @@ jobs:
             --build-tool-explicit locks/linux/linux-x86_64-fenics-build-tools-explicit.txt \
             --build-tool-prefix "$FENICS_BUILD_TOOL_PREFIX" \
             --build-tool-package-cache "$FENICS_PACKAGE_CACHE" \
+            --python-builder-manifest "$FENICS_PYTHON_BUILDER_MANIFEST" \
             --stock-abi-preflight "$FENICS_STOCK_ABI_PREFLIGHT" \
             --scratch-root "$scratch" \
             --validate-public-inputs-only \
@@ -634,7 +679,6 @@ jobs:
           assert data["source_rebuild_provenance_eligible"] is False
           assert data["outputs"]["public_input_validation_only"] is True
           assert data["inputs"]["deferred_full_rebuild_inputs"] == [
-              "python_builder_manifest",
               "libxml2_build_deps_manifest",
               "private_provider_manifest",
               "native_closure_report",
@@ -683,7 +727,6 @@ jobs:
           cat > "$blocker" <<'EOF'
           Linux FEniCS selective native rebuild remains unqualified.
           Required before the release path can proceed:
-          - reproducible pinned Python wheel-builder manifest
           - reproducible pinned libxml2 build-dependency manifest
           - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
           - hosted exercise of the native-rebuild handoff plus ICU/curl closure resolution

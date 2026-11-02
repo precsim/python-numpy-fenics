@@ -60,7 +60,26 @@ BUILD_TOOL_BINARIES = {
     "pkg_config": "pkg-config",
     "make": "make",
 }
-PYTHON_BUILD_MODULES = ("pip", "scikit-build-core", "nanobind", "wheel")
+PYTHON_BUILD_MODULES = (
+    "pip",
+    "packaging",
+    "pyproject-metadata",
+    "pathspec",
+    "scikit-build-core",
+    "nanobind",
+    "wheel",
+)
+PYTHON_BUILD_VERSIONS = {
+    "nanobind": "2.9.2",
+    "packaging": "25.0",
+    "pathspec": "0.12.1",
+    "pip": "25.3",
+    "pyproject-metadata": "0.9.1",
+    "scikit-build-core": "0.11.6",
+    "wheel": "0.48.0",
+}
+PYTHON_BUILD_SITE_SHA256 = "de8582981bdeea3c178eeb71265427229a66ceb421ad435c24136cce67b94147"
+PYTHON_BUILD_SITE_FILE_COUNT = 725
 ABI_CEILINGS = {
     "GLIBC": (2, 17),
     "GLIBCXX": (3, 4, 19),
@@ -289,29 +308,124 @@ def verify_build_toolchain(explicit: Path, prefix: Path, package_cache: Path, ev
     return payload, tools
 
 
-def validate_python_builder(path: Path) -> tuple[dict, Path]:
+def tree_sha256(root: Path) -> tuple[str, int]:
+    if not root.is_dir():
+        raise InputError(f"Python wheel-builder site-packages is missing: {root}")
+    digest = hashlib.sha256()
+    count = 0
+    for item in sorted((candidate for candidate in root.rglob("*") if candidate.is_file()), key=lambda candidate: candidate.relative_to(root).as_posix()):
+        if item.is_symlink():
+            raise InputError(f"Python wheel-builder site-packages contains a symlink: {item}")
+        relative = item.relative_to(root).as_posix()
+        item_sha = sha256(item)
+        size = item.stat().st_size
+        digest.update(relative.encode("utf-8") + b"\0" + item_sha.encode("ascii") + b"\0" + str(size).encode("ascii") + b"\n")
+        count += 1
+    if count == 0:
+        raise InputError("Python wheel-builder site-packages is empty")
+    return digest.hexdigest(), count
+
+
+def resolve_manifest_path(manifest_path: Path, value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise InputError(f"{label} path is missing")
+    candidate = Path(value)
+    if candidate.is_absolute():
+        raise InputError(f"{label} path must be relative for reproducible builder manifests")
+    return (manifest_path.parent / candidate).resolve()
+
+
+def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
     manifest = load_json(path)
     if manifest.get("format_version") != 1 or manifest.get("kind") != "fenics-python-wheel-builder":
         raise InputError("unsupported Python wheel-builder manifest identity")
+    if manifest.get("target") != {
+        "architecture": "x86_64",
+        "python_version": "3.12.10",
+        "python_abi": "cp312",
+        "glibc_floor": "2.17",
+    }:
+        raise InputError("Python wheel-builder target differs from the frozen Linux CPython contract")
+    if manifest.get("policy") != {
+        "dependency_resolution": False,
+        "index_access": False,
+        "network_access_after_input_verification": False,
+        "wheel_installation": "deterministic-pure-wheel-extraction",
+        "base_runtime_modified": False,
+    }:
+        raise InputError("Python wheel-builder policy differs from the offline no-solve contract")
     python_record = manifest.get("python")
     if not isinstance(python_record, dict):
         raise InputError("Python wheel-builder manifest has no python record")
-    executable = Path(str(python_record.get("path", "")))
+    executable = resolve_manifest_path(path, python_record.get("path"), "Python wheel-builder executable")
     verify_file(executable, python_record.get("sha256"), "Python wheel-builder executable")
     if not os.access(executable, os.X_OK):
         raise InputError(f"Python wheel-builder executable is not executable: {executable}")
+    pythonpath_record = manifest.get("pythonpath")
+    if not isinstance(pythonpath_record, dict):
+        raise InputError("Python wheel-builder manifest has no pythonpath record")
+    pythonpath = resolve_manifest_path(path, pythonpath_record.get("path"), "Python wheel-builder pythonpath")
+    actual_tree_sha, actual_file_count = tree_sha256(pythonpath)
+    if (
+        pythonpath_record.get("tree_sha256") != PYTHON_BUILD_SITE_SHA256
+        or pythonpath_record.get("file_count") != PYTHON_BUILD_SITE_FILE_COUNT
+        or actual_tree_sha != PYTHON_BUILD_SITE_SHA256
+        or actual_file_count != PYTHON_BUILD_SITE_FILE_COUNT
+    ):
+        raise InputError("Python wheel-builder site-packages tree identity mismatch")
     expected_modules = manifest.get("modules")
-    if not isinstance(expected_modules, dict) or tuple(sorted(expected_modules)) != tuple(sorted(PYTHON_BUILD_MODULES)):
-        raise InputError(f"Python wheel-builder modules must be exactly {sorted(PYTHON_BUILD_MODULES)!r}")
+    if expected_modules != PYTHON_BUILD_VERSIONS:
+        raise InputError(f"Python wheel-builder modules must be exactly {PYTHON_BUILD_VERSIONS!r}")
+    wheels = manifest.get("wheels")
+    if not isinstance(wheels, list) or [record.get("name") for record in wheels if isinstance(record, dict)] != list(PYTHON_BUILD_MODULES):
+        raise InputError("Python wheel-builder wheel evidence differs from the fixed seven-wheel closure")
+    for record in wheels:
+        if not isinstance(record, dict):
+            raise InputError("Python wheel-builder wheel evidence contains an invalid record")
+        name = record.get("name")
+        if name not in PYTHON_BUILD_VERSIONS or record.get("version") != PYTHON_BUILD_VERSIONS[name]:
+            raise InputError(f"Python wheel-builder wheel version differs for {name!r}")
+        require_sha(record.get("sha256"), f"Python wheel-builder wheel {name} sha256")
+    base_runtime = manifest.get("base_runtime")
+    if (
+        not isinstance(base_runtime, dict)
+        or base_runtime.get("profile") != "numpy"
+        or base_runtime.get("python_version") != "3.12.10"
+        or base_runtime.get("python_abi") != "cp312"
+        or base_runtime.get("python_sha256") != python_record.get("sha256")
+    ):
+        raise InputError("Python wheel-builder base-runtime identity is incomplete or inconsistent")
+    for key in ("runtime_manifest_sha256", "qualified_archive_sha256"):
+        require_sha(base_runtime.get(key), f"Python wheel-builder base runtime {key}")
+    environment = os.environ.copy()
+    for name in ("PYTHONHOME", "PYTHONUSERBASE", "LD_LIBRARY_PATH", "LD_PRELOAD"):
+        environment.pop(name, None)
+    environment.update({
+        "PYTHONPATH": str(pythonpath),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_NO_INDEX": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_CACHE_DIR": "1",
+    })
     code = (
         "import importlib.metadata,json; "
         f"names={list(PYTHON_BUILD_MODULES)!r}; "
         "print(json.dumps({n:importlib.metadata.version(n) for n in names},sort_keys=True))"
     )
-    actual_modules = json.loads(run(executable, "-c", code).stdout)
+    actual_modules = json.loads(run(executable, "-s", "-c", code, env=environment).stdout)
     if actual_modules != expected_modules:
         raise InputError(f"Python wheel-builder module versions differ: {actual_modules!r} != {expected_modules!r}")
-    return {**manifest, "python": {**python_record, "path": str(executable.resolve())}}, executable.resolve()
+    return (
+        {
+            **manifest,
+            "python": {**python_record, "path": str(executable)},
+            "pythonpath": {**pythonpath_record, "path": str(pythonpath)},
+        },
+        executable,
+        pythonpath,
+    )
 
 
 def validate_libxml2_build_deps(path: Path) -> tuple[dict, Path, Path, Path]:
@@ -633,6 +747,7 @@ def build_candidate(
     stock: Path,
     tools: dict[str, Path],
     python_builder: Path,
+    python_builder_site: Path,
     libxml2_include: Path,
     zlib_library: Path,
     lzma_library: Path,
@@ -704,6 +819,12 @@ def build_candidate(
         "CMAKE_PREFIX_PATH": f"{prefix};{stock}",
         "CFLAGS": f"-specs={c_specs}",
         "CXXFLAGS": f"-specs={cxx_specs} -fvisibility-inlines-hidden",
+        "PYTHONPATH": str(python_builder_site),
+        "PYTHONNOUSERSITE": "1",
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_NO_INDEX": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_CACHE_DIR": "1",
     })
     wheel_env["CMAKE_ARGS"] = (
         f"-DCMAKE_CXX_COMPILER={tools['cxx']} "
@@ -720,7 +841,11 @@ def build_candidate(
     basix_audit = audit / "basix"
     with zipfile.ZipFile(basix_wheel) as zf:
         zf.extractall(basix_audit)
-    wheel_env["PYTHONPATH"] = f"{basix_audit}:{stock}/lib/python3.12/site-packages"
+    wheel_env["PYTHONPATH"] = os.pathsep.join([
+        str(python_builder_site),
+        str(basix_audit),
+        str(stock / "lib" / "python3.12" / "site-packages"),
+    ])
     wheel_env["CMAKE_ARGS"] = (
         f"-DCMAKE_C_COMPILER={tools['cc']} "
         f"-DCMAKE_CXX_COMPILER={tools['cxx']} "
@@ -1075,7 +1200,16 @@ def main(argv: list[str] | None = None) -> int:
             args.build_tool_package_cache,
             args.scratch_root / "evidence" / "build-tool-verification.json",
         )
+        python_builder_evidence: dict | None = None
+        python_builder: Path | None = None
+        python_builder_site: Path | None = None
+        if args.python_builder_manifest is not None:
+            python_builder_evidence, python_builder, python_builder_site = validate_python_builder(
+                args.python_builder_manifest
+            )
         if args.validate_public_inputs_only:
+            if args.python_builder_manifest is None or python_builder_evidence is None:
+                raise InputError("--validate-public-inputs-only requires --python-builder-manifest")
             prefix_evidence = verify_locked_prefix(
                 args.package_lock,
                 args.source_explicit,
@@ -1096,6 +1230,11 @@ def main(argv: list[str] | None = None) -> int:
                         "identity": build_tool_evidence.get("roots"),
                         "executables": build_tool_evidence.get("executables"),
                     },
+                    "python_builder_manifest": {
+                        "path": str(args.python_builder_manifest.resolve()),
+                        "sha256": sha256(args.python_builder_manifest),
+                        "identity": python_builder_evidence,
+                    },
                     "sources": source_evidence,
                     "recipe_source_bindings": recipe_bindings,
                     "spdlog_patch": patch_evidence,
@@ -1103,7 +1242,6 @@ def main(argv: list[str] | None = None) -> int:
                     "locked_prefix": {"path": str(args.locked_prefix.resolve()), "verification": prefix_evidence},
                     "stock_abi_preflight": stock_abi_evidence,
                     "deferred_full_rebuild_inputs": [
-                        "python_builder_manifest",
                         "libxml2_build_deps_manifest",
                         "private_provider_manifest",
                         "native_closure_report",
@@ -1130,8 +1268,10 @@ def main(argv: list[str] | None = None) -> int:
         assert args.libxml2_build_deps_manifest is not None
         assert args.private_provider_manifest is not None
         assert args.native_closure_report is not None
+        assert python_builder_evidence is not None
+        assert python_builder is not None
+        assert python_builder_site is not None
         closure_evidence = validate_native_closure_report(args.native_closure_report)
-        python_builder_evidence, python_builder = validate_python_builder(args.python_builder_manifest)
         libxml2_build_evidence, libxml2_include, zlib_library, lzma_library = validate_libxml2_build_deps(
             args.libxml2_build_deps_manifest
         )
@@ -1160,6 +1300,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.locked_prefix.resolve(),
                 tools,
                 python_builder,
+                python_builder_site,
                 libxml2_include,
                 zlib_library,
                 lzma_library,

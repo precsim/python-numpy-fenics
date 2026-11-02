@@ -57,8 +57,22 @@ class FenicsNativeRebuildTests(unittest.TestCase):
             manifest.write_text(json.dumps({
                 "format_version": 1,
                 "kind": "fenics-python-wheel-builder",
-                "python": {"path": str(python), "sha256": "f" * 64},
-                "modules": {name: "0" for name in mod.PYTHON_BUILD_MODULES},
+                "target": {
+                    "architecture": "x86_64",
+                    "python_version": "3.12.10",
+                    "python_abi": "cp312",
+                    "glibc_floor": "2.17",
+                },
+                "policy": {
+                    "dependency_resolution": False,
+                    "index_access": False,
+                    "network_access_after_input_verification": False,
+                    "wheel_installation": "deterministic-pure-wheel-extraction",
+                    "base_runtime_modified": False,
+                },
+                "python": {"path": "python", "sha256": "f" * 64},
+                "pythonpath": {"path": "site-packages", "tree_sha256": "0" * 64, "file_count": 1},
+                "modules": dict(mod.PYTHON_BUILD_VERSIONS),
             }))
             with self.assertRaisesRegex(mod.InputError, "Python wheel-builder executable SHA-256 mismatch"):
                 mod.validate_python_builder(manifest)

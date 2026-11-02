@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "target": {
+    "architecture": "x86_64",
+    "python_version": "3.12.10",
+    "python_abi": "cp312",
+    "glibc_floor": "2.17"
+  },
+  "base_runtime": {
+    "profile": "numpy",
+    "source_manifest": "locks/linux/linux-glibc217-numpy-sources.json"
+  },
+  "wheels": [
+    {
+      "name": "pip",
+      "version": "25.3",
+      "filename": "pip-25.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/44/3c/d717024885424591d5376220b5e836c2d5293ce2011523c9de23ff7bf068/pip-25.3-py3-none-any.whl",
+      "sha256": "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd",
+      "active_dependencies": [],
+      "pin_source": "linux-glibc217-numpy-sources.json#python_build_wheels:pip"
+    },
+    {
+      "name": "packaging",
+      "version": "25.0",
+      "filename": "packaging-25.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl",
+      "sha256": "29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484",
+      "active_dependencies": [],
+      "pin_source": "linux-glibc217-numpy-sources.json#python_build_wheels:packaging"
+    },
+    {
+      "name": "pyproject-metadata",
+      "version": "0.9.1",
+      "filename": "pyproject_metadata-0.9.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/7e/b1/8e63033b259e0a4e40dd1ec4a9fee17718016845048b43a36ec67d62e6fe/pyproject_metadata-0.9.1-py3-none-any.whl",
+      "sha256": "ee5efde548c3ed9b75a354fc319d5afd25e9585fa918a34f62f904cc731973ad",
+      "active_dependencies": [
+        "packaging"
+      ],
+      "pin_source": "linux-glibc217-numpy-sources.json#python_build_wheels:pyproject-metadata"
+    },
+    {
+      "name": "pathspec",
+      "version": "0.12.1",
+      "filename": "pathspec-0.12.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/cc/20/ff623b09d963f88bfde16306a54e12ee5ea43e9b597108672ff3a408aad6/pathspec-0.12.1-py3-none-any.whl",
+      "sha256": "a0d503e138a4c123b27490a4f7beda6a01c6f288df0e4a8b79c7eb0dc7b4cc08",
+      "active_dependencies": [],
+      "pin_source": "new-public-wheel-pin-for-scikit-build-core-0.11.6"
+    },
+    {
+      "name": "scikit-build-core",
+      "version": "0.11.6",
+      "filename": "scikit_build_core-0.11.6-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/43/49/ec16b3db6893db788ae35f98506ff5a9c25dca7eb18cc38ada8a4c1dc944/scikit_build_core-0.11.6-py3-none-any.whl",
+      "sha256": "ce6d8fe64e6b4c759ea0fb95d2f8a68f60d2df31c2989838633b8ec930736360",
+      "active_dependencies": [
+        "packaging",
+        "pathspec"
+      ],
+      "selected_extras": [
+        "pyproject"
+      ],
+      "extra_compatibility_dependencies": [
+        "pyproject-metadata"
+      ],
+      "pin_source": "public-wheel-pin-satisfying-basix-dolfinx-scikit-build-core>=0.11"
+    },
+    {
+      "name": "nanobind",
+      "version": "2.9.2",
+      "filename": "nanobind-2.9.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/05/20/f8944f162df48a20f8f533f4e4faed63891aa368ceca8cc8b32d4c785ed4/nanobind-2.9.2-py3-none-any.whl",
+      "sha256": "c37957ffd5eac7eda349cff3622ecd32e5ee1244ecc912c99b5bc8188bafd16e",
+      "active_dependencies": [],
+      "pin_source": "public-wheel-pin-satisfying-basix-dolfinx-nanobind>=2.5.0"
+    },
+    {
+      "name": "wheel",
+      "version": "0.48.0",
+      "filename": "wheel-0.48.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl",
+      "sha256": "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab",
+      "active_dependencies": [
+        "packaging"
+      ],
+      "pin_source": "linux-x86_64-fenics-package-lock.json#wheel-version"
+    }
+  ],
+  "modules": {
+    "nanobind": "2.9.2",
+    "packaging": "25.0",
+    "pathspec": "0.12.1",
+    "pip": "25.3",
+    "pyproject-metadata": "0.9.1",
+    "scikit-build-core": "0.11.6",
+    "wheel": "0.48.0"
+  },
+  "prepared_site": {
+    "file_count": 725,
+    "tree_sha256": "de8582981bdeea3c178eeb71265427229a66ceb421ad435c24136cce67b94147"
+  },
+  "source_build_requirements": {
+    "basix-0.11.0": [
+      "scikit-build-core[pyproject]>=0.11",
+      "nanobind>=2.5.0"
+    ],
+    "dolfinx-0.11.0": [
+      "scikit-build-core[pyproject]>=0.11",
+      "nanobind>=2.5.0",
+      "mpi4py (provided by the verified locked FEniCS prefix at build time)"
+    ]
+  },
+  "policy": {
+    "dependency_resolution": false,
+    "index_access": false,
+    "network_access_after_input_verification": false,
+    "wheel_installation": "deterministic-pure-wheel-extraction",
+    "base_runtime_modified": false
+  }
+}
