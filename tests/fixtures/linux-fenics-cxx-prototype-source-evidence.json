@@ -1,0 +1,67 @@
+{
+  "format_version": 1,
+  "scope": "worker10-prototype-source-integrity-only",
+  "source_rebuilds_claimed": false,
+  "sources": [
+    {
+      "id": "basix",
+      "source_file": "basix-0.11.0.tar.gz",
+      "source_url": "https://github.com/fenics/basix/archive/refs/tags/v0.11.0.tar.gz",
+      "source_sha256": "bb4355f4cd3c98d5e944c2b8596f3240225d0a8ab3bd1344133d2056a7b2c388",
+      "recipe_source_sha256": "bb4355f4cd3c98d5e944c2b8596f3240225d0a8ab3bd1344133d2056a7b2c388",
+      "recipe_package_url": "https://conda.anaconda.org/conda-forge/linux-64/fenics-libbasix-0.11.0-py312h6a37f7e_0.conda",
+      "recipe_package_sha256": "cd604a9ff92a9b4f6d2f1c07b41f28801f7b24dbad34aa99be646e8cc9ebd739",
+      "verified_recipe_package_archive_sha256": "cd604a9ff92a9b4f6d2f1c07b41f28801f7b24dbad34aa99be646e8cc9ebd739"
+    },
+    {
+      "id": "dolfinx",
+      "source_file": "dolfinx-0.11.0.tar.gz",
+      "source_url": "https://github.com/fenics/dolfinx/archive/refs/tags/v0.11.0.tar.gz",
+      "source_sha256": "4df167823d316da519c1b2f8d5d0afc20de1405de601dab51da67a405b25cc2f",
+      "recipe_source_sha256": "4df167823d316da519c1b2f8d5d0afc20de1405de601dab51da67a405b25cc2f",
+      "recipe_package_url": "https://conda.anaconda.org/conda-forge/linux-64/fenics-libdolfinx-0.11.0-py312hf02e3b9_101.conda",
+      "recipe_package_sha256": "6da81baf29fe12d5957e327d73f5a6572cdd119247ab69dfea13007b737a1898",
+      "verified_recipe_package_archive_sha256": "6da81baf29fe12d5957e327d73f5a6572cdd119247ab69dfea13007b737a1898"
+    },
+    {
+      "id": "fmt",
+      "source_file": "fmt-12.1.0.tar.gz",
+      "source_url": "https://github.com/fmtlib/fmt/archive/12.1.0.tar.gz",
+      "source_sha256": "ea7de4299689e12b6dddd392f9896f08fb0777ac7168897a244a6d6085043fea",
+      "recipe_source_sha256": "ea7de4299689e12b6dddd392f9896f08fb0777ac7168897a244a6d6085043fea",
+      "recipe_package_url": "https://conda.anaconda.org/conda-forge/linux-64/fmt-12.1.0-h76c4fd7_1.conda",
+      "recipe_package_sha256": "25d14a197601fdd616f2e501431b52887e69b31e7defbc1679381d718357ceb7",
+      "verified_recipe_package_archive_sha256": "25d14a197601fdd616f2e501431b52887e69b31e7defbc1679381d718357ceb7"
+    },
+    {
+      "id": "spdlog",
+      "source_file": "spdlog-1.17.0.tar.gz",
+      "source_url": "https://github.com/gabime/spdlog/archive/v1.17.0.tar.gz",
+      "source_sha256": "d8862955c6d74e5846b3f580b1605d2428b11d97a410d86e2fb13e857cd3a744",
+      "recipe_source_sha256": "d8862955c6d74e5846b3f580b1605d2428b11d97a410d86e2fb13e857cd3a744",
+      "recipe_package_url": "https://conda.anaconda.org/conda-forge/linux-64/spdlog-1.17.0-hb6aa676_2.conda",
+      "recipe_package_sha256": "5fca627690d56c6f87a9dabafceee54cb75d7da392309bb080333948c048365a",
+      "verified_recipe_package_archive_sha256": "5fca627690d56c6f87a9dabafceee54cb75d7da392309bb080333948c048365a"
+    },
+    {
+      "id": "pugixml",
+      "source_file": "pugixml-1.15.tar.gz",
+      "source_url": "https://github.com/zeux/pugixml/archive/v1.15.tar.gz",
+      "source_sha256": "b39647064d9e28297a34278bfb897092bf33b7c487906ddfc094c9e8868bddcb",
+      "recipe_source_sha256": "b39647064d9e28297a34278bfb897092bf33b7c487906ddfc094c9e8868bddcb",
+      "recipe_package_url": "https://conda.anaconda.org/conda-forge/linux-64/pugixml-1.15-h3f63f65_0.conda",
+      "recipe_package_sha256": "23c98a5000356e173568dc5c5770b53393879f946f3ace716bbdefac2a8b23d2",
+      "verified_recipe_package_archive_sha256": "23c98a5000356e173568dc5c5770b53393879f946f3ace716bbdefac2a8b23d2"
+    }
+  ],
+  "patches": {
+    "spdlog_fix_patch_sha256": "b58437661aac1bb5375aa42710feae3b061958431fc2d431d5b97fd894b77f10",
+    "spdlog_fix_patch_applied_by_worker10": true,
+    "dolfinx_remove_symlink_patch_sha256": "c9df671c63f2f2793689ed8a56e40cb0a83b77f0af9cf925753e0499d79e6e34",
+    "dolfinx_remove_symlink_patch_applied_by_worker10": false
+  },
+  "limitations": [
+    "This records integrity of preserved worker10 prototype source inputs only; it is not a production source-rebuild contract.",
+    "The preserved worker10 C++ prototype applied the conda-forge spdlog fix patch but did not apply the DOLFINx recipe remove-symlink patch."
+  ]
+}
