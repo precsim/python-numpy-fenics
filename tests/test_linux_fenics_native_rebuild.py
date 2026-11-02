@@ -124,20 +124,103 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                 "dolfinx_build_flags": {"DOLFINX_ENABLE_ADIOS2": "OFF", "DOLFINX_ENABLE_KAHIP": "OFF"},
                 "unresolved_non_system": [],
                 "closure_elf_count": 113,
+                "candidate_output_binding": {
+                    "replacements": [
+                        {
+                            "destination": "lib/libfmt.so.12",
+                            "owner": "fmt",
+                            "sha256": "1" * 64,
+                            "bytes": 123,
+                        }
+                    ],
+                    "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
+                    "wheels": [
+                        {
+                            "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                            "sha256": "2" * 64,
+                            "bytes": 456,
+                        }
+                    ],
+                },
                 "candidates": {
                     name: {"reached_paths": [], "reverse_direct_noncandidate": [], "staged_paths": [name], "abi_maxima": {}}
                     for name in ("kahip", "libadios2", "zeromq")
                 },
             }
+            report["candidate_output_binding_sha256"] = mod.canonical_json_sha(report["candidate_output_binding"])
             report["candidates"]["icu"] = {"reached_paths": ["lib/libicuuc.so.78.3"], "reverse_direct_noncandidate": []}
             path = root / "closure.json"
             path.write_text(json.dumps(report))
             evidence = mod.validate_native_closure_report(path)
             self.assertTrue(evidence["icu_resolution_required"])
+            self.assertEqual(
+                evidence["candidate_output_binding_sha256"],
+                report["candidate_output_binding_sha256"],
+            )
             report["candidates"]["kahip"]["reached_paths"] = ["lib/libkahip.so"]
             path.write_text(json.dumps(report))
             with self.assertRaisesRegex(mod.InputError, "not proven for kahip"):
                 mod.validate_native_closure_report(path)
+
+    def test_native_closure_rejects_tampered_candidate_output_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "closure.json"
+            binding = {
+                "replacements": [
+                    {
+                        "destination": "lib/libfmt.so.12",
+                        "owner": "fmt",
+                        "sha256": "1" * 64,
+                        "bytes": 123,
+                    }
+                ],
+                "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
+                "wheels": [],
+            }
+            report = {
+                "dolfinx_build_flags": {"DOLFINX_ENABLE_ADIOS2": "OFF", "DOLFINX_ENABLE_KAHIP": "OFF"},
+                "unresolved_non_system": [],
+                "closure_elf_count": 1,
+                "candidate_output_binding": binding,
+                "candidate_output_binding_sha256": mod.canonical_json_sha(binding),
+                "candidates": {
+                    name: {"reached_paths": [], "reverse_direct_noncandidate": [], "staged_paths": [name], "abi_maxima": {}}
+                    for name in ("kahip", "libadios2", "zeromq")
+                },
+            }
+            report["candidates"]["icu"] = {"reached_paths": [], "reverse_direct_noncandidate": []}
+            report["candidate_output_binding"]["replacements"][0]["sha256"] = "3" * 64
+            path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(mod.InputError, "candidate output binding SHA-256 mismatch"):
+                mod.validate_native_closure_report(path)
+
+    def test_candidate_output_binding_rejects_stale_wheel_hash(self) -> None:
+        binding = {
+            "replacements": [
+                {
+                    "destination": "lib/libfmt.so.12",
+                    "owner": "fmt",
+                    "sha256": "1" * 64,
+                    "bytes": 123,
+                }
+            ],
+            "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
+            "wheels": [
+                {
+                    "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                    "sha256": "2" * 64,
+                    "bytes": 456,
+                }
+            ],
+        }
+        closure = {
+            "candidate_output_binding": binding,
+            "candidate_output_binding_sha256": mod.canonical_json_sha(binding),
+        }
+        actual = json.loads(json.dumps(binding))
+        actual["wheels"][0]["sha256"] = "3" * 64
+        with self.assertRaisesRegex(mod.InputError, "does not match exact candidate outputs"):
+            mod.verify_native_closure_candidate_binding(closure, actual)
 
     def test_stock_abi_preflight_binds_exact_selective_rebuild_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

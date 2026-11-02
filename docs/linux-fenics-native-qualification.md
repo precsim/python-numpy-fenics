@@ -59,10 +59,18 @@ six pinned source components (Basix, DOLFINx, fmt, spdlog, pugixml and
 libxml2), the two rebuilt Python wheels, and the private C++ provider. It binds
 candidate replacement bytes and the KaHIP/ADIOS2/ZeroMQ omissions to exact
 hashes while remaining `candidate-unqualified`; it does not authorize
-`source_rebuilds`. Resolving the still-live ICU edge may require adding a
-pinned curl/libcurl rebuild to a future handoff revision. The current schema
-rejects such an unknown replacement owner until its source and ownership
-evidence are defined explicitly.
+`source_rebuilds`. The external native-closure proof must also bind the exact
+candidate replacement set, rebuilt ELF identities, and wheel archive
+identities. The rebuild runner recomputes that binding after the candidate is
+built and rejects a closure proof from an older candidate even when its
+omission evidence is otherwise valid. The binding fingerprint is carried on
+each omission record in the handoff. Binding paths are canonicalized under
+`prefix/`, `audit/`, and `wheels/` so a prior audit can be compared to a fresh
+deterministic rebuild without depending on scratch-directory locations.
+Resolving the still-live ICU edge may
+require adding a pinned curl/libcurl rebuild to a future handoff revision. The
+current schema rejects such an unknown replacement owner until its source and
+ownership evidence are defined explicitly.
 
 The next hosted experiment isolates the first ICU branch without rebuilding
 HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with the

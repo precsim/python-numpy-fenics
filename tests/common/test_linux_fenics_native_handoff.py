@@ -13,7 +13,9 @@ from scripts.linux import rebuild_fenics_native as producer
 
 
 class NativeRebuildHandoffTests(unittest.TestCase):
-    def make_fixture(self, root: Path) -> tuple[Path, Path, Path, Path, dict[str, dict]]:
+    def make_fixture(
+        self, root: Path, *, stale_candidate: bool = False
+    ) -> tuple[Path, Path, Path, Path, dict[str, dict]]:
         prefix = root / "prefix"
         prefix.mkdir()
         fmt_stock = prefix / "lib" / "libfmt.so.12"
@@ -68,6 +70,33 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             (build_dir / "install_manifest.txt").write_text(
                 str(installed.resolve()) + "\n", encoding="utf-8"
             )
+
+        candidate_output_binding = {
+            "replacements": [
+                {
+                    "destination": "lib/libfenics_cxxrt.so.1",
+                    "owner": producer.HANDOFF_PROVIDER_OWNER,
+                    "sha256": producer.sha256(provider_candidate),
+                    "bytes": provider_candidate.stat().st_size,
+                },
+                {
+                    "destination": "lib/libfmt.so.12",
+                    "owner": "fmt",
+                    "sha256": producer.sha256(fmt_candidate),
+                    "bytes": fmt_candidate.stat().st_size,
+                },
+            ],
+            "elf": [
+                {"path": "prefix/lib/libfenics_cxxrt.so.1", "sha256": producer.sha256(provider_candidate)},
+                {"path": "prefix/lib/libfmt.so.12", "sha256": producer.sha256(fmt_candidate)},
+            ],
+            "wheels": [],
+        }
+        candidate_output_binding["replacements"].sort(key=lambda item: item["destination"])
+        candidate_output_binding["elf"].sort(key=lambda item: item["path"])
+        candidate_output_binding_sha = producer.canonical_json_sha(candidate_output_binding)
+        if stale_candidate:
+            fmt_candidate.write_bytes(b"rebuilt-fmt-changed-after-closure-audit")
 
         closure_sha = "c" * 64
         source_manifest_path = Path(mod.__file__).resolve().parents[2] / mod.NATIVE_HANDOFF_SOURCE_MANIFEST
@@ -127,8 +156,15 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 "conditional_omissions": conditional_omissions,
                 "icu_reached_paths": ["lib/libicuuc.so.78"],
                 "icu_resolution_required": True,
+                "candidate_output_binding": candidate_output_binding,
+                "candidate_output_binding_sha256": candidate_output_binding_sha,
             },
             wheels=[],
+            elf_records=[
+                {"path": str(provider_candidate), "sha256": producer.sha256(provider_candidate)},
+                {"path": str(fmt_candidate), "sha256": producer.sha256(fmt_candidate)},
+            ],
+            wheel_records=[],
         )
         return handoff, prefix, lock, prefix_evidence, {
             "preflight": preflight,
@@ -187,6 +223,11 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 lambda data: data["inputs"]["source_sha256"].update(fmt="0" * 64),
                 "source hash mismatch for fmt",
             ),
+            (
+                "omission-output-binding",
+                lambda data: data["conditional_omissions"][0].update(candidate_output_binding_sha256="0" * 64),
+                "not bound to candidate outputs",
+            ),
         )
         for label, mutate, message in mutations:
             with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
@@ -204,6 +245,11 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                         stock_abi_preflight_path=extra["preflight"],
                         records=extra["records"],
                     )
+
+    def test_rejects_stale_closure_proof_after_candidate_bytes_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(producer.InputError, "does not match exact candidate outputs"):
+                self.make_fixture(Path(raw), stale_candidate=True)
 
     def test_rejects_tampered_omission_evidence_and_symlink_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

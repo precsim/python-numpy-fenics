@@ -140,6 +140,66 @@ def canonical_json_sha(value: object) -> str:
     ).hexdigest()
 
 
+def normalize_candidate_output_binding(value: object, label: str = "candidate output binding") -> dict:
+    if not isinstance(value, dict) or set(value) != {"replacements", "elf", "wheels"}:
+        raise InputError(f"{label} must contain exactly replacements, elf, and wheels")
+
+    def normalize_records(
+        records: object,
+        *,
+        kind: str,
+        required_keys: set[str],
+        key_name: str,
+    ) -> list[dict]:
+        if not isinstance(records, list):
+            raise InputError(f"{label} {kind} records must be a list")
+        normalized: list[dict] = []
+        keys: list[str] = []
+        for record in records:
+            if not isinstance(record, dict) or set(record) != required_keys:
+                raise InputError(f"{label} contains an invalid {kind} record: {record!r}")
+            raw_key = record.get(key_name)
+            relative = safe_handoff_relative(raw_key, f"{label} {kind} {key_name}").as_posix()
+            digest = require_sha(record.get("sha256"), f"{label} {kind} {relative} sha256")
+            normalized_record = dict(record)
+            normalized_record[key_name] = relative
+            normalized_record["sha256"] = digest
+            if "owner" in required_keys:
+                owner = record.get("owner")
+                if not isinstance(owner, str) or not owner:
+                    raise InputError(f"{label} {kind} {relative} owner is invalid")
+            if "bytes" in required_keys:
+                size = record.get("bytes")
+                if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                    raise InputError(f"{label} {kind} {relative} byte count is invalid")
+            keys.append(relative)
+            normalized.append(normalized_record)
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise InputError(f"{label} {kind} records must be uniquely sorted by {key_name}")
+        return normalized
+
+    return {
+        "replacements": normalize_records(
+            value["replacements"],
+            kind="replacement",
+            required_keys={"destination", "owner", "sha256", "bytes"},
+            key_name="destination",
+        ),
+        "elf": normalize_records(
+            value["elf"],
+            kind="ELF",
+            required_keys={"path", "sha256"},
+            key_name="path",
+        ),
+        "wheels": normalize_records(
+            value["wheels"],
+            kind="wheel",
+            required_keys={"path", "sha256", "bytes"},
+            key_name="path",
+        ),
+    }
+
+
 def safe_handoff_relative(raw: object, label: str) -> PurePosixPath:
     if not isinstance(raw, str) or not raw or "\\" in raw:
         raise InputError(f"{label} must be a canonical POSIX relative path")
@@ -596,6 +656,14 @@ def validate_native_closure_report(path: Path) -> dict:
     icu_reached = icu.get("reached_paths")
     if not isinstance(icu_reached, list):
         raise InputError("native closure proof has invalid ICU reached paths")
+    candidate_output_binding = normalize_candidate_output_binding(
+        report.get("candidate_output_binding"), "native closure candidate output binding"
+    )
+    candidate_output_binding_sha = require_sha(
+        report.get("candidate_output_binding_sha256"), "native closure candidate output binding sha256"
+    )
+    if canonical_json_sha(candidate_output_binding) != candidate_output_binding_sha:
+        raise InputError("native closure candidate output binding SHA-256 mismatch")
     return {
         "path": str(path.resolve()),
         "sha256": sha256(path),
@@ -604,6 +672,8 @@ def validate_native_closure_report(path: Path) -> dict:
         "conditional_omissions": omitted,
         "icu_reached_paths": icu_reached,
         "icu_resolution_required": bool(icu_reached),
+        "candidate_output_binding": candidate_output_binding,
+        "candidate_output_binding_sha256": candidate_output_binding_sha,
     }
 
 
@@ -976,6 +1046,79 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
     return elf_records, wheel_records
 
 
+def candidate_output_binding(
+    roots: dict[str, Path],
+    replacements: dict[str, dict],
+    elf_records: list[dict],
+    wheel_records: list[dict],
+) -> dict:
+    def logical_path(raw: object, root_names: tuple[str, ...], label: str) -> str:
+        if not isinstance(raw, str) or not raw:
+            raise InputError(f"{label} path is missing")
+        candidate = Path(raw).resolve()
+        for root_name in root_names:
+            root = roots[root_name].resolve()
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            return (PurePosixPath(root_name) / PurePosixPath(relative.as_posix())).as_posix()
+        raise InputError(f"{label} path is outside the candidate roots: {candidate}")
+
+    replacement_records = [
+        {
+            "destination": key,
+            "owner": str(replacements[key]["owner"]),
+            "sha256": require_sha(replacements[key].get("sha256"), f"candidate replacement {key} sha256"),
+            "bytes": replacements[key].get("bytes"),
+        }
+        for key in sorted(replacements)
+    ]
+    elf = sorted(
+        (
+            {
+                "path": logical_path(record.get("path"), ("prefix", "audit"), "candidate ELF"),
+                "sha256": require_sha(record.get("sha256"), "candidate ELF sha256"),
+            }
+            for record in elf_records
+        ),
+        key=lambda record: record["path"],
+    )
+    wheels = sorted(
+        (
+            {
+                "path": logical_path(record.get("path"), ("wheels",), "candidate wheel"),
+                "sha256": require_sha(record.get("sha256"), "candidate wheel sha256"),
+                "bytes": record.get("size"),
+            }
+            for record in wheel_records
+        ),
+        key=lambda record: record["path"],
+    )
+    return normalize_candidate_output_binding(
+        {"replacements": replacement_records, "elf": elf, "wheels": wheels}
+    )
+
+
+def verify_native_closure_candidate_binding(native_closure: dict, actual_binding: dict) -> str:
+    expected = normalize_candidate_output_binding(
+        native_closure.get("candidate_output_binding"), "native closure candidate output binding"
+    )
+    expected_sha = require_sha(
+        native_closure.get("candidate_output_binding_sha256"), "native closure candidate output binding sha256"
+    )
+    if canonical_json_sha(expected) != expected_sha:
+        raise InputError("native closure candidate output binding SHA-256 mismatch")
+    actual = normalize_candidate_output_binding(actual_binding, "actual candidate output binding")
+    actual_sha = canonical_json_sha(actual)
+    if actual != expected or actual_sha != expected_sha:
+        raise InputError(
+            "native closure proof does not match exact candidate outputs: "
+            f"actual={actual_sha} expected={expected_sha}"
+        )
+    return actual_sha
+
+
 def installed_package_records(prefix: Path) -> dict[str, dict]:
     records: dict[str, dict] = {}
     for path in sorted((prefix / "conda-meta").glob("*.json")):
@@ -1062,6 +1205,8 @@ def write_package_handoff(
     private_provider_manifest: Path,
     native_closure: dict,
     wheels: list[Path],
+    elf_records: list[dict],
+    wheel_records: list[dict],
 ) -> dict:
     """Write a deterministic, unqualified packaging handoff for candidate bytes."""
 
@@ -1150,6 +1295,8 @@ def write_package_handoff(
     if not replacements:
         raise InputError("native rebuild produced no package handoff replacements")
 
+    output_binding = candidate_output_binding(roots, replacements, elf_records, wheel_records)
+    output_binding_sha = verify_native_closure_candidate_binding(native_closure, output_binding)
     native_closure_sha = require_sha(native_closure.get("sha256"), "native closure report sha256")
     omissions = []
     conditional = native_closure.get("conditional_omissions")
@@ -1163,6 +1310,7 @@ def write_package_handoff(
         omissions.append({
             "package": name,
             "native_closure_report_sha256": native_closure_sha,
+            "candidate_output_binding_sha256": output_binding_sha,
             "evidence": evidence,
             "evidence_sha256": evidence_sha,
         })
@@ -1192,6 +1340,7 @@ def write_package_handoff(
             "closure_elf_count": native_closure.get("closure_elf_count"),
             "icu_reached_paths": native_closure.get("icu_reached_paths"),
             "icu_resolution_required": native_closure.get("icu_resolution_required"),
+            "candidate_output_binding_sha256": output_binding_sha,
         },
     }
     payload = {
@@ -1411,6 +1560,8 @@ def main(argv: list[str] | None = None) -> int:
                 private_provider_manifest=args.private_provider_manifest.resolve(),
                 native_closure=closure_evidence,
                 wheels=wheels,
+                elf_records=elf_records,
+                wheel_records=wheel_records,
             )
             handoff_record = {
                 "path": str(handoff_path),

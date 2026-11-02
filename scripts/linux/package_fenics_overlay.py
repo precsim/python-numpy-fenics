@@ -655,6 +655,7 @@ def load_native_rebuild_handoff(
         "closure_elf_count",
         "icu_reached_paths",
         "icu_resolution_required",
+        "candidate_output_binding_sha256",
     } or native_closure.get("dolfinx_build_flags") != {
         "DOLFINX_ENABLE_ADIOS2": "OFF",
         "DOLFINX_ENABLE_KAHIP": "OFF",
@@ -664,6 +665,10 @@ def load_native_rebuild_handoff(
         native_closure.get("icu_resolution_required"), bool
     ):
         raise SystemExit("native rebuild handoff has invalid ICU closure evidence")
+    candidate_output_binding_sha = require_sha256(
+        native_closure.get("candidate_output_binding_sha256"),
+        "handoff native closure candidate output binding sha256",
+    )
 
     omissions = payload.get("conditional_omissions")
     if not isinstance(omissions, list) or [item.get("package") if isinstance(item, dict) else None for item in omissions] != list(NATIVE_HANDOFF_OMISSIONS):
@@ -671,11 +676,19 @@ def load_native_rebuild_handoff(
     closure_sha = inputs["native_closure_report_sha256"]
     for item in omissions:
         assert isinstance(item, dict)
-        if set(item) != {"package", "native_closure_report_sha256", "evidence", "evidence_sha256"}:
+        if set(item) != {
+            "package",
+            "native_closure_report_sha256",
+            "candidate_output_binding_sha256",
+            "evidence",
+            "evidence_sha256",
+        }:
             raise SystemExit("native rebuild handoff omission record has unexpected or missing fields")
         name = str(item["package"])
         if item.get("native_closure_report_sha256") != closure_sha:
             raise SystemExit(f"native rebuild handoff omission is not bound to closure evidence: {name}")
+        if item.get("candidate_output_binding_sha256") != candidate_output_binding_sha:
+            raise SystemExit(f"native rebuild handoff omission is not bound to candidate outputs: {name}")
         evidence = item.get("evidence")
         if not isinstance(evidence, dict) or set(evidence) != {
             "reached_paths",
@@ -2044,6 +2057,7 @@ def main() -> int:
                     {
                         "package": item["package"],
                         "native_closure_report_sha256": item["native_closure_report_sha256"],
+                        "candidate_output_binding_sha256": item["candidate_output_binding_sha256"],
                         "evidence_sha256": item["evidence_sha256"],
                     }
                     for item in handoff_manifest["conditional_omissions"]
