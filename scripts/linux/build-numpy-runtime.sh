@@ -211,7 +211,7 @@ def sha(path):
     with pathlib.Path(path).open("rb") as s:
         for b in iter(lambda:s.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
-EXPECTED_MANIFEST_SHA = "b8c3d2a0d8b43f521cfddd0dd63bba199daa1d95dbf6ffd7b9c3a11f7a210759"
+EXPECTED_MANIFEST_SHA = "47c5864635ea7b5a2890245f544065fcdf2ed90cc640644260f41b3e7ae98559"
 if sha(manifest_path) != EXPECTED_MANIFEST_SHA:
     fail("supplied NumPy source manifest differs from the committed phase-01 manifest")
 SOURCE_PINS = [
