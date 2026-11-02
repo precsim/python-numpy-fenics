@@ -2,22 +2,6 @@ name: qualify-linux-fenics
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/qualify-linux-fenics.yml"
-      - "scripts/linux/**"
-      - "scripts/common/**"
-      - "runtime/linux/**"
-      - "locks/linux/**"
-      - "tests/fenics/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/linux/**"
-      - "specs/02-core-numpy-profiles.md"
-      - "README.md"
 
 permissions:
   contents: read

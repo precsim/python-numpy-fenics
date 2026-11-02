@@ -2,21 +2,6 @@ name: qualify-macos-fenics
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/qualify-macos-fenics.yml"
-      - "scripts/macos/**"
-      - "scripts/common/**"
-      - "runtime/macos_fenics_embed_runtime.py"
-      - "locks/macos/**"
-      - "tests/fenics/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/macos/**"
-      - "README.md"
 
 permissions:
   contents: read
