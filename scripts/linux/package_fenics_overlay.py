@@ -420,7 +420,9 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "unused-ucx-test-tool"
     if re.fullmatch(r"lib/libcfp\.so(?:\..*)?", text):
         return "unused-zfp-cxx-wrapper"
-    if re.fullmatch(r"lib/libcc1\.so(?:\..*)?", text) or re.fullmatch(
+    if re.fullmatch(r"lib/libcc1\.so(?:\..*)?", text) or text == (
+        "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libcc1.so"
+    ) or re.fullmatch(
         r"lib/gcc/x86_64-conda-linux-gnu/16\.2\.0/plugin/libc(?:c1|p1)plugin\.so(?:\..*)?",
         text,
     ):

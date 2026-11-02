@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 import unittest
 
 from scripts.linux.package_fenics_overlay import (
@@ -9,6 +10,7 @@ from scripts.linux.package_fenics_overlay import (
     REQUIRED_SYMBOL_CEILINGS,
     SYSROOT_ALLOWED_NONNUMERIC_VERSION_TOKENS,
     numeric_version,
+    path_exclusion_reason,
 )
 
 
@@ -31,6 +33,15 @@ class LinuxAbiPolicyTests(unittest.TestCase):
     def test_nonnumeric_version_is_not_misparsed_as_numeric(self) -> None:
         self.assertIsNone(numeric_version("GLIBC_PRIVATE", "GLIBC"))
         self.assertEqual(numeric_version("GLIBC_2.17", "GLIBC"), (2, 17))
+
+    def test_pruned_debugger_plugin_cannot_leave_dangling_alias(self) -> None:
+        self.assertEqual(
+            path_exclusion_reason(PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/libcc1.so")),
+            "unused-gcc-debugger-plugin",
+        )
+        self.assertIsNone(
+            path_exclusion_reason(PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/libstdc++.a"))
+        )
 
 
 if __name__ == "__main__":
