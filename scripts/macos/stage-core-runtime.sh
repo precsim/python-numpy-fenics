@@ -404,7 +404,9 @@ rewrite_dylib_dep() {
 
 rewrite_dylib_dep "$tkinter_so" libtcl8.6.dylib '@loader_path/../../libtcl8.6.dylib'
 rewrite_dylib_dep "$tkinter_so" libtk8.6.dylib '@loader_path/../../libtk8.6.dylib'
-rewrite_dylib_dep "$staged_tk_binary" libtcl8.6.dylib '@loader_path/libtcl8.6.dylib'
+# Tk 8.6 on macOS is built against Tcl's stub interface, so libtk8.6.dylib
+# intentionally has no direct libtcl8.6.dylib load command to rewrite. _tkinter
+# carries the direct runtime bindings to both producer-owned providers above.
 install_name_tool -id '@rpath/libtcl8.6.dylib' "$staged_tcl_binary"
 install_name_tool -id '@rpath/libtk8.6.dylib' "$staged_tk_binary"
 staged_python_executable="$runtime/Python.framework/Versions/3.14/bin/python3.14"
