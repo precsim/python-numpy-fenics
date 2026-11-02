@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "target": {
+    "architecture": "x86_64",
+    "glibc_floor": "2.17"
+  },
+  "development_packages": [
+    {
+      "name": "zlib",
+      "version": "1.3.2",
+      "build": "h25fd6f3_3",
+      "build_number": 3,
+      "subdir": "linux-64",
+      "channel": "conda-forge",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/zlib-1.3.2-h25fd6f3_3.conda",
+      "sha256": "16080a1c7724f7d25727cdc23c7658e0cec2db52448c1dc0c33467ee2c6e1c62",
+      "md5": "6acb86426229f96f93e5468d1df3a5e8",
+      "files": {
+        "include/zconf.h": {
+          "sha256": "0718a11beb3295b345fb29a63b44b654b282d82c4cd0513f6225587f2b29b8bb",
+          "size": 16921
+        },
+        "include/zlib.h": {
+          "sha256": "818667d6ab6a37fe7469cb06a7f0cb2c2cb2f2c948a03e5accf1a4a74bf3020a",
+          "size": 103848
+        }
+      }
+    },
+    {
+      "name": "liblzma-devel",
+      "version": "5.8.3",
+      "build": "hb03c661_1",
+      "build_number": 1,
+      "subdir": "linux-64",
+      "channel": "conda-forge",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/liblzma-devel-5.8.3-hb03c661_1.conda",
+      "sha256": "adef6e8b60afb684110b06b5310977c6836e1c923ce3ec199f45c0f000b42f20",
+      "md5": "6d83d6a332c19424e9e66b69b180ec11",
+      "files": {
+        "include/lzma.h": {
+          "sha256": "6829350ef1ee35fae25481cc87a4f4b17c4b6c2a3df26f2b34dc1804df75c0d9",
+          "size": 9790
+        },
+        "include/lzma/base.h": {
+          "sha256": "e6de2ae8c447f98dfb12d7fbdd7510ed2c5c0d9a7a52ba2fabab10b638b3171d",
+          "size": 28223
+        },
+        "include/lzma/bcj.h": {
+          "sha256": "7420ecbd1bd0e7ed726ccb4b771c92c5e99366fd98f725b57055ddd90cd6384b",
+          "size": 6105
+        },
+        "include/lzma/block.h": {
+          "sha256": "c99bf801dc0d771196f318f0eb2db454c8ba007fb516c1e83ece91ac079e3440",
+          "size": 25964
+        },
+        "include/lzma/check.h": {
+          "sha256": "a6954d5e59c87c09e000f6df9b61615125a4fb20b5014ce8cb3eea762999acff",
+          "size": 4840
+        },
+        "include/lzma/container.h": {
+          "sha256": "c85bd006270273ef2ca8983fc7aab928ee73dc00948616b62de0278cf9cd94fc",
+          "size": 41872
+        },
+        "include/lzma/delta.h": {
+          "sha256": "ff69bb02c2beb169284a50f68962006dde746e1859c31d47be0bc8e56db7a7b1",
+          "size": 2187
+        },
+        "include/lzma/filter.h": {
+          "sha256": "bdc89d83271fd6cfc6e345913d6c6882c4c0f9093c71ea576c64ba562233ca6b",
+          "size": 31746
+        },
+        "include/lzma/hardware.h": {
+          "sha256": "84a3af36971a1acc33c90305ec72f67d18bc74aa0742cef17833e023dd2992b3",
+          "size": 2550
+        },
+        "include/lzma/index.h": {
+          "sha256": "f87c272b613742f18177186990144fa2c70f0800656c8b1a4142c3d9f0e94c9a",
+          "size": 31090
+        },
+        "include/lzma/index_hash.h": {
+          "sha256": "b10127b60fedb010dad8d9c07635e73da9e995b287e823ae1838bbd302a8b260",
+          "size": 4671
+        },
+        "include/lzma/lzma12.h": {
+          "sha256": "863e8c4b64472c5bca2246f17e2208af6dac9a07a34386a6e0af707708abdb50",
+          "size": 20818
+        },
+        "include/lzma/stream_flags.h": {
+          "sha256": "192f8e6fdedcc26fabf2751128eab1f41fd6fbf976eea0d3d225a1d57b6a459c",
+          "size": 9239
+        },
+        "include/lzma/version.h": {
+          "sha256": "2c049e9dee694988e9747b11c38424ac8fddad40d6c84caad9d42c5260a65969",
+          "size": 3872
+        },
+        "include/lzma/vli.h": {
+          "sha256": "16a498e75b0f5136de11e205e36ce9641277cfddad538fff5b22b6991f4110f7",
+          "size": 6590
+        }
+      }
+    }
+  ],
+  "runtime_packages": [
+    {
+      "name": "libzlib",
+      "version": "1.3.2",
+      "build": "h25fd6f3_3",
+      "build_number": 3,
+      "subdir": "linux-64",
+      "channel": "conda-forge",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda",
+      "sha256": "eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736",
+      "md5": "0de0122d9570a8ab637c6b73db268389",
+      "files": {
+        "lib/libz.so.1.3.2": {
+          "sha256": "3c6fd78e248a60e45081bcc77031204a7cb64a88ff2e27fc786ef12ae7e91fca",
+          "size": 117168
+        }
+      }
+    },
+    {
+      "name": "liblzma",
+      "version": "5.8.3",
+      "build": "hb03c661_1",
+      "build_number": 1,
+      "subdir": "linux-64",
+      "channel": "conda-forge",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/liblzma-5.8.3-hb03c661_1.conda",
+      "sha256": "9787df8c22a59c9a70d3e5a10db9ad663485e75e9ccc3f09bd092cb7b95e0dab",
+      "md5": "1390b7c5ac0b1d8e447bc5efa6d3c8c2",
+      "files": {
+        "lib/liblzma.so.5.8.3": {
+          "sha256": "491c01c02da5a22f5825a7c05a561e175aa70c203d5e462dfe90b5040dbdaf50",
+          "size": 222712
+        }
+      }
+    }
+  ],
+  "output": {
+    "headers": {
+      "include/zconf.h": "0718a11beb3295b345fb29a63b44b654b282d82c4cd0513f6225587f2b29b8bb",
+      "include/zlib.h": "818667d6ab6a37fe7469cb06a7f0cb2c2cb2f2c948a03e5accf1a4a74bf3020a",
+      "include/lzma.h": "6829350ef1ee35fae25481cc87a4f4b17c4b6c2a3df26f2b34dc1804df75c0d9",
+      "include/lzma/base.h": "e6de2ae8c447f98dfb12d7fbdd7510ed2c5c0d9a7a52ba2fabab10b638b3171d",
+      "include/lzma/bcj.h": "7420ecbd1bd0e7ed726ccb4b771c92c5e99366fd98f725b57055ddd90cd6384b",
+      "include/lzma/block.h": "c99bf801dc0d771196f318f0eb2db454c8ba007fb516c1e83ece91ac079e3440",
+      "include/lzma/check.h": "a6954d5e59c87c09e000f6df9b61615125a4fb20b5014ce8cb3eea762999acff",
+      "include/lzma/container.h": "c85bd006270273ef2ca8983fc7aab928ee73dc00948616b62de0278cf9cd94fc",
+      "include/lzma/delta.h": "ff69bb02c2beb169284a50f68962006dde746e1859c31d47be0bc8e56db7a7b1",
+      "include/lzma/filter.h": "bdc89d83271fd6cfc6e345913d6c6882c4c0f9093c71ea576c64ba562233ca6b",
+      "include/lzma/hardware.h": "84a3af36971a1acc33c90305ec72f67d18bc74aa0742cef17833e023dd2992b3",
+      "include/lzma/index.h": "f87c272b613742f18177186990144fa2c70f0800656c8b1a4142c3d9f0e94c9a",
+      "include/lzma/index_hash.h": "b10127b60fedb010dad8d9c07635e73da9e995b287e823ae1838bbd302a8b260",
+      "include/lzma/lzma12.h": "863e8c4b64472c5bca2246f17e2208af6dac9a07a34386a6e0af707708abdb50",
+      "include/lzma/stream_flags.h": "192f8e6fdedcc26fabf2751128eab1f41fd6fbf976eea0d3d225a1d57b6a459c",
+      "include/lzma/version.h": "2c049e9dee694988e9747b11c38424ac8fddad40d6c84caad9d42c5260a65969",
+      "include/lzma/vli.h": "16a498e75b0f5136de11e205e36ce9641277cfddad538fff5b22b6991f4110f7"
+    },
+    "libraries": {
+      "zlib": {
+        "source_package": "libzlib",
+        "source_path": "lib/libz.so.1.3.2",
+        "relative_path": "lib/libz.so.1.3.2",
+        "sha256": "3c6fd78e248a60e45081bcc77031204a7cb64a88ff2e27fc786ef12ae7e91fca"
+      },
+      "lzma": {
+        "source_package": "liblzma",
+        "source_path": "lib/liblzma.so.5.8.3",
+        "relative_path": "lib/liblzma.so.5.8.3",
+        "sha256": "491c01c02da5a22f5825a7c05a561e175aa70c203d5e462dfe90b5040dbdaf50"
+      }
+    }
+  },
+  "policy": {
+    "dependency_solver_used": false,
+    "development_replay_input_format": "@EXPLICIT-url-plus-sha256",
+    "index_access": false,
+    "network_access_after_replay": false,
+    "runtime_packages_from_verified_fenics_prefix": true,
+    "output_files_regular": true
+  }
+}

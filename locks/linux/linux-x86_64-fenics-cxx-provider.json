@@ -1,0 +1,138 @@
+{
+  "format_version": 1,
+  "kind": "fenics-private-cxx-runtime-build-recipe",
+  "architecture": "x86_64",
+  "evidence_scope": "reproduction-contract-unqualified",
+  "source_build": false,
+  "runtime_package_lock": {
+    "path": "locks/linux/linux-x86_64-fenics-package-lock.json",
+    "sha256": "fb5d53e3ea6b060763de137d9b5425c7fb702eeff10c35dffc512190e212794f"
+  },
+  "runtime_source_explicit": {
+    "path": "locks/linux/linux-x86_64-fenics-explicit.txt",
+    "canonical_sha256": "945ad865b5f9404354a5c87bf4db9c93e97da54b77d734780ad3524296277a27"
+  },
+  "native_build_tool_explicit": {
+    "path": "locks/linux/linux-x86_64-fenics-build-tools-explicit.txt",
+    "canonical_sha256": "763466504eb4af7a1ac9948269d8b228b6df683df5e5d0f30c434249e8529690",
+    "used_for_provider_link": false,
+    "purpose": "bind the companion GCC 14.4 C++20 native-rebuild toolchain identity"
+  },
+  "link_packages": [
+    {
+      "name": "gcc_impl_linux-64",
+      "version": "16.2.0",
+      "build": "h9891192_7",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/gcc_impl_linux-64-16.2.0-h9891192_7.conda",
+      "sha256": "14acaa661e4c4ef6c65606612b8b08f8f079c6a9e6da3ffcb77056685c675651"
+    },
+    {
+      "name": "binutils_impl_linux-64",
+      "version": "2.46.1",
+      "build": "default_hfdba357_103",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/binutils_impl_linux-64-2.46.1-default_hfdba357_103.conda",
+      "sha256": "98f9ddc6dc5d56a824b7eaea5bab6ad4bb47642288fc70d6b1b4024ac39d5595"
+    },
+    {
+      "name": "conda-gcc-specs",
+      "version": "16.2.0",
+      "build": "hf8037ed_7",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/conda-gcc-specs-16.2.0-hf8037ed_7.conda",
+      "sha256": "bd4817e82dd8b8c168ff0ed23de4a51af7c60666983f2ee3eb99922806604983"
+    },
+    {
+      "name": "libgcc-devel_linux-64",
+      "version": "16.2.0",
+      "build": "he3ce08f_107",
+      "url": "https://conda.anaconda.org/conda-forge/noarch/libgcc-devel_linux-64-16.2.0-he3ce08f_107.conda",
+      "sha256": "f1e7465f6b53f89b325e441c30ad7b19407b051eca556b6d0386ec05513b8e76"
+    },
+    {
+      "name": "libstdcxx-devel_linux-64",
+      "version": "16.2.0",
+      "build": "h86e191b_107",
+      "url": "https://conda.anaconda.org/conda-forge/noarch/libstdcxx-devel_linux-64-16.2.0-h86e191b_107.conda",
+      "sha256": "ebbad84bdebd8a9964020d74dcce0f211f1431878c66326f6115dcb59e4c3469"
+    },
+    {
+      "name": "libgcc",
+      "version": "16.2.0",
+      "build": "ha9f2e26_7",
+      "url": "https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_7.conda",
+      "sha256": "e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea"
+    },
+    {
+      "name": "sysroot_linux-64",
+      "version": "2.17",
+      "build": "h0157908_18",
+      "url": "https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.17-h0157908_18.conda",
+      "sha256": "69ab5804bdd2e8e493d5709eebff382a72fab3e9af6adf93a237ccf8f7dbd624"
+    },
+    {
+      "name": "kernel-headers_linux-64",
+      "version": "3.10.0",
+      "build": "he073ed8_18",
+      "url": "https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-64-3.10.0-he073ed8_18.conda",
+      "sha256": "a922841ad80bd7b222502e65c07ecb67e4176c4fa5b03678a005f39fcc98be4b"
+    }
+  ],
+  "link_inputs": {
+    "gcc_driver": {
+      "package": "gcc_impl_linux-64",
+      "relative_path": "bin/x86_64-conda-linux-gnu-gcc",
+      "sha256": "1b866d8450249db5231194834ff440ad20b1f5e9316c94cd6b59c2da575545e0"
+    },
+    "libstdcxx_static": {
+      "package": "libstdcxx-devel_linux-64",
+      "relative_path": "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libstdc++.a",
+      "sha256": "d98becf54a78aa4a20be3c8d8be2905d2471b804f110e983205aaed710831fe8"
+    },
+    "version_script": {
+      "path": "scripts/linux/fenics_cxxrt.map",
+      "sha256": "45d17307a1343d61de51010dfb929e69c3248c6d1597ad41ee4157ffec2d6f4a"
+    }
+  },
+  "link": {
+    "soname": "libfenics_cxxrt.so.1",
+    "symbol_version": "FENICS_CXXRT_1.0",
+    "intermediate_name": "libfenics_cxxrt.so.1.linked",
+    "output_name": "libfenics_cxxrt.so.1",
+    "argv": [
+      "{gcc_driver}",
+      "-shared",
+      "-Wl,--no-undefined",
+      "-Wl,-soname,libfenics_cxxrt.so.1",
+      "-Wl,--version-script={version_script}",
+      "-Wl,--whole-archive",
+      "{libstdcxx_static}",
+      "-Wl,--no-whole-archive",
+      "-lm",
+      "-ldl",
+      "-lpthread",
+      "-lrt",
+      "-o",
+      "{link_output}"
+    ],
+    "environment": {
+      "LANG": "C",
+      "LC_ALL": "C",
+      "SOURCE_DATE_EPOCH": "0",
+      "TZ": "UTC"
+    },
+    "expected_sha256": "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58"
+  },
+  "transform": {
+    "operation_kind": "elf-symbol-binding-transform",
+    "expected_input_sha256": "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58",
+    "expected_output_sha256": "39473bb7046bd62af7fbafda82c18d6f755de28a9e32ec65734985d72ff71cb4",
+    "expected_unique_count": 146,
+    "expected_dynsym_count": 7261,
+    "expected_soname": "libfenics_cxxrt.so.1",
+    "expected_version_max": {
+      "GLIBC": "2.17",
+      "GLIBCXX": null,
+      "CXXABI": null,
+      "GCC": "4.3.0"
+    }
+  }
+}

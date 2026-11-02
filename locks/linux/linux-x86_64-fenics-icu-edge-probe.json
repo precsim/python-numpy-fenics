@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "kind": "linux-fenics-libcurl-without-libpsl-icu-edge-probe",
+  "target": {
+    "architecture": "x86_64",
+    "glibc_floor": "2.17"
+  },
+  "runtime_lock": {
+    "path": "locks/linux/linux-x86_64-fenics-package-lock.json",
+    "record_count": 128,
+    "packages": {
+      "hdf5": {
+        "version": "1.14.6",
+        "build": "mpi_mpich_hfe583f4_10",
+        "sha256": "a7bc25067e7619fa3e596b734987d1c3d5b53b0fde7ec4b4b9d5cbff8c7b82e8"
+      },
+      "libcurl": {
+        "version": "8.23.0",
+        "build": "ha042cf0_0",
+        "sha256": "d2db14d80efb4f2e76e76561c633f1767f7543987f2bcb54a067a9d264d432ab"
+      },
+      "libpsl": {
+        "version": "0.23.1",
+        "build": "hd9e3e90_1",
+        "sha256": "09e8effdc89bc5d021349318d32b85594f5b8d8e3ab8f90a85b81f8fe695a566"
+      },
+      "icu": {
+        "version": "78.3",
+        "build": "py310h44b86e0_2",
+        "sha256": "9f07834f0c546ab14d885ce0366285f61f44e326c0edd1fc63b8294e113ae432"
+      },
+      "mpich": {
+        "version": "5.0.1",
+        "build": "hfbb40bb_4",
+        "sha256": "63cd7fb6a60ed5851e070f864a5ec5109ba23dedbfe04e785fab8aff9fd7031a"
+      },
+      "libhwloc": {
+        "version": "2.13.0",
+        "build": "default_he001693_1000",
+        "sha256": "5041d295813dfb84652557839825880aae296222ab725972285c5abe3b6e4288"
+      },
+      "libxml2": {
+        "version": "2.15.4",
+        "build": "h7df9aa5_1",
+        "sha256": "8c32be9e8720bc413d2b4267517459d7d71fad4a5f398a2aa8319b6d7b8a00e6"
+      },
+      "libxml2-16": {
+        "version": "2.15.4",
+        "build": "hf3af7cc_1",
+        "sha256": "d1906463070c21f3215cd5de93164f31c44d5bac6ae9b5d8f5adf42b1e304039"
+      }
+    }
+  },
+  "curl_source": {
+    "name": "curl",
+    "version": "8.23.0",
+    "filename": "curl-8.23.0.tar.bz2",
+    "url": "https://curl.se/download/curl-8.23.0.tar.bz2",
+    "sha256": "95b22eb32bf6d1fa6e3e9463bdb61cece3efc56d86576a9b3cbd428246a6d854"
+  },
+  "feedstock": {
+    "repository": "conda-forge/curl-feedstock",
+    "commit": "d770c46d773d7e2c81555d606720c3d6435b216f",
+    "files": {
+      "recipe/meta.yaml": {
+        "git_blob_sha1": "fdc0ab979397f8ae4f79290da9b30c93eeca4bbe",
+        "sha256": "efaabaffbe2f516948bbd3167b307e1fec7e46fb3f02992cd09b320b643187e2",
+        "url": "https://raw.githubusercontent.com/conda-forge/curl-feedstock/d770c46d773d7e2c81555d606720c3d6435b216f/recipe/meta.yaml"
+      },
+      "recipe/build.sh": {
+        "git_blob_sha1": "0f0bf7555814eb695a07024e39595cee4a210665",
+        "sha256": "add9d2d7e1f59523431efab07e296340344ae81e8705c5a46bd05f1787d126de",
+        "url": "https://raw.githubusercontent.com/conda-forge/curl-feedstock/d770c46d773d7e2c81555d606720c3d6435b216f/recipe/build.sh"
+      }
+    },
+    "required_recipe_evidence": {
+      "source_sha256": "95b22eb32bf6d1fa6e3e9463bdb61cece3efc56d86576a9b3cbd428246a6d854",
+      "configure_flag": "--with-libpsl"
+    }
+  },
+  "probe": {
+    "host_triplet": "x86_64-conda-linux-gnu",
+    "configure_flags": [
+      "--disable-ldap",
+      "--enable-websockets",
+      "--with-ca-bundle={locked_prefix}/ssl/cacert.pem",
+      "--with-openssl={locked_prefix}",
+      "--with-zlib={locked_prefix}",
+      "--with-zstd={locked_prefix}",
+      "--with-gssapi={locked_prefix}",
+      "--with-libssh2={locked_prefix}",
+      "--with-nghttp2={locked_prefix}",
+      "--without-libpsl"
+    ],
+    "configuration_provenance": "independent-exact-flags-experiment-not-feedstock-build-equivalence",
+    "strict_symbol_ceilings": {
+      "GLIBC": "2.17",
+      "GLIBCXX": "3.4.19",
+      "CXXABI": "1.3.7",
+      "GCC": "4.8.0"
+    },
+    "required_baseline_curl_reachability": [
+      "libpsl.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "required_baseline_hdf5_reachability": [
+      "libcurl.so",
+      "libpsl.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "required_baseline_hdf5_dt_needed": [
+      "libcurl.so.4"
+    ],
+    "baseline_libpsl_soname": "libpsl.so.5",
+    "required_baseline_libpsl_reachability": [
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "forbidden_candidate_curl_reachability": [
+      "libpsl.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ],
+    "required_mpich_control_reachability": [
+      "libhwloc.so",
+      "libxml2.so",
+      "libicuuc.so",
+      "libicudata.so"
+    ]
+  },
+  "capability_impact": {
+    "libcurl_public_suffix_list": "disabled for this experiment; cookie domain Public Suffix List validation is not provided by the rebuilt libcurl",
+    "hdf5_ros3": "retained; the experiment changes libcurl PSL support rather than disabling the HDF5 ROS3 VFD",
+    "release_status": "experimental closure evidence only; never a releasable overlay input without the independent libxml2 ICU-off rebuild and full qualification"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "target": {
+    "architecture": "x86_64",
+    "python_abi": "cp312",
+    "glibc_floor": "2.17"
+  },
+  "sources": {
+    "basix": {
+      "name": "basix",
+      "version": "0.11.0",
+      "filename": "basix-0.11.0.tar.gz",
+      "url": "https://github.com/fenics/basix/archive/refs/tags/v0.11.0.tar.gz",
+      "sha256": "bb4355f4cd3c98d5e944c2b8596f3240225d0a8ab3bd1344133d2056a7b2c388",
+      "recipe_package": "fenics-libbasix"
+    },
+    "dolfinx": {
+      "name": "dolfinx",
+      "version": "0.11.0",
+      "filename": "dolfinx-0.11.0.tar.gz",
+      "url": "https://github.com/fenics/dolfinx/archive/refs/tags/v0.11.0.tar.gz",
+      "sha256": "4df167823d316da519c1b2f8d5d0afc20de1405de601dab51da67a405b25cc2f",
+      "recipe_package": "fenics-libdolfinx"
+    },
+    "fmt": {
+      "name": "fmt",
+      "version": "12.1.0",
+      "filename": "fmt-12.1.0.tar.gz",
+      "url": "https://github.com/fmtlib/fmt/archive/12.1.0.tar.gz",
+      "sha256": "ea7de4299689e12b6dddd392f9896f08fb0777ac7168897a244a6d6085043fea",
+      "recipe_package": "fmt"
+    },
+    "spdlog": {
+      "name": "spdlog",
+      "version": "1.17.0",
+      "filename": "spdlog-1.17.0.tar.gz",
+      "url": "https://github.com/gabime/spdlog/archive/v1.17.0.tar.gz",
+      "sha256": "d8862955c6d74e5846b3f580b1605d2428b11d97a410d86e2fb13e857cd3a744",
+      "recipe_package": "spdlog"
+    },
+    "pugixml": {
+      "name": "pugixml",
+      "version": "1.15",
+      "filename": "pugixml-1.15.tar.gz",
+      "url": "https://github.com/zeux/pugixml/archive/v1.15.tar.gz",
+      "sha256": "b39647064d9e28297a34278bfb897092bf33b7c487906ddfc094c9e8868bddcb",
+      "recipe_package": "pugixml"
+    },
+    "libxml2": {
+      "name": "libxml2",
+      "version": "2.15.4",
+      "filename": "libxml2-v2.15.4.tar.gz",
+      "url": "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.15.4/libxml2-v2.15.4.tar.gz",
+      "sha256": "a569ee9c59eabb197a0d5047046d757ee14c86fb2d4a734555b633cb5584ad25",
+      "recipe_package": "libxml2-16"
+    }
+  },
+  "patches": {
+    "spdlog_fix": {
+      "filename": "spdlog-fix.patch",
+      "sha256": "b58437661aac1bb5375aa42710feae3b061958431fc2d431d5b97fd894b77f10",
+      "recipe_package": "spdlog",
+      "recipe_path": "info/recipe/patches/fix.patch"
+    }
+  },
+  "rebuild_package_closure": [
+    "fmt",
+    "spdlog",
+    "pugixml",
+    "fenics-libbasix",
+    "fenics-basix",
+    "fenics-libdolfinx",
+    "fenics-dolfinx",
+    "libxml2-16"
+  ],
+  "build_policy": {
+    "dependency_resolution": false,
+    "network_access_after_input_verification": false,
+    "pep517_build_isolation": false,
+    "compiler": "GCC 14.4.0 supplied by a separately frozen build-tool lock",
+    "private_cpp_provider": "required external input",
+    "conditional_omissions": {
+      "kahip": "requires DOLFINX_ENABLE_KAHIP=OFF and zero reached paths in native closure proof",
+      "libadios2": "requires DOLFINX_ENABLE_ADIOS2=OFF and zero reached paths in native closure proof",
+      "zeromq": "requires libadios2 omission and zero reached paths in native closure proof"
+    },
+    "icu_resolution": "rebuild libxml2 2.15.4 with LIBXML2_WITH_ICU=OFF; ICU remains a qualification blocker until post-rebuild closure proves no reached ICU provider",
+    "runtime_symbol_ceilings": {
+      "GLIBC": "2.17",
+      "GLIBCXX": "3.4.19",
+      "CXXABI": "1.3.7",
+      "GCC": "4.8.0"
+    }
+  }
+}

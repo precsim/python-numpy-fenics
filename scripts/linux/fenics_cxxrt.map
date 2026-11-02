@@ -1,0 +1,4 @@
+FENICS_CXXRT_1.0 {
+  global:
+    *;
+};

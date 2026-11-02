@@ -1,0 +1,556 @@
+name: qualify-linux-core-numpy
+
+on:
+  workflow_dispatch:
+    inputs:
+      qualify_numpy:
+        description: Qualify the controlled NumPy 2.5.2 runtime after core
+        required: false
+        default: true
+        type: boolean
+  pull_request:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/qualify-linux-core-numpy.yml"
+      - "scripts/linux/**"
+      - "scripts/common/**"
+      - "locks/linux/**"
+      - "contracts/**"
+      - "config/runtime-matrix.json"
+      - "specs/02-core-numpy-profiles.md"
+      - "specs/linux/**"
+
+concurrency:
+  group: qualify-linux-core-numpy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
+  MANYLINUX_DIGEST: sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
+
+jobs:
+  runtime:
+    name: qualify-linux-core-numpy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare diagnostics
+        shell: bash
+        run: mkdir -p ci-artifact
+
+      - name: Pull and verify pinned manylinux2014 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$MANYLINUX_IMAGE" 2>&1 | tee ci-artifact/manylinux-pull.log
+
+          repo_digests="$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$MANYLINUX_IMAGE")"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' "$MANYLINUX_IMAGE")"
+          expected_ref="quay.io/pypa/manylinux2014_x86_64@$MANYLINUX_DIGEST"
+
+          grep -Fx "$expected_ref" <<<"$repo_digests"
+          test "$image_arch" = amd64
+
+          {
+            echo "expected_image=$expected_ref"
+            echo "image_architecture=$image_arch"
+            echo "repo_digests:"
+            printf '%s\n' "$repo_digests"
+          } | tee ci-artifact/manylinux-identity.txt
+          docker image inspect "$MANYLINUX_IMAGE" > ci-artifact/manylinux-image-inspect.json
+
+      - name: Fetch and verify exact runtime source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          input_dir="$RUNNER_TEMP/linux-glibc217-inputs"
+          mkdir -p "$input_dir"
+
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/Python-3.12.10.tar.xz" \
+            https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/openssl-3.5.9.tar.gz" \
+            https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/libxcrypt-4.5.2.tar.xz" \
+            https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/bzip2-devel-1.0.6-13.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/bzip2-libs-1.0.6-13.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-libs-1.0.6-13.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/gdbm-devel-1.10-8.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/gdbm-devel-1.10-8.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/gdbm-1.10-8.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/gdbm-1.10-8.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/libffi-devel-3.0.13-19.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/libffi-devel-3.0.13-19.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/libffi-3.0.13-19.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/libffi-3.0.13-19.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/libuuid-2.23.2-65.el7_9.1.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/libuuid-2.23.2-65.el7_9.1.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/ncurses-5.9-14.20130511.el7_4.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/ncurses-5.9-14.20130511.el7_4.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/readline-devel-6.2-11.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/readline-devel-6.2-11.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/readline-6.2-11.el7.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/os/x86_64/Packages/readline-6.2-11.el7.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/xz-devel-5.2.2-2.el7_9.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/xz-devel-5.2.2-2.el7_9.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/xz-libs-5.2.2-2.el7_9.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/xz-libs-5.2.2-2.el7_9.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/zlib-1.2.7-21.el7_9.x86_64.rpm" \
+            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/zlib-1.2.7-21.el7_9.x86_64.rpm
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/tcl8.6.12-src.tar.gz" \
+            https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/tk8.6.12-src.tar.gz" \
+            https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz
+
+          (
+            cd "$input_dir"
+            cat <<'EOF' | sha256sum -c -
+          07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea  Python-3.12.10.tar.xz
+          603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz
+          71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071  libxcrypt-4.5.2.tar.xz
+          28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700  bzip2-devel-1.0.6-13.el7.x86_64.rpm
+          1fd32866a2a82f5abc19142b59dce8fd961bc1d32e3bedfa0de7a950066fdaa5  bzip2-libs-1.0.6-13.el7.x86_64.rpm
+          fc02a803f89c0d68de96bcc7a46d7cdf8768e62577b27aed9c531e6fb2818c30  gdbm-devel-1.10-8.el7.x86_64.rpm
+          65f28fdefa291bfe53e9c8646ce0f7510f312a4fee232af36e3d4fe678b60591  gdbm-1.10-8.el7.x86_64.rpm
+          a31ba33f74252929d396e4d8557fe1c40be95d777aad0660771b14f1187b3b2e  libffi-devel-3.0.13-19.el7.x86_64.rpm
+          670463ed744b7243cfe32f0c4aa6676657a6078a6e2009a51fdb7b907b98ef71  libffi-3.0.13-19.el7.x86_64.rpm
+          edc0594488f23ae7a46857065d3cd4d74e61a711b96dd5b99713419b033816a4  libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm
+          f530a65c0efca53f618f63e02801129283b12266fbf21ac221e35617a45b0d4b  libuuid-2.23.2-65.el7_9.1.x86_64.rpm
+          1c93fc77242cf1129f1aa44a8e31fa118511681776d17f0ffb2c3e84bb811a6d  ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm
+          59773dff8c5aa8f084fd2edc88b5dc34f574f254ec98280fc2b0adafe07f85a2  ncurses-5.9-14.20130511.el7_4.x86_64.rpm
+          dd4f93b315f8a2facdd3508ac5b7fe070d663d4ebf70cdfa2781ffb6abd25160  readline-devel-6.2-11.el7.x86_64.rpm
+          d9e52b61beb1ac9c3006604d9ebd4f930f667b64478a61fd78de7ed74922f52e  readline-6.2-11.el7.x86_64.rpm
+          8c62263350421e7c3081b4a531f8e15ef5bfb5e410a34687ca4a799ff23362ef  xz-devel-5.2.2-2.el7_9.x86_64.rpm
+          4b698de5fd7e0a64306106f3018e9d00dedc1f7a46d354339f012c97d004bd0c  xz-libs-5.2.2-2.el7_9.x86_64.rpm
+          2bee86d12902723756eafa82ba6cc322136c4a67a78e0104ac988e14eb7fb5a1  zlib-1.2.7-21.el7_9.x86_64.rpm
+          26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6  tcl8.6.12-src.tar.gz
+          12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630  tk8.6.12-src.tar.gz
+          EOF
+            sha256sum Python-3.12.10.tar.xz openssl-3.5.9.tar.gz libxcrypt-4.5.2.tar.xz *.rpm tcl8.6.12-src.tar.gz tk8.6.12-src.tar.gz
+          ) | tee ci-artifact/source-inputs.sha256
+
+      - name: Build controlled runtime in pinned glibc 2.17 container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP/linux-glibc217-inputs:/inputs:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(uname -m)" = x86_64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              echo "container_arch=$(uname -m)"
+              echo "container_glibc=$(getconf GNU_LIBC_VERSION)"
+              exec bash scripts/linux/build-core-runtime.sh \
+                --python-source /inputs/Python-3.12.10.tar.xz \
+                --openssl-source /inputs/openssl-3.5.9.tar.gz \
+                --libxcrypt-source /inputs/libxcrypt-4.5.2.tar.xz \
+                --dev-rpm-dir /inputs \
+                --tcl-source /inputs/tcl8.6.12-src.tar.gz \
+                --tk-source /inputs/tk8.6.12-src.tar.gz
+            ' 2>&1 | tee ci-artifact/linux-glibc217-build.log
+
+      - name: Provision host Xvfb
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          dpkg-query -W -f='headless_x_package=${Package} version=${Version}\n' xvfb |
+            tee ci-artifact/xvfb-package.txt
+
+          display=:99
+          socket=/tmp/.X11-unix/X99
+          echo "DISPLAY=$display" >> "$GITHUB_ENV"
+          nohup Xvfb "$display" -screen 0 1024x768x24 -nolisten tcp -ac \
+            >ci-artifact/xvfb.log 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/linux-glibc217-xvfb.pid"
+
+          for _ in {1..100}; do
+            if [[ -S "$socket" ]]; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+
+          cat ci-artifact/xvfb.log >&2 || true
+          echo "Xvfb did not create $socket" >&2
+          exit 1
+
+      - name: Test runtime offline in second pinned container
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -S "/tmp/.X11-unix/X${DISPLAY#:}"
+          docker run --rm \
+            --network none \
+            --env "DISPLAY=$DISPLAY" \
+            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume /tmp/.X11-unix:/tmp/.X11-unix:ro \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            bash scripts/linux/test-core-runtime.sh --image "$MANYLINUX_IMAGE" \
+            2>&1 | tee ci-artifact/linux-glibc217-test.log
+
+      - name: Fetch and verify exact NumPy build inputs
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x out/linux-x64/core/bin/python3.12
+          test -f out/linux-x64/core/build-provenance-linux.json
+          core_provenance_sha="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
+          {
+            echo "github_sha=$GITHUB_SHA"
+            echo "core_provenance_sha256=$core_provenance_sha"
+          } | tee ci-artifact/core-runtime-handoff.txt
+
+          manifest=locks/linux/linux-glibc217-numpy-sources.json
+          test -f "$manifest"
+          numpy_input_root="$RUNNER_TEMP/linux-glibc217-numpy-inputs"
+          rm -rf "$numpy_input_root"
+          mkdir -p "$numpy_input_root"
+          cp "$manifest" ci-artifact/linux-glibc217-numpy-sources.json
+          sha256sum "$manifest" | tee ci-artifact/linux-glibc217-numpy-sources.sha256
+
+          python3 - "$manifest" ci-artifact/numpy-download-inputs.tsv <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          manifest_path = pathlib.Path(sys.argv[1])
+          output_path = pathlib.Path(sys.argv[2])
+          data = json.loads(manifest_path.read_text(encoding="utf-8"))
+          sha_re = re.compile(r"^[0-9a-fA-F]{64}$")
+          inputs = {}
+
+          def visit(node, path="$"):
+              if isinstance(node, dict):
+                  url = node.get("url")
+                  sha256 = node.get("sha256")
+                  filename = node.get("filename")
+                  if isinstance(url, str) and isinstance(sha256, str):
+                      if not isinstance(filename, str) or not filename:
+                          filename = pathlib.PurePosixPath(url.split("?", 1)[0]).name
+                      if not filename or pathlib.PurePath(filename).name != filename:
+                          raise SystemExit(f"invalid pinned input filename at {path}: {filename!r}")
+                      if not url.startswith("https://"):
+                          raise SystemExit(f"pinned input URL must use HTTPS at {path}: {url}")
+                      if not sha_re.fullmatch(sha256):
+                          raise SystemExit(f"invalid SHA-256 at {path}: {sha256!r}")
+                      entry = (url, sha256.lower())
+                      previous = inputs.setdefault(filename, entry)
+                      if previous != entry:
+                          raise SystemExit(f"conflicting pinned inputs use filename {filename!r}")
+                  for key, value in node.items():
+                      visit(value, f"{path}.{key}")
+              elif isinstance(node, list):
+                  for index, value in enumerate(node):
+                      visit(value, f"{path}[{index}]")
+
+          visit(data)
+          if not inputs:
+              raise SystemExit("source manifest contains no downloadable URL/SHA-256 inputs")
+          output_path.write_text(
+              "".join(f"{name}\t{url}\t{sha}\n" for name, (url, sha) in sorted(inputs.items())),
+              encoding="utf-8",
+          )
+          print(f"pinned_download_input_count={len(inputs)}")
+          PY
+
+          while IFS=$'\t' read -r filename url expected_sha; do
+            test -n "$filename"
+            test -n "$url"
+            test -n "$expected_sha"
+            destination="$numpy_input_root/$filename"
+            curl --fail --location --retry 3 --retry-all-errors \
+              --output "$destination" "$url"
+            actual_sha="$(sha256sum "$destination" | awk '{print $1}')"
+            if [[ "$actual_sha" != "$expected_sha" ]]; then
+              echo "SHA-256 mismatch for $filename: expected $expected_sha, observed $actual_sha" >&2
+              exit 1
+            fi
+            printf '%s  %s\n' "$actual_sha" "$filename"
+          done < ci-artifact/numpy-download-inputs.tsv | tee ci-artifact/numpy-download-inputs.sha256
+
+          cp "$manifest" "$numpy_input_root/linux-glibc217-numpy-sources.json"
+          echo "NUMPY_INPUT_ROOT=$numpy_input_root" >> "$GITHUB_ENV"
+
+      - name: Build controlled glibc 2.17 NumPy runtime offline
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repo_digests="$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$MANYLINUX_IMAGE")"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' "$MANYLINUX_IMAGE")"
+          expected_ref="quay.io/pypa/manylinux2014_x86_64@$MANYLINUX_DIGEST"
+          printf '%s\n' "$repo_digests" | grep -Fx "$expected_ref"
+          test "$image_arch" = amd64
+          {
+            echo "expected_image=$expected_ref"
+            echo "image_architecture=$image_arch"
+            echo "repo_digests:"
+            printf '%s\n' "$repo_digests"
+          } | tee ci-artifact/manylinux-numpy-identity.txt
+          docker image inspect "$MANYLINUX_IMAGE" > ci-artifact/manylinux-numpy-image-inspect.json
+
+          core_provenance_before="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
+          docker run --rm \
+            --network none \
+            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$NUMPY_INPUT_ROOT:/inputs:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            bash scripts/linux/build-numpy-runtime.sh \
+              --core-runtime /workspace/out/linux-x64/core \
+              --input-root /inputs \
+              --sources-manifest /workspace/locks/linux/linux-glibc217-numpy-sources.json \
+              --output-runtime /workspace/out/linux-x64/numpy \
+            2>&1 | tee ci-artifact/linux-glibc217-numpy-build.log
+
+          core_provenance_after_build="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
+          test "$core_provenance_after_build" = "$core_provenance_before"
+          test -x out/linux-x64/numpy/bin/python3.12
+
+      - name: Independently validate controlled glibc 2.17 NumPy runtime offline
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          core_provenance_before="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
+          docker run --rm \
+            --network none \
+            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$NUMPY_INPUT_ROOT:/inputs:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            bash scripts/linux/test-numpy-runtime.sh \
+              --core-runtime /workspace/out/linux-x64/core \
+              --runtime /workspace/out/linux-x64/numpy \
+              --sources-manifest /workspace/locks/linux/linux-glibc217-numpy-sources.json \
+              --input-root /inputs \
+              --image "$MANYLINUX_IMAGE" \
+            2>&1 | tee ci-artifact/linux-glibc217-numpy-test.log
+
+          core_provenance_after_test="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
+          test "$core_provenance_after_test" = "$core_provenance_before"
+          sudo chown -R "$(id -u):$(id -g)" out/linux-x64/numpy build 2>/dev/null || true
+
+      - name: Collect NumPy runtime provenance and failure diagnostics
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) }}
+        shell: bash
+        run: |
+          set +e
+          mkdir -p ci-artifact/retained
+          {
+            echo "=== core handoff ==="
+            cat ci-artifact/core-runtime-handoff.txt 2>/dev/null
+            echo "=== pinned NumPy inputs ==="
+            cat ci-artifact/numpy-download-inputs.sha256 2>/dev/null
+            echo "=== NumPy runtime tree ==="
+            find out/linux-x64/numpy -maxdepth 6 \( -type f -o -type l \) -print 2>/dev/null | sort
+            echo "=== NumPy provenance ==="
+            cat out/linux-x64/numpy/build-provenance-linux-numpy.json 2>/dev/null
+            echo "=== NumPy payload manifest ==="
+            cat out/linux-x64/numpy/numpy-payload-manifest-linux.json 2>/dev/null
+            echo "=== diagnostic files ==="
+            find out/linux-x64/numpy build -type f \
+              \( -path '*/diagnostics/*' -o -name '*.log' -o -name '*provenance*.json' -o -name '*manifest*.json' \) \
+              -print 2>/dev/null | sort
+          } > ci-artifact/linux-glibc217-numpy-diagnostics.txt 2>&1
+          for root in out/linux-x64/numpy build/linux-glibc217-numpy-runtime; do
+            [[ -e "$root" ]] || continue
+            while IFS= read -r -d '' path; do
+              cp --parents "$path" ci-artifact/retained/
+            done < <(
+              find "$root" -type f \
+                \( -path '*/diagnostics/*' -o -name '*.log' -o -name '*.json' -o -name '*.txt' \) \
+                -print0 2>/dev/null
+            )
+          done
+
+      - name: Collect runtime provenance and failure diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "=== pinned image identity ==="
+            cat ci-artifact/manylinux-identity.txt 2>/dev/null
+            echo "=== runtime tree ==="
+            find out/linux-x64/core -maxdepth 5 \( -type f -o -type l \) -print 2>/dev/null | sort
+            echo "=== runtime provenance ==="
+            cat out/linux-x64/core/build-provenance-linux.json 2>/dev/null
+            echo "=== diagnostic files ==="
+            find out/linux-x64/core build -type f \( -path '*/diagnostics/*' -o -name '*.log' \) -print 2>/dev/null | sort
+          } > ci-artifact/linux-glibc217-diagnostics.txt 2>&1
+
+          mkdir -p ci-artifact/retained
+          for provenance in \
+            out/linux-x64/core/build-provenance-linux.json \
+            build/linux-glibc217-runtime/openssl-provider.json \
+            build/linux-glibc217-runtime/development-rpm-provenance.json \
+            build/linux-glibc217-runtime/license-rpm-provenance.json \
+            build/linux-glibc217-runtime/helper-dynamic-extension-baseline.json \
+            build/linux-glibc217-runtime/native-provider-provenance.json; do
+            if [[ -f "$provenance" ]]; then
+              cp --parents "$provenance" ci-artifact/retained/
+            fi
+          done
+          for root in out/linux-x64/core build; do
+            [[ -e "$root" ]] || continue
+            while IFS= read -r -d '' path; do
+              cp --parents "$path" ci-artifact/retained/
+            done < <(
+              find "$root" -type f \
+                \( -path '*/diagnostics/*' -o -name '*.log' \) \
+                -print0 2>/dev/null
+            )
+          done
+
+      - name: Package qualified producer runtimes
+        shell: bash
+        env:
+          QUALIFY_NUMPY: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        run: |
+          set -euo pipefail
+          sudo chown -R "$(id -u):$(id -g)" out build 2>/dev/null || true
+          mkdir -p dist
+
+          package_runtime() {
+            local profile="$1"
+            local runtime_root="out/linux-x64/$profile"
+            local archive="dist/python-runtime-v0.1.0-linux-x64-cp312-$profile.tar.gz"
+            test -x "$runtime_root/bin/python3.12"
+            python3 scripts/common/write_runtime_manifest.py \
+              --root "$runtime_root" \
+              --platform linux-x64 \
+              --profile "$profile"
+            tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
+              -cf - -C "$runtime_root" . | gzip -n -9 > "$archive"
+            archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
+            printf '%s  %s\n' "$archive_sha" "$(basename "$archive")" > "$archive.sha256"
+          }
+
+          package_runtime core
+
+          python3 scripts/common/write_qualification.py \
+            --platform linux-x64 \
+            --profile core \
+            --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz \
+            --output dist/qualification-linux-x64-core.json \
+            --check pinned_manylinux=pass \
+            --check glibc_floor=pass \
+            --check isolated_cpython=pass \
+            --check native_closure=pass \
+            --check numpy_absent=pass \
+            --check private_consumer_checkout=not-applicable
+
+          if [[ "$QUALIFY_NUMPY" == "true" ]]; then
+            package_runtime numpy
+            python3 scripts/common/write_qualification.py \
+              --platform linux-x64 \
+              --profile numpy \
+              --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+              --output dist/qualification-linux-x64-numpy.json \
+              --check pinned_manylinux=pass \
+              --check glibc_floor=pass \
+              --check inherited_core_identity=pass \
+              --check numpy_source_build=pass \
+              --check private_openblas=pass \
+              --check blas_lapack_functional=pass \
+              --check native_closure=pass \
+              --check private_consumer_checkout=not-applicable
+          fi
+
+      - name: Upload qualified Linux core producer runtime
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-runtime-linux-x64-cp312-core
+          path: |
+            dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz
+            dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz.sha256
+            dist/qualification-linux-x64-core.json
+            out/linux-x64/core/build-provenance-linux.json
+            out/linux-x64/core/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload qualified Linux NumPy producer runtime
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-runtime-linux-x64-cp312-numpy
+          path: |
+            dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz
+            dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz.sha256
+            dist/qualification-linux-x64-numpy.json
+            out/linux-x64/numpy/build-provenance-linux.json
+            out/linux-x64/numpy/build-provenance-linux-numpy.json
+            out/linux-x64/numpy/numpy-payload-manifest-linux.json
+            out/linux-x64/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qualify-linux-core-numpy-diagnostics-${{ github.run_id }}
+          path: ci-artifact/
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Stop host Xvfb
+        if: always()
+        shell: bash
+        run: |
+          pid_file="$RUNNER_TEMP/linux-glibc217-xvfb.pid"
+          if [[ -f "$pid_file" ]]; then
+            kill "$(cat "$pid_file")" 2>/dev/null || true
+          fi

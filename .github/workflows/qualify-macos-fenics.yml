@@ -1,0 +1,431 @@
+name: qualify-macos-fenics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualify-macos-fenics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify-overlay:
+    name: qualify-macos-fenics-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+            artifact_platform: macos-arm64
+            conda_subdir: osx-arm64
+            python_asset_id: "244701302"
+            python_asset_name: python-3.12.10-darwin-arm64.tar.gz
+            toolcache_arch: arm64
+            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
+            numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
+            numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
+            overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp312.zip
+          - architecture: x86_64
+            runner: macos-15-intel
+            artifact_platform: macos-x64
+            conda_subdir: osx-64
+            python_asset_id: "244701305"
+            python_asset_name: python-3.12.10-darwin-x64.tar.gz
+            toolcache_arch: x64
+            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
+            numpy_url: https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
+            numpy_sha256: 65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414
+            overlay_asset: fenics-embed-runtime-v0.1.0-macos-x64-cp312.zip
+    env:
+      TARGET_ARCH: ${{ matrix.architecture }}
+      ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
+      TARGET_SUBDIR: ${{ matrix.conda_subdir }}
+      PYTHON_ASSET_ID: ${{ matrix.python_asset_id }}
+      PYTHON_ASSET_NAME: ${{ matrix.python_asset_name }}
+      TOOLCACHE_ARCH: ${{ matrix.toolcache_arch }}
+      NUMPY_WHEEL_NAME: ${{ matrix.numpy_wheel }}
+      NUMPY_WHEEL_URL: ${{ matrix.numpy_url }}
+      NUMPY_WHEEL_SHA256: ${{ matrix.numpy_sha256 }}
+      OVERLAY_ASSET: ${{ matrix.overlay_asset }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Capture checked-out producer revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PRODUCER_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Verify native runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$TARGET_ARCH"
+
+      - name: Install micromamba
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3
+        with:
+          # setup-micromamba requires the release tag form; this tag installs
+          # micromamba/libmamba 2.10.0, matching prototype run 41294435601.
+          micromamba-version: '2.10.0-0'
+
+      - name: Replay immutable package lock without solving
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock="locks/macos/macos-${TARGET_ARCH}-package-lock.json"
+          source_explicit="locks/macos/macos-${TARGET_ARCH}-explicit.txt"
+          explicit="$RUNNER_TEMP/fenics-macos-${TARGET_ARCH}-explicit.txt"
+          prefix="$RUNNER_TEMP/fenics-macos-locked-${TARGET_ARCH}"
+          package_cache="$MAMBA_ROOT_PREFIX/pkgs"
+          evidence="build/macos-overlay-${TARGET_ARCH}"
+          mkdir -p "$evidence"
+          rm -rf "$prefix"
+
+          {
+            echo "ImageOS=${ImageOS:-unknown}"
+            echo "ImageVersion=${ImageVersion:-unknown}"
+            echo "runner_arch=$(uname -m)"
+            sw_vers
+            xcodebuild -version
+            clang --version
+            xcrun --show-sdk-path
+            xcrun --show-sdk-version
+          } > "$evidence/host-toolchain.txt"
+
+          python3 scripts/macos/package_lock.py explicit \
+            --lock "$lock" \
+            --source-explicit "$source_explicit" \
+            --arch "$TARGET_ARCH" \
+            --output "$explicit" \
+            | tee "$evidence/package-lock-render.log"
+          cp "$explicit" "$evidence/locked-explicit.txt"
+
+          # @EXPLICIT contains exact package URLs + SHA-256 fragments.  No
+          # channel, matchspec or dependency solve participates here.
+          CONDA_SUBDIR="$TARGET_SUBDIR" "$MAMBA_EXE" create -y \
+            -p "$prefix" \
+            --file "$explicit" \
+            2>&1 | tee "$evidence/package-lock-replay.log"
+
+          python3 scripts/macos/package_lock.py verify-prefix \
+            --lock "$lock" \
+            --arch "$TARGET_ARCH" \
+            --prefix "$prefix" \
+            --package-cache "$package_cache" \
+            --evidence "$evidence/package-lock-verification.json" \
+            | tee "$evidence/package-lock-verification.log"
+
+          echo "FENICS_LOCK_FILE=$lock" >> "$GITHUB_ENV"
+          echo "FENICS_LOCKED_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "FENICS_PACKAGE_CACHE=$package_cache" >> "$GITHUB_ENV"
+          echo "FENICS_OVERLAY_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+
+      - name: Download pinned public CPython base assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/public-python-assets-$TARGET_ARCH"
+          mkdir -p "$destination"
+          python3 - "$PYTHON_ASSET_ID" "$PYTHON_ASSET_NAME" "$destination" <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import urllib.request
+
+          asset_id = int(sys.argv[1])
+          asset_name = sys.argv[2]
+          destination = pathlib.Path(sys.argv[3])
+          for current_id, expected_name in (
+              (asset_id, asset_name),
+              (244701301, "hashes.sha256"),
+          ):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/actions/python-versions/releases/assets/{current_id}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "User-Agent": "python-numpy-fenics-ci",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  metadata = json.load(response)
+              if metadata.get("id") != current_id or metadata.get("name") != expected_name:
+                  raise SystemExit(f"pinned CPython asset identity mismatch: {metadata!r}")
+              download = urllib.request.Request(
+                  metadata["browser_download_url"],
+                  headers={"User-Agent": "python-numpy-fenics-ci"},
+              )
+              target = destination / expected_name
+              with urllib.request.urlopen(download) as response, target.open("wb") as stream:
+                  shutil.copyfileobj(response, stream)
+          env = pathlib.Path(os.environ["GITHUB_ENV"])
+          with env.open("a", encoding="utf-8") as stream:
+              stream.write(f"PUBLIC_CPYTHON_ARCHIVE={destination / asset_name}\n")
+              stream.write(f"PUBLIC_CPYTHON_HASHES={destination / 'hashes.sha256'}\n")
+          PY
+
+      - name: Install pinned public CPython base
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_dir="$RUNNER_TEMP/public-python-setup-$TARGET_ARCH"
+          rm -rf "$setup_dir"
+          mkdir -p "$setup_dir"
+          tar -xzf "$PUBLIC_CPYTHON_ARCHIVE" -C "$setup_dir"
+          export AGENT_TOOLSDIRECTORY="$RUNNER_TEMP/public-toolcache"
+          (cd "$setup_dir" && bash ./setup.sh)
+          python_real="$AGENT_TOOLSDIRECTORY/Python/3.12.10/$TOOLCACHE_ARCH/bin/python3.12"
+          test -x "$python_real"
+          if [[ "$TARGET_ARCH" == x86_64 ]]; then
+            python_launcher="$RUNNER_TEMP/public-python3.12-x86_64"
+            cat > "$python_launcher" <<EOF
+          #!/bin/bash
+          exec /usr/bin/arch -x86_64 "$python_real" "\$@"
+          EOF
+            chmod +x "$python_launcher"
+            selected="$python_launcher"
+          else
+            selected="$python_real"
+          fi
+          echo "PUBLIC_PRODUCER_PYTHON=$selected" >> "$GITHUB_ENV"
+          "$selected" -I -S - <<'PY'
+          import platform, struct
+          assert platform.python_version() == "3.12.10"
+          assert 8 * struct.calcsize("P") == 64
+          print(f"public_base_machine={platform.machine()}")
+          PY
+
+      - name: Fetch and verify public NumPy base wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$RUNNER_TEMP/$NUMPY_WHEEL_NAME"
+          curl --fail --location --retry 3 --retry-all-errors -o "$wheel" "$NUMPY_WHEEL_URL"
+          echo "$NUMPY_WHEEL_SHA256  $wheel" | shasum -a 256 -c -
+          echo "PUBLIC_NUMPY_WHEEL=$wheel" >> "$GITHUB_ENV"
+
+      - name: Stage exact public NumPy base runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos/stage-core-runtime.sh scripts/macos/stage-numpy-runtime.sh
+          scripts/macos/stage-core-runtime.sh \
+            --python "$PUBLIC_PRODUCER_PYTHON" \
+            --python-archive "$PUBLIC_CPYTHON_ARCHIVE" \
+            --python-hashes "$PUBLIC_CPYTHON_HASHES" \
+            --arch "$TARGET_ARCH"
+          scripts/macos/stage-numpy-runtime.sh \
+            --core-runtime "out/macos-$TARGET_ARCH/core" \
+            --output-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --numpy-wheel "$PUBLIC_NUMPY_WHEEL" \
+            --numpy-url "$NUMPY_WHEEL_URL" \
+            --arch "$TARGET_ARCH"
+          python3 scripts/common/write_runtime_manifest.py \
+            --root "out/macos-$TARGET_ARCH/numpy" \
+            --platform "$ARTIFACT_PLATFORM" \
+            --profile numpy
+
+      - name: Prove fresh FFCx JIT and serial PETSc solve from locked packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos/test-conda-clang-jit.sh
+          scripts/macos/test-conda-clang-jit.sh \
+            "$FENICS_LOCKED_PREFIX" \
+            "$TARGET_ARCH"
+          source_evidence="$RUNNER_TEMP/fenics macos clang prototype $TARGET_ARCH/evidence"
+          test -d "$source_evidence"
+          cp -R "$source_evidence" "$FENICS_OVERLAY_EVIDENCE/jit-evidence"
+
+      - name: Package relocatable macOS overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          producer_revision="$(git rev-parse HEAD)"
+          mkdir -p dist
+          python3 scripts/macos/package_fenics_overlay.py \
+            --prefix "$FENICS_LOCKED_PREFIX" \
+            --lock "$FENICS_LOCK_FILE" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --arch "$TARGET_ARCH" \
+            --output dist \
+            --version 0.1.0 \
+            --producer-revision "$producer_revision" \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/package-overlay.log"
+          test -f "dist/$OVERLAY_ASSET"
+          test -f "dist/$OVERLAY_ASSET.json"
+          test -f "dist/$OVERLAY_ASSET.sha256"
+
+      - name: Qualify exact overlay on public NumPy base runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos/test-fenics-overlay.sh
+          scripts/macos/test-fenics-overlay.sh \
+            --zip "dist/$OVERLAY_ASSET" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --arch "$TARGET_ARCH" \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/public-base-overlay-test.log"
+
+      - name: Rebuild overlay and prove deterministic identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          producer_revision="$(git rev-parse HEAD)"
+          mkdir -p dist-repeat
+          python3 scripts/macos/package_fenics_overlay.py \
+            --prefix "$FENICS_LOCKED_PREFIX" \
+            --lock "$FENICS_LOCK_FILE" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --arch "$TARGET_ARCH" \
+            --output dist-repeat \
+            --version 0.1.0 \
+            --producer-revision "$producer_revision" \
+            > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
+          cmp "dist/$OVERLAY_ASSET" "dist-repeat/$OVERLAY_ASSET"
+          cmp "dist/$OVERLAY_ASSET.json" "dist-repeat/$OVERLAY_ASSET.json"
+          cmp "dist/$OVERLAY_ASSET.sha256" "dist-repeat/$OVERLAY_ASSET.sha256"
+          echo "deterministic_overlay_rebuild=pass" \
+            > "$FENICS_OVERLAY_EVIDENCE/deterministic-rebuild.txt"
+
+      - name: Audit packaged ZIP structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit_root="$RUNNER_TEMP/fenics overlay audit $TARGET_ARCH"
+          rm -rf "$audit_root"
+          mkdir -p "$audit_root"
+          unzip -t "dist/$OVERLAY_ASSET" \
+            | tee "$FENICS_OVERLAY_EVIDENCE/zip-integrity.log"
+          ditto -x -k "dist/$OVERLAY_ASSET" "$audit_root"
+          python3 -m py_compile \
+            "$audit_root/Python.framework/Versions/3.12/lib/python3.12/site-packages/fenics_embed_runtime.py"
+          if [[ "$TARGET_ARCH" == arm64 ]]; then
+            clang_name=arm64-apple-darwin20.0.0-clang
+            linker_name=arm64-apple-darwin20.0.0-ld
+          else
+            clang_name=x86_64-apple-darwin13.4.0-clang
+            linker_name=x86_64-apple-darwin13.4.0-ld
+          fi
+          test -x "$audit_root/fenics-runtime/conda/bin/$clang_name"
+          test -x "$audit_root/fenics-runtime/conda/bin/$linker_name"
+          if find "$audit_root" -type f -o -type l | sed "s#^$audit_root/##" \
+              | grep -E '^fenics-runtime/conda/lib/python3\.12/site-packages/(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)'; then
+            echo "producer-owned NumPy path found in overlay" >&2
+            exit 1
+          fi
+          python3 - "dist/$OVERLAY_ASSET" "dist/$OVERLAY_ASSET.json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          archive = pathlib.Path(sys.argv[1])
+          summary = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if summary.get("artifact") != archive.name or summary.get("sha256") != actual:
+              raise SystemExit("outer summary does not bind the packaged ZIP")
+          print(f"overlay_sha256={actual}")
+          print("packaged_zip_structure=pass")
+          PY
+
+      - name: Remove producer source environments after packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$FENICS_LOCKED_PREFIX" "$FENICS_PACKAGE_CACHE"
+          test ! -e "$FENICS_LOCKED_PREFIX"
+          test ! -e "$FENICS_PACKAGE_CACHE"
+
+      - name: Collect immutable handoff evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "dist/$OVERLAY_ASSET" "$FENICS_OVERLAY_EVIDENCE/"
+          cp "dist/$OVERLAY_ASSET.json" "$FENICS_OVERLAY_EVIDENCE/"
+          cp "dist/$OVERLAY_ASSET.sha256" "$FENICS_OVERLAY_EVIDENCE/"
+          unzip -p "dist/$OVERLAY_ASSET" fenics-embed-manifest.json \
+            > "$FENICS_OVERLAY_EVIDENCE/fenics-embed-manifest.json"
+          unzip -p "dist/$OVERLAY_ASSET" fenics-runtime/provenance/native-census.json \
+            > "$FENICS_OVERLAY_EVIDENCE/native-census.json"
+          unzip -p "dist/$OVERLAY_ASSET" fenics-runtime/provenance/third-party-licenses.json \
+            > "$FENICS_OVERLAY_EVIDENCE/third-party-licenses.json"
+          shasum -a 256 \
+            "$FENICS_OVERLAY_EVIDENCE/fenics-embed-manifest.json" \
+            "$FENICS_OVERLAY_EVIDENCE/native-census.json" \
+            "$FENICS_OVERLAY_EVIDENCE/third-party-licenses.json" \
+            > "$FENICS_OVERLAY_EVIDENCE/overlay-evidence-sha256.txt"
+          python3 - "$FENICS_OVERLAY_EVIDENCE" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          output = root / "top-level-sha256.txt"
+          lines = []
+          for path in sorted(root.iterdir()):
+              if path == output or not path.is_file():
+                  continue
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
+          output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Write producer qualification evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET_ARCH" == arm64 ]]; then
+            platform=macos-arm64
+          else
+            platform=macos-x64
+          fi
+          python3 scripts/common/write_qualification.py \
+            --platform "$platform" \
+            --profile fenics \
+            --artifact "dist/$OVERLAY_ASSET" \
+            --output "$FENICS_OVERLAY_EVIDENCE/qualification-${platform}-fenics.json" \
+            --check package_lock_replay=pass \
+            --check package_hash_verification=pass \
+            --check public_numpy_base=pass \
+            --check inherited_numpy_identity=pass \
+            --check producer_python_excluded=pass \
+            --check producer_numpy_excluded=pass \
+            --check fresh_ffcx_jit=pass \
+            --check serial_petsc_solve=pass \
+            --check deterministic_archive=pass \
+            --check native_closure=pass \
+            --check private_consumer_checkout=not-applicable
+
+      - name: Upload macOS overlay qualification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fenics-macos-overlay-${{ matrix.architecture }}
+          path: build/macos-overlay-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          find "build/macos-overlay-${TARGET_ARCH}" -maxdepth 3 -type f -print 2>/dev/null | sort
+          while IFS= read -r log; do
+            echo "===== $log ====="
+            tail -n 250 "$log"
+          done < <(find "build/macos-overlay-${TARGET_ARCH}" -type f -name '*.log' -print 2>/dev/null | sort)
