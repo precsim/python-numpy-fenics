@@ -498,6 +498,7 @@ jobs:
             "$evidence/package-provenance.json" \
             "$evidence/source-provenance.json" \
             "$evidence/native-dependency-census.json" \
+            "$evidence/stock-native-abi-preflight.json" \
             "$evidence/license-inventory.json" \
             "$evidence/package-lock-verification.json" \
             "$evidence/numpy-base-qualification.json" \
@@ -546,6 +547,7 @@ jobs:
             "$FENICS_OVERLAY_EVIDENCE/package-provenance.json" \
             "$FENICS_OVERLAY_EVIDENCE/source-provenance.json" \
             "$FENICS_OVERLAY_EVIDENCE/native-dependency-census.json" \
+            "$FENICS_OVERLAY_EVIDENCE/stock-native-abi-preflight.json" \
             "$FENICS_OVERLAY_EVIDENCE/license-inventory.json" \
             > "$FENICS_OVERLAY_EVIDENCE/SHA256SUMS-linux-fenics.txt"
 
