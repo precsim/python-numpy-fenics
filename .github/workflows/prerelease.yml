@@ -11,9 +11,14 @@ on:
         description: Successful qualify-windows-core-numpy run ID
         required: true
         type: string
+      include_fenics:
+        description: Include the deferred FEniCS qualification matrix in this pre-release
+        required: false
+        default: false
+        type: boolean
       windows_fenics_run_id:
         description: Successful qualify-windows-fenics run ID
-        required: true
+        required: false
         type: string
       macos_core_numpy_run_id:
         description: Successful qualify-macos-core-numpy run ID
@@ -21,7 +26,7 @@ on:
         type: string
       macos_fenics_run_id:
         description: Successful qualify-macos-fenics run ID
-        required: true
+        required: false
         type: string
       linux_core_numpy_run_id:
         description: Successful qualify-linux-core-numpy run ID
@@ -29,7 +34,7 @@ on:
         type: string
       linux_fenics_run_id:
         description: Successful qualify-linux-fenics run ID
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -42,6 +47,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
+      INCLUDE_FENICS: ${{ inputs.include_fenics }}
       WINDOWS_CORE_NUMPY_RUN_ID: ${{ inputs.windows_core_numpy_run_id }}
       WINDOWS_FENICS_RUN_ID: ${{ inputs.windows_fenics_run_id }}
       MACOS_CORE_NUMPY_RUN_ID: ${{ inputs.macos_core_numpy_run_id }}
@@ -120,11 +126,17 @@ jobs:
           }
 
           download_run "qualify-windows-core-numpy" "$WINDOWS_CORE_NUMPY_RUN_ID"
-          download_run "qualify-windows-fenics" "$WINDOWS_FENICS_RUN_ID"
           download_run "qualify-macos-core-numpy" "$MACOS_CORE_NUMPY_RUN_ID"
-          download_run "qualify-macos-fenics" "$MACOS_FENICS_RUN_ID"
           download_run "qualify-linux-core-numpy" "$LINUX_CORE_NUMPY_RUN_ID"
-          download_run "qualify-linux-fenics" "$LINUX_FENICS_RUN_ID"
+          if [[ "$INCLUDE_FENICS" == "true" ]]; then
+            [[ -n "$WINDOWS_FENICS_RUN_ID" && -n "$MACOS_FENICS_RUN_ID" && -n "$LINUX_FENICS_RUN_ID" ]] || {
+              echo "include_fenics requires all three FEniCS qualification run IDs" >&2
+              exit 1
+            }
+            download_run "qualify-windows-fenics" "$WINDOWS_FENICS_RUN_ID"
+            download_run "qualify-macos-fenics" "$MACOS_FENICS_RUN_ID"
+            download_run "qualify-linux-fenics" "$LINUX_FENICS_RUN_ID"
+          fi
           checkout_sha="$(git rev-parse HEAD)"
           [[ "$checkout_sha" == "$producer_revision" ]] || {
             echo "publisher checkout differs from qualified main SHA: $checkout_sha != $producer_revision" >&2
@@ -133,7 +145,14 @@ jobs:
           echo "PRODUCER_REVISION=$producer_revision" >> "$GITHUB_ENV"
 
       - name: Verify and collect release inputs
-        run: python scripts/common/prepare_prerelease.py --input incoming --output release-assets --tag "$RELEASE_TAG"
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--input incoming --output release-assets --tag "$RELEASE_TAG")
+          if [[ "$INCLUDE_FENICS" == "true" ]]; then
+            args+=(--include-fenics)
+          fi
+          python scripts/common/prepare_prerelease.py "${args[@]}"
 
       - name: Publish GitHub pre-release
         shell: bash

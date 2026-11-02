@@ -37,14 +37,19 @@ The intended producer matrix is:
 
 | Platform | core | numpy | fenics |
 | --- | --- | --- | --- |
-| Windows x64 | producer migration | producer migration | proven overlay migration |
-| Linux x86_64 / glibc >= 2.17 | producer migration | producer migration | reuse-first work queued |
-| macOS arm64 | producer migration | producer migration | proven relocatable overlay migration |
-| macOS x86_64 | producer migration | producer migration | proven relocatable overlay migration |
+| Windows x64 | producer migration | producer migration | deferred/manual |
+| Linux x86_64 / glibc >= 2.17 | producer migration | producer migration | deferred/manual |
+| macOS arm64 | producer migration | producer migration | deferred/manual |
+| macOS x86_64 | producer migration | producer migration | deferred/manual |
 
 FEniCS is cumulative on the exact matching NumPy profile. A FEniCS overlay must
 not replace consumer-owned NumPy bytes unless its profile contract explicitly
 says otherwise.
+
+The active producer pre-release scope is `core` + `numpy`. FEniCS qualification
+workflows and packaging code are retained for future use but are not required to
+publish a producer pre-release. The manual pre-release workflow can explicitly
+opt into the complete FEniCS matrix when that work resumes.
 
 ## Producer artifact contract
 

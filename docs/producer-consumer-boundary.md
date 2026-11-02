@@ -51,3 +51,8 @@ Mocks must not reproduce private application APIs or copy private host source.
 Producer artifacts may be published as GitHub pre-releases. A producer
 pre-release is not a downstream product release and makes no claim that a
 private consumer's final host qualification has passed.
+
+The active pre-release contract requires the qualified `core` and `numpy`
+profiles on all supported producer targets. FEniCS remains a retained,
+explicitly opt-in profile and does not gate core/NumPy promotion while that work
+is deferred.

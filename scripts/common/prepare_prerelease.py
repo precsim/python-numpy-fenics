@@ -58,6 +58,12 @@ EXPECTED_WORKFLOW_COVERAGE = {
         ("linux-x64", "fenics"),
     },
 }
+CORE_NUMPY_WORKFLOWS = {
+    "qualify-windows-core-numpy",
+    "qualify-macos-core-numpy",
+    "qualify-linux-core-numpy",
+}
+FENICS_WORKFLOWS = set(EXPECTED_WORKFLOW_COVERAGE) - CORE_NUMPY_WORKFLOWS
 EXPECTED_QUALIFICATION_CHECKS = {
     ("win-x64", "core"): {
         "isolated_cpython": "pass",
@@ -531,7 +537,19 @@ def main() -> int:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--tag", required=True)
+    parser.add_argument(
+        "--include-fenics",
+        action="store_true",
+        help="include the deferred FEniCS profile qualifications and artifacts",
+    )
     args = parser.parse_args()
+
+    selected_workflows = (
+        set(EXPECTED_WORKFLOW_COVERAGE)
+        if args.include_fenics
+        else set(CORE_NUMPY_WORKFLOWS)
+    )
+    selected_profiles = ["core", "numpy"] + (["fenics"] if args.include_fenics else [])
 
     tag_match = TAG_RE.fullmatch(args.tag)
     if tag_match is None:
@@ -566,7 +584,7 @@ def main() -> int:
     copied: dict[str, str] = {}
     qualification_summaries = []
     coverage: dict[str, set[tuple[str, str]]] = {
-        workflow: set() for workflow in EXPECTED_WORKFLOW_COVERAGE
+        workflow: set() for workflow in selected_workflows
     }
     producer_revision: str | None = None
     source_runs: dict[str, dict[str, object]] = {}
@@ -595,7 +613,7 @@ def main() -> int:
         event = str(metadata.get("event", ""))
         if conclusion != "success":
             raise SystemExit(f"qualification run is not successful: {metadata_path}")
-        if workflow_name not in EXPECTED_WORKFLOW_COVERAGE:
+        if workflow_name not in selected_workflows:
             raise SystemExit(f"unexpected qualification workflow: {workflow_name!r}")
         if event not in {"push", "workflow_dispatch"}:
             raise SystemExit(
@@ -751,7 +769,8 @@ def main() -> int:
             }
         )
 
-    for workflow_name, expected in EXPECTED_WORKFLOW_COVERAGE.items():
+    for workflow_name in sorted(selected_workflows):
+        expected = EXPECTED_WORKFLOW_COVERAGE[workflow_name]
         actual = coverage[workflow_name]
         if actual != expected:
             raise SystemExit(
@@ -760,7 +779,11 @@ def main() -> int:
             )
     if producer_revision is None:
         raise SystemExit("producer revision was not established from qualification metadata")
-    base_runtime_bindings = validate_cross_profile_base_identities(artifact_records)
+    base_runtime_bindings = (
+        validate_cross_profile_base_identities(artifact_records)
+        if args.include_fenics
+        else []
+    )
 
     manifest = {
         "format_version": 1,
@@ -768,6 +791,7 @@ def main() -> int:
         "version": release_version,
         "producer_repository": "precsim/python-numpy-fenics",
         "producer_revision": producer_revision,
+        "profiles": selected_profiles,
         "source_runs": [
             {
                 "workflow_run_id": run_id,
