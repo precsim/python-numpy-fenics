@@ -33,6 +33,30 @@ def digest(path: Path) -> str:
 
 
 class MacOSRuntimeAuditTests(unittest.TestCase):
+    def test_nonloadable_macho_object_is_not_a_runtime_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "runtime"
+            binary = runtime / "Python.framework/Versions/3.12/bin/python3.12"
+            object_file = runtime / "Python.framework/Versions/3.12/lib/python3.12/config-3.12-darwin/python.o"
+            binary.parent.mkdir(parents=True)
+            object_file.parent.mkdir(parents=True)
+            binary.write_bytes(b"runtime-mach-o")
+            object_file.write_bytes(b"build-object")
+
+            def fake_run(*args: str) -> str:
+                if args[0] == "file":
+                    return "Mach-O 64-bit object arm64" if Path(args[-1]).suffix == ".o" else "Mach-O 64-bit executable arm64"
+                if args[0] == "lipo":
+                    return "arm64"
+                if args[0] == "otool":
+                    self.assertNotEqual(Path(args[-1]).suffix, ".o")
+                    return "Load command 0\n cmd LC_BUILD_VERSION\n minos 14.0\n"
+                raise AssertionError(args)
+
+            with mock.patch.object(audit, "run", side_effect=fake_run):
+                result = audit.audit(runtime, runtime / "census.json", "arm64", True, "14.0")
+            self.assertEqual(result["macho_count"], 1)
+
     def test_version_key_treats_trailing_zero_components_equally(self) -> None:
         self.assertEqual(audit.version_key("14.0"), audit.version_key("14.0.0"))
         self.assertGreater(audit.version_key("14.1"), audit.version_key("14.0.0"))

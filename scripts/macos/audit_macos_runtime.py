@@ -183,6 +183,12 @@ def audit(
         kind = run("file", "-b", str(path)).strip()
         if "Mach-O" not in kind:
             continue
+        # CPython's development config includes relocatable MH_OBJECT files
+        # (for example python.o). They are link inputs, not loadable runtime
+        # images; unlike executables/dylibs/bundles they need not carry an
+        # LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX load command.
+        if path.suffix == ".o" and "object" in kind.lower():
+            continue
         architectures = run("lipo", "-archs", str(path)).strip().split()
         if target_arch not in architectures:
             if strict:
