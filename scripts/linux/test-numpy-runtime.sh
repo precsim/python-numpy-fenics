@@ -192,6 +192,7 @@ EXPECTED_CEILINGS = {
     "GCC": "4.8.0",
 }
 EXPECTED_PIN_HASHES = {
+    "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
     "d482d171c406ae88c5b19cad3b6a1c4c5209f886ab74bc44c2c865c23f52d860",
     "6761af1d9f5d353ab4f0b7497be2643313b36c8f31caec0144bfef198e71e6ab",
     "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd",
@@ -208,7 +209,7 @@ EXPECTED_PIN_HASHES = {
     "b42d3c7ff9f4da0f7fedd354051b002fe68dbb56dc59c713c61bdf92773b3d9c",
 }
 PRIVATE_SUFFIX = "bridge_np252_"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "47c5864635ea7b5a2890245f544065fcdf2ed90cc640644260f41b3e7ae98559"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "81ebc2c98319683a8e523889db8275069bfeab9c8d0012e3fa3c01ca886bf687"
 
 
 def fail(message):
@@ -507,6 +508,26 @@ if (
     or build_image.get("ref") != expected_image
 ):
     fail(f"NumPy source manifest build-image pin is invalid: {build_image!r}")
+expected_binary_tags = [
+    "cp314-cp314-manylinux_2_27_x86_64",
+    "cp314-cp314-manylinux_2_28_x86_64",
+]
+expected_binary_policy = {
+    "reason": "declared-manylinux-glibc-floor-above-target",
+    "target_glibc_floor": "2.17",
+    "declared_glibc_floors": ["2.27", "2.28"],
+}
+binary_candidate = sources_manifest.get("binary_candidate", {})
+if binary_candidate != {
+    "name": "numpy",
+    "version": "2.5.2",
+    "filename": "numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c7/99/461bd36dbdfac6c1c53efa370bd55a83227542d0d118f1677dbf1a3dacd5/numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
+    "expected_wheel_tags": expected_binary_tags,
+    "rejection_policy": expected_binary_policy,
+}:
+    fail(f"NumPy binary candidate lock differs from the required cp314/glibc evidence: {binary_candidate!r}")
 if sources_manifest.get("build_policy") != {
     "network_disabled_after_input_verification": True,
     "pep517_build_isolation": False,
@@ -623,6 +644,26 @@ if build_record.get("installed_metadata_normalization") != {
     "reason": "exclude pip local-wheel path/hash metadata from deterministic runtime payload",
 }:
     fail("NumPy provenance does not record the required deterministic install-metadata normalization")
+binary_rejection = data.get("binary_candidate_rejection", {})
+if binary_rejection != {
+    "filename": binary_candidate["filename"],
+    "sha256": binary_candidate["sha256"],
+    "observed_wheel_tags": expected_binary_tags,
+    "target_glibc_floor": "2.17",
+    "declared_glibc_floors": ["2.27", "2.28"],
+    "reason": "declared-manylinux-glibc-floor-above-target",
+    "decision": "reject-binary-and-authorize-source-rebuild",
+}:
+    fail(f"NumPy provenance does not bind binary-first rebuild authorization: {binary_rejection!r}")
+closed_candidate = data.get("closed_inputs", {}).get("binary_candidate", {})
+if (
+    closed_candidate.get("filename") != binary_candidate["filename"]
+    or closed_candidate.get("verified_sha256") != binary_candidate["sha256"]
+    or closed_candidate.get("observed_wheel_tags") != expected_binary_tags
+    or closed_candidate.get("rejection_policy") != expected_binary_policy
+    or closed_candidate.get("decision") != "reject-binary-and-authorize-source-rebuild"
+):
+    fail(f"NumPy closed inputs do not retain binary-candidate rejection evidence: {closed_candidate!r}")
 
 site_packages_root = runtime / "lib/python3.14/site-packages"
 dist_info_matches = sorted(site_packages_root.glob("numpy-2.5.2.dist-info"))
@@ -661,8 +702,8 @@ for item in dicts(sources_manifest):
     if filename in download_inputs:
         fail(f"source manifest contains duplicate pinned input filename: {filename}")
     download_inputs[filename] = digest
-if len(download_inputs) != 14:
-    fail(f"expected exactly 14 closed downloadable inputs, found {len(download_inputs)}")
+if len(download_inputs) != 15:
+    fail(f"expected exactly 15 closed downloadable inputs, found {len(download_inputs)}")
 if set(download_inputs.values()) != EXPECTED_PIN_HASHES:
     fail("source manifest closed-input hashes differ from the settled phase-01 pins")
 for filename, expected_sha in sorted(download_inputs.items()):

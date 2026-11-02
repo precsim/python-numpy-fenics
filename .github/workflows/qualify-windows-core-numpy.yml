@@ -41,11 +41,46 @@ jobs:
           python-version: "3.14.10"
           architecture: x64
 
-      - name: Capture exact CPython
+      - name: Install pinned producer CPython binary asset
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          $ErrorActionPreference = "Stop"
+          $assetId = 678419363
+          $assetName = "python-3.14.10-win32-x64.zip"
+          $assetSha256 = "6cc56cec3d548538f418dfe2d8e18fdfcc6d2565616c82ebbde7a82ae1bb2692"
+          $release = "3.14.10-40336797752"
+          $headers = @{ Accept = "application/vnd.github+json"; Authorization = "Bearer $env:GH_TOKEN"; "X-GitHub-Api-Version" = "2022-11-28" }
+          $metadata = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/actions/python-versions/releases/assets/$assetId"
+          if ($metadata.id -ne $assetId -or $metadata.name -ne $assetName -or $metadata.digest -ne "sha256:$assetSha256") {
+            throw "Pinned actions/python-versions asset identity mismatch"
+          }
+          if ($metadata.browser_download_url -ne "https://github.com/actions/python-versions/releases/download/$release/$assetName") {
+            throw "Pinned actions/python-versions asset release URL mismatch"
+          }
+          $archive = Join-Path $env:RUNNER_TEMP $assetName
+          Invoke-WebRequest -Uri $metadata.browser_download_url -OutFile $archive
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $assetSha256) { throw "Pinned CPython binary asset SHA-256 mismatch: $sha" }
+          $setup = Join-Path $env:RUNNER_TEMP "producer-python-setup"
+          Remove-Item -LiteralPath $setup -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $archive -DestinationPath $setup
+          $env:AGENT_TOOLSDIRECTORY = Join-Path $env:RUNNER_TEMP "producer-python-toolcache"
+          Push-Location $setup
+          try {
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            .\setup.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Pinned CPython binary asset installation failed" }
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+            Pop-Location
+          }
+          $python = Join-Path $env:AGENT_TOOLSDIRECTORY "Python\3.14.10\x64\python.exe"
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Pinned producer CPython is missing: $python" }
           "PRODUCER_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CPYTHON_BINARY_ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & $python -I -S -c "import platform,struct; assert platform.python_version() == '3.14.10'; assert 8*struct.calcsize('P') == 64"
 
       - name: Fetch verified Tcl/Tk 8.6.18 sources
@@ -100,7 +135,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\build\windows-qualification | Out-Null
-          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -CpythonSource $env:CPYTHON_SOURCE -TclSource $env:TCL_SOURCE -TkSource $env:TK_SOURCE -TclTkLock .\locks\core\tcltk-8.6.18.json -Output .\out\win-x64\core
+          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -CpythonBinaryAsset $env:CPYTHON_BINARY_ASSET -CpythonSource $env:CPYTHON_SOURCE -TclSource $env:TCL_SOURCE -TkSource $env:TK_SOURCE -TclTkLock .\locks\core\tcltk-8.6.18.json -Output .\out\win-x64\core
           python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\core --profile core --output .\out\win-x64\core\provenance\pe-native-closure-core.json --seal-manifest
           .\scripts\windows\stage-runtime.ps1 -CoreRuntime .\out\win-x64\core -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy -LayerEvidence .\build\windows-qualification\numpy-core-layer-staged.json
           python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\numpy --profile numpy --output .\out\win-x64\numpy\provenance\pe-native-closure-numpy.json --seal-manifest

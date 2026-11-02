@@ -4,6 +4,7 @@ param(
     [string]$CoreRuntime = '',
     [ValidateSet('core','numpy')]
     [string]$RuntimeProfile = 'core',
+    [string]$CpythonBinaryAsset = '',
     [string]$CpythonSource = '',
     [string]$TclSource = '',
     [string]$TkSource = '',
@@ -25,6 +26,9 @@ $ExpectedNumpy = '2.5.2'
 $ExpectedWheel = 'numpy-2.5.2-cp314-cp314-win_amd64.whl'
 $ExpectedWheelSha256 = '7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d'
 $ExpectedTclTk = '8.6.18'
+$ExpectedCpythonBinaryAsset = 'python-3.14.10-win32-x64.zip'
+$ExpectedCpythonBinaryAssetSha256 = '6cc56cec3d548538f418dfe2d8e18fdfcc6d2565616c82ebbde7a82ae1bb2692'
+$ExpectedCpythonBinaryRelease = '3.14.10-40336797752'
 $ExpectedCpythonSource = 'Python-3.14.10.tgz'
 $ExpectedCpythonSourceUrl = 'https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz'
 $ExpectedCpythonSourceSha256 = '9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192'
@@ -135,8 +139,8 @@ if ($RuntimeProfile -eq 'core') {
     if (-not $Python) {
         throw 'Core profile requires -Python'
     }
-    if (-not $CpythonSource -or -not $TclSource -or -not $TkSource -or -not $TclTkLock) {
-        throw 'Core profile requires -CpythonSource, -TclSource, -TkSource, and -TclTkLock'
+    if (-not $CpythonBinaryAsset -or -not $CpythonSource -or -not $TclSource -or -not $TkSource -or -not $TclTkLock) {
+        throw 'Core profile requires -CpythonBinaryAsset, -CpythonSource, -TclSource, -TkSource, and -TclTkLock'
     }
     if ($CoreRuntime) {
         throw '-CoreRuntime is valid only for the numpy profile'
@@ -146,8 +150,8 @@ if ($RuntimeProfile -eq 'core') {
     if ($Python) {
         throw 'NumPy profile derives from -CoreRuntime and does not accept -Python'
     }
-    if ($CpythonSource -or $TclSource -or $TkSource -or $TclTkLock) {
-        throw 'CPython/Tcl/Tk source inputs are valid only for the core profile'
+    if ($CpythonBinaryAsset -or $CpythonSource -or $TclSource -or $TkSource -or $TclTkLock) {
+        throw 'CPython binary/source and Tcl/Tk source inputs are valid only for the core profile'
     }
     if (-not $CoreRuntime) {
         throw 'NumPy profile requires -CoreRuntime'
@@ -197,6 +201,14 @@ if ($RuntimeProfile -eq 'core') {
         }
     }
 
+    $cpythonBinaryAssetPath = (Resolve-Path -LiteralPath $CpythonBinaryAsset -ErrorAction Stop).Path
+    if ([IO.Path]::GetFileName($cpythonBinaryAssetPath) -ne $ExpectedCpythonBinaryAsset) {
+        throw "Unexpected CPython binary asset: $([IO.Path]::GetFileName($cpythonBinaryAssetPath))"
+    }
+    $cpythonBinaryAssetSha = (Get-FileHash -LiteralPath $cpythonBinaryAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($cpythonBinaryAssetSha -ne $ExpectedCpythonBinaryAssetSha256) {
+        throw "CPython binary asset SHA-256 mismatch: $cpythonBinaryAssetSha"
+    }
     $cpythonSourcePath = (Resolve-Path -LiteralPath $CpythonSource -ErrorAction Stop).Path
     if ([IO.Path]::GetFileName($cpythonSourcePath) -ne $ExpectedCpythonSource) {
         throw "Unexpected CPython source archive: $([IO.Path]::GetFileName($cpythonSourcePath))"
@@ -554,6 +566,15 @@ $manifest = [ordered]@{
         version = $ExpectedPython
         executable_sha256 = $pythonHash
         dll_sha256 = $dllHash
+        binary_asset = if ($RuntimeProfile -eq 'core') {
+            [ordered]@{
+                release = $ExpectedCpythonBinaryRelease
+                filename = $ExpectedCpythonBinaryAsset
+                sha256 = $ExpectedCpythonBinaryAssetSha256
+            }
+        } else {
+            $null
+        }
     }
     tcl_tk = $tclTk
     base_core = if ($coreIdentity) {

@@ -199,7 +199,7 @@ PY
 
 "$helper_python" - "$sources_manifest" "$verified_inputs" "$image_ref" \
     "$input_dir" "$numpy_source" "$openblas_source" "$wheelhouse" "$devtoolset_rpm_dir" <<'PY'
-import hashlib, json, pathlib, re, sys
+import hashlib, json, pathlib, re, sys, zipfile
 manifest_path = pathlib.Path(sys.argv[1]).resolve()
 output_path = pathlib.Path(sys.argv[2])
 image_ref, input_dir_arg, numpy_arg, openblas_arg = sys.argv[3:7]
@@ -211,13 +211,18 @@ def sha(path):
     with pathlib.Path(path).open("rb") as s:
         for b in iter(lambda:s.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
-EXPECTED_MANIFEST_SHA = "47c5864635ea7b5a2890245f544065fcdf2ed90cc640644260f41b3e7ae98559"
+EXPECTED_MANIFEST_SHA = "81ebc2c98319683a8e523889db8275069bfeab9c8d0012e3fa3c01ca886bf687"
 if sha(manifest_path) != EXPECTED_MANIFEST_SHA:
     fail("supplied NumPy source manifest differs from the committed phase-01 manifest")
 SOURCE_PINS = [
  ("numpy","2.5.2","d482d171c406ae88c5b19cad3b6a1c4c5209f886ab74bc44c2c865c23f52d860"),
  ("openblas","0.3.33","6761af1d9f5d353ab4f0b7497be2643313b36c8f31caec0144bfef198e71e6ab"),
 ]
+BINARY_CANDIDATE = (
+ "numpy","2.5.2",
+ "numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+ "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
+)
 WHEEL_PINS = [
  ("pip","25.3","9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"),
  ("meson-python","0.18.0","3b0fe051551cc238f5febb873247c0949cd60ded556efa130aa57021804868e2"),
@@ -273,6 +278,42 @@ for label,ver,digest in SOURCE_PINS:
     if path is None or path.name!=r["filename"] or not path.is_file(): fail(f"missing pinned {label} source: {path}")
     if sha(path)!=digest: fail(f"{label} source hash mismatch")
     r.update({"verified_path":str(path),"verified_sha256":digest}); sources[label]=r
+candidate_name,candidate_version,candidate_filename,candidate_digest=BINARY_CANDIDATE
+binary_candidate=record("NumPy binary candidate",candidate_digest)
+if version(binary_candidate)!=candidate_version or binary_candidate.get("name")!=candidate_name or binary_candidate.get("filename")!=candidate_filename:
+    fail("NumPy binary candidate identity differs from the locked cp314 wheel")
+candidate_path=wheelhouse/candidate_filename
+if not candidate_path.is_file() or sha(candidate_path)!=candidate_digest:
+    fail(f"NumPy binary candidate missing or hash mismatch: {candidate_path}")
+with zipfile.ZipFile(candidate_path) as archive:
+    wheel_metadata=[name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+    if len(wheel_metadata)!=1: fail(f"NumPy binary candidate has unexpected WHEEL metadata paths: {wheel_metadata!r}")
+    wheel_text=archive.read(wheel_metadata[0]).decode("utf-8")
+observed_tags=sorted(line.split(":",1)[1].strip() for line in wheel_text.splitlines() if line.startswith("Tag:"))
+expected_tags=["cp314-cp314-manylinux_2_27_x86_64","cp314-cp314-manylinux_2_28_x86_64"]
+if observed_tags!=expected_tags or binary_candidate.get("expected_wheel_tags")!=expected_tags:
+    fail(f"NumPy binary candidate wheel tags differ from the locked ABI evidence: {observed_tags!r}")
+policy=binary_candidate.get("rejection_policy")
+expected_policy={
+    "reason":"declared-manylinux-glibc-floor-above-target",
+    "target_glibc_floor":"2.17",
+    "declared_glibc_floors":["2.27","2.28"],
+}
+if policy!=expected_policy:
+    fail(f"NumPy binary candidate rejection policy differs from the glibc-2.17 contract: {policy!r}")
+declared_floors=[]
+for tag in observed_tags:
+    match=re.search(r"manylinux_2_([0-9]+)_x86_64$",tag)
+    if match is None: fail(f"NumPy binary candidate has unsupported platform tag: {tag}")
+    declared_floors.append(f"2.{int(match.group(1))}")
+if declared_floors!=policy["declared_glibc_floors"] or any(int(value.split(".",1)[1])<=17 for value in declared_floors):
+    fail(f"NumPy binary candidate does not prove a glibc floor above 2.17: {declared_floors!r}")
+binary_candidate.update({
+    "verified_path":str(candidate_path),
+    "verified_sha256":candidate_digest,
+    "observed_wheel_tags":observed_tags,
+    "decision":"reject-binary-and-authorize-source-rebuild",
+})
 wheels=[]
 for name,ver,digest in WHEEL_PINS:
     r=record(f"{name} wheel",digest)
@@ -295,6 +336,7 @@ if not manifest_copy.is_file() or manifest_copy.is_symlink() or sha(manifest_cop
 expected_files = {
     manifest_copy.name,
     *(record["filename"] for record in sources.values()),
+    binary_candidate["filename"],
     *(record["filename"] for record in wheels),
     *(record["filename"] for record in rpms),
 }
@@ -312,7 +354,8 @@ if any(path.is_symlink() for path in input_root.rglob("*")):
     fail("verified input root must not contain symlinks")
 result={
  "format_version":1, "manifest":{"path":str(manifest_path),"sha256":sha(manifest_path)},
- "build_image":image_ref, "sources":sources, "pep517_wheels":wheels, "devtoolset_rpms":rpms,
+ "build_image":image_ref, "binary_candidate":binary_candidate,
+ "sources":sources, "pep517_wheels":wheels, "devtoolset_rpms":rpms,
 }
 output_path.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
 print("closed_input_verification=pass")
@@ -1245,6 +1288,15 @@ data = {
         "contract": sources_manifest,
     },
     "closed_inputs": verified_inputs,
+    "binary_candidate_rejection": {
+        "filename": verified_inputs["binary_candidate"]["filename"],
+        "sha256": verified_inputs["binary_candidate"]["verified_sha256"],
+        "observed_wheel_tags": verified_inputs["binary_candidate"]["observed_wheel_tags"],
+        "target_glibc_floor": verified_inputs["binary_candidate"]["rejection_policy"]["target_glibc_floor"],
+        "declared_glibc_floors": verified_inputs["binary_candidate"]["rejection_policy"]["declared_glibc_floors"],
+        "reason": verified_inputs["binary_candidate"]["rejection_policy"]["reason"],
+        "decision": verified_inputs["binary_candidate"]["decision"],
+    },
     "core": {
         "provenance_path": "build-provenance-linux.json",
         "provenance_sha256": sha256(core_provenance_path),
