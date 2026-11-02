@@ -33,13 +33,20 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
         self.assertEqual(lock["packages"]["icu"]["version"], "78.3")
         self.assertIn("disabled", contract["capability_impact"]["libcurl_public_suffix_list"])
 
-    def test_contract_rejects_any_broader_configure_delta(self) -> None:
+    def test_contract_requires_complete_independent_configure_argv(self) -> None:
         data = json.loads(CONTRACT.read_text(encoding="utf-8"))
-        data["probe"]["configure_delta_from_feedstock"]["other_changes"] = ["--disable-ros3"]
+        data["probe"]["configure_flags"].append("--disable-ros3")
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "contract.json"
             path.write_text(json.dumps(data), encoding="utf-8")
-            with self.assertRaisesRegex(mod.ProbeError, "one-flag configure delta"):
+            with self.assertRaisesRegex(mod.ProbeError, "complete pinned argv"):
+                mod.load_contract(path)
+        data = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        data["probe"]["configure_delta_from_feedstock"] = {"other_changes": []}
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "contract.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(mod.ProbeError, "must not assert a feedstock configure delta"):
                 mod.load_contract(path)
 
     def test_dt_needed_delta_must_remove_only_libpsl(self) -> None:

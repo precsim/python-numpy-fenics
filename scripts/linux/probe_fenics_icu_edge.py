@@ -135,12 +135,27 @@ def load_contract(path: Path) -> dict:
     probe = data.get("probe")
     if not isinstance(probe, dict) or probe.get("host_triplet") != "x86_64-conda-linux-gnu":
         raise ProbeError("unexpected ICU-edge probe host triplet")
-    flags = probe.get("configure_flags")
-    if not isinstance(flags, list) or "--without-libpsl" not in flags or "--with-libpsl" in flags:
-        raise ProbeError("probe configure flags must contain only the PSL-disabling variant")
-    delta = probe.get("configure_delta_from_feedstock")
-    if delta != {"remove": ["--with-libpsl"], "add": ["--without-libpsl"], "other_changes": []}:
-        raise ProbeError("ICU-edge experiment must remain a one-flag configure delta from the feedstock")
+    # The probe executes its own fixed configure argv, not the feedstock's
+    # build.sh. Pin that complete argv rather than asserting an unverified
+    # one-flag equivalence with a separately parameterized feedstock build.
+    expected_flags = [
+        "--disable-ldap",
+        "--enable-websockets",
+        "--with-ca-bundle={locked_prefix}/ssl/cacert.pem",
+        "--with-openssl={locked_prefix}",
+        "--with-zlib={locked_prefix}",
+        "--with-zstd={locked_prefix}",
+        "--with-gssapi={locked_prefix}",
+        "--with-libssh2={locked_prefix}",
+        "--with-nghttp2={locked_prefix}",
+        "--without-libpsl",
+    ]
+    if probe.get("configure_flags") != expected_flags:
+        raise ProbeError("independent ICU-edge configure flags differ from the complete pinned argv")
+    if probe.get("configuration_provenance") != "independent-exact-flags-experiment-not-feedstock-build-equivalence":
+        raise ProbeError("ICU-edge probe must not claim feedstock build equivalence")
+    if "configure_delta_from_feedstock" in probe:
+        raise ProbeError("ICU-edge probe must not assert a feedstock configure delta")
     ceilings = probe.get("strict_symbol_ceilings")
     expected_ceilings = {name: ".".join(map(str, value)) for name, value in ABI_CEILINGS.items()}
     if ceilings != expected_ceilings:
@@ -654,7 +669,7 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
     return install_prefix, {
         "configure": configure,
         "configure_output_sha256": hashlib.sha256(configure_result.stdout.encode("utf-8")).hexdigest(),
-        "configure_delta_from_feedstock": contract["probe"]["configure_delta_from_feedstock"],
+        "configuration_provenance": contract["probe"]["configuration_provenance"],
     }
 
 
