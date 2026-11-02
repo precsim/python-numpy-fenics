@@ -636,13 +636,11 @@ def build_candidate(
     libxml2_include: Path,
     zlib_library: Path,
     lzma_library: Path,
-) -> tuple[list[Path], list[Path], dict[str, str]]:
-    prefix = roots["prefix"].resolve()
-    src, build, wheels, audit = roots["src"], roots["build"], roots["wheels"], roots["audit"]
+) -> tuple[list[Path], list[Path]]:
+    prefix, src, build, wheels, audit = roots["prefix"], roots["src"], roots["build"], roots["wheels"], roots["audit"]
     lib = prefix / "lib"
     lib.mkdir(parents=True, exist_ok=True)
     shutil.copy2(roots["inputs"] / "libfenics_cxxrt.so.1", lib / "libfenics_cxxrt.so.1")
-    install_owners: dict[str, str] = {"lib/libfenics_cxxrt.so.1": HANDOFF_PROVIDER_OWNER}
     link_root = roots["build"] / "provider-link"
     link_root.mkdir()
     (link_root / "libstdc++.so").symlink_to(lib / "libfenics_cxxrt.so.1")
@@ -678,20 +676,6 @@ def build_candidate(
         run(tools["cmake"], *common, "-S", str(source), "-B", str(bdir), f"-DCMAKE_INSTALL_PREFIX={prefix}", *extra, env=env)
         run(tools["cmake"], "--build", str(bdir), "--parallel", "4", env=env)
         run(tools["cmake"], "--install", str(bdir), env=env)
-        manifest = bdir / "install_manifest.txt"
-        if not manifest.is_file():
-            raise InputError(f"CMake install manifest is missing for {name}: {manifest}")
-        owner = REBUILD_COMPONENT_OWNERS[name]
-        for raw in manifest.read_text(encoding="utf-8").splitlines():
-            installed = Path(raw)
-            try:
-                relative = installed.relative_to(prefix).as_posix()
-            except ValueError as exc:
-                raise InputError(f"CMake install path escapes rebuild prefix for {name}: {installed}") from exc
-            previous = install_owners.get(relative)
-            if previous is not None and previous != owner:
-                raise InputError(f"rebuild install ownership collision: {relative}: {previous} vs {owner}")
-            install_owners[relative] = owner
 
     cmake_build("basix", src / "basix-0.11.0" / "cpp", [
         f"-DCMAKE_PREFIX_PATH={stock}", f"-DCMAKE_LIBRARY_PATH={stock}/lib",
@@ -759,7 +743,7 @@ def build_candidate(
     dolfinx_audit = audit / "dolfinx"
     with zipfile.ZipFile(dolfinx_wheel) as zf:
         zf.extractall(dolfinx_audit)
-    return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit], install_owners
+    return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit]
 
 
 def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path]) -> tuple[list[dict], list[dict]]:
@@ -837,6 +821,33 @@ def ignored_build_install_path(relative: PurePosixPath) -> bool:
     return text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
 
 
+def collect_install_owners(roots: dict[str, Path]) -> dict[str, str]:
+    """Recover candidate ownership after the native build without changing its API."""
+
+    prefix = roots["prefix"].resolve()
+    owners: dict[str, str] = {"lib/libfenics_cxxrt.so.1": HANDOFF_PROVIDER_OWNER}
+    for component, owner in REBUILD_COMPONENT_OWNERS.items():
+        manifest = roots["build"] / component / "install_manifest.txt"
+        if not manifest.is_file() or manifest.is_symlink():
+            raise InputError(f"CMake install manifest is missing or unsafe for {component}: {manifest}")
+        entries = manifest.read_text(encoding="utf-8").splitlines()
+        if not entries:
+            raise InputError(f"CMake install manifest is empty for {component}: {manifest}")
+        for raw in entries:
+            installed = Path(raw)
+            if not installed.is_absolute():
+                raise InputError(f"CMake install path is not absolute for {component}: {installed}")
+            try:
+                relative = installed.resolve(strict=False).relative_to(prefix).as_posix()
+            except ValueError as exc:
+                raise InputError(f"CMake install path escapes rebuild prefix for {component}: {installed}") from exc
+            previous = owners.get(relative)
+            if previous is not None and previous != owner:
+                raise InputError(f"rebuild install ownership collision: {relative}: {previous} vs {owner}")
+            owners[relative] = owner
+    return owners
+
+
 def write_package_handoff(
     destination: Path,
     *,
@@ -852,7 +863,6 @@ def write_package_handoff(
     libxml2_build_deps_manifest: Path,
     private_provider_manifest: Path,
     native_closure: dict,
-    install_owners: dict[str, str],
     wheels: list[Path],
 ) -> dict:
     """Write a deterministic, unqualified packaging handoff for candidate bytes."""
@@ -873,6 +883,7 @@ def write_package_handoff(
     if set(owned_by_package) != expected_owners:
         missing = sorted(expected_owners - set(owned_by_package))
         raise InputError(f"locked prefix is missing rebuilt package ownership metadata: {missing}")
+    install_owners = collect_install_owners(roots)
 
     replacements: dict[str, dict] = {}
 
@@ -1142,10 +1153,9 @@ def main(argv: list[str] | None = None) -> int:
         wheels: list[Path] = []
         elf_records: list[dict] = []
         wheel_records: list[dict] = []
-        install_owners: dict[str, str] = {}
         handoff_record: dict | None = None
         if args.execute:
-            wheels, audits, install_owners = build_candidate(
+            wheels, audits = build_candidate(
                 roots,
                 args.locked_prefix.resolve(),
                 tools,
@@ -1170,7 +1180,6 @@ def main(argv: list[str] | None = None) -> int:
                 libxml2_build_deps_manifest=args.libxml2_build_deps_manifest.resolve(),
                 private_provider_manifest=args.private_provider_manifest.resolve(),
                 native_closure=closure_evidence,
-                install_owners=install_owners,
                 wheels=wheels,
             )
             handoff_record = {

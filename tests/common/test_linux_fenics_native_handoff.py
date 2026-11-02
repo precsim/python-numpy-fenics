@@ -55,6 +55,19 @@ class NativeRebuildHandoffTests(unittest.TestCase):
         fmt_candidate.write_bytes(b"rebuilt-fmt")
         provider_candidate.chmod(0o644)
         fmt_candidate.chmod(0o644)
+        candidate_build = root / "candidate-build"
+        for component in producer.REBUILD_COMPONENT_OWNERS:
+            build_dir = candidate_build / component
+            build_dir.mkdir(parents=True)
+            if component == "fmt":
+                installed = fmt_candidate
+            else:
+                installed = candidate_prefix / "share" / component / "handoff-marker.txt"
+                installed.parent.mkdir(parents=True, exist_ok=True)
+                installed.write_text(component, encoding="utf-8")
+            (build_dir / "install_manifest.txt").write_text(
+                str(installed.resolve()) + "\n", encoding="utf-8"
+            )
 
         closure_sha = "c" * 64
         source_manifest_path = Path(mod.__file__).resolve().parents[2] / mod.NATIVE_HANDOFF_SOURCE_MANIFEST
@@ -87,7 +100,7 @@ class NativeRebuildHandoffTests(unittest.TestCase):
         handoff = root / "handoff" / "native-rebuild-handoff.json"
         producer.write_package_handoff(
             handoff,
-            roots={"prefix": candidate_prefix},
+            roots={"prefix": candidate_prefix, "build": candidate_build},
             locked_prefix=prefix,
             package_lock=lock,
             prefix_verification={"verification": {"sha256": mod.sha256_file(prefix_evidence)}},
@@ -114,10 +127,6 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 "conditional_omissions": conditional_omissions,
                 "icu_reached_paths": ["lib/libicuuc.so.78"],
                 "icu_resolution_required": True,
-            },
-            install_owners={
-                "lib/libfenics_cxxrt.so.1": producer.HANDOFF_PROVIDER_OWNER,
-                "lib/libfmt.so.12": "fmt",
             },
             wheels=[],
         )
@@ -244,6 +253,27 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 {"lib/libfmt.so.12"},
             )
             self.assertEqual(result, [])
+
+    def test_install_owner_collection_rejects_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            prefix = root / "prefix"
+            build = root / "build"
+            prefix.mkdir()
+            for component in producer.REBUILD_COMPONENT_OWNERS:
+                build_dir = build / component
+                build_dir.mkdir(parents=True)
+                installed = prefix / "share" / component / "marker"
+                installed.parent.mkdir(parents=True, exist_ok=True)
+                installed.write_text(component, encoding="utf-8")
+                (build_dir / "install_manifest.txt").write_text(
+                    str(installed.resolve()) + "\n", encoding="utf-8"
+                )
+            (build / "fmt" / "install_manifest.txt").write_text(
+                str((root / "escape.so").resolve()) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(producer.InputError, "escapes rebuild prefix"):
+                producer.collect_install_owners({"prefix": prefix, "build": build})
 
 
 if __name__ == "__main__":
