@@ -618,7 +618,7 @@ jobs:
           - reproducible pinned libxml2 build-dependency manifest
           - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
           - post-rebuild native-closure report proving KaHIP/ADIOS2/ZeroMQ omission and ICU resolution
-          - package_fenics_overlay.py handoff for rebuilt native outputs and wheels
+          - hosted exercise of the native-rebuild handoff plus ICU/curl closure resolution
           - standalone glibc 2.17 relocation/JIT/PETSc/Poisson qualification
           EOF
           cat "$blocker" >&2

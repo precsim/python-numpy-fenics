@@ -77,6 +77,37 @@ PROTECTED_JIT_BIN_PATHS = {
     "bin/gcc",
     "bin/cc",
 }
+NATIVE_HANDOFF_FORMAT_VERSION = 1
+NATIVE_HANDOFF_KIND = "linux-fenics-native-rebuild-handoff"
+NATIVE_HANDOFF_STATUS = "candidate-unqualified"
+NATIVE_HANDOFF_OMISSIONS = ("kahip", "libadios2", "zeromq")
+NATIVE_HANDOFF_PROVIDER_OWNER = "python-numpy-fenics-native-provider"
+NATIVE_HANDOFF_REPLACEMENT_OWNERS = {
+    "fmt",
+    "spdlog",
+    "pugixml",
+    "libxml2-16",
+    "fenics-libbasix",
+    "fenics-basix",
+    "fenics-libdolfinx",
+    "fenics-dolfinx",
+    NATIVE_HANDOFF_PROVIDER_OWNER,
+}
+NATIVE_HANDOFF_SOURCE_COMPONENTS = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+NATIVE_HANDOFF_SOURCE_MANIFEST = "locks/linux/linux-x86_64-fenics-rebuild-sources.json"
+NATIVE_HANDOFF_EXPECTED_STOCK_VIOLATING_PACKAGES = (
+    "fenics-basix",
+    "fenics-dolfinx",
+    "fenics-libbasix",
+    "fenics-libdolfinx",
+    "fmt",
+    "icu",
+    "kahip",
+    "libadios2",
+    "pugixml",
+    "spdlog",
+    "zeromq",
+)
 
 
 def protected_jit_bin_path(relative: str) -> bool:
@@ -117,6 +148,49 @@ def safe_relative(raw: str) -> PurePosixPath:
     if not value or path.is_absolute() or ".." in path.parts or "" in path.parts:
         raise SystemExit(f"unsafe package-owned path: {raw!r}")
     return path
+
+
+def canonical_json_sha(value: object) -> str:
+    return sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def require_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise SystemExit(f"{label} must be a lowercase SHA-256")
+    return value
+
+
+def safe_handoff_relative(raw: object, label: str) -> PurePosixPath:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise SystemExit(f"{label} must be a canonical POSIX relative path")
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != raw:
+        raise SystemExit(f"{label} must be a canonical POSIX relative path: {raw!r}")
+    return path
+
+
+def handoff_forbidden_destination(relative: PurePosixPath) -> bool:
+    text = relative.as_posix()
+    if numpy_owned_path(relative):
+        return True
+    if text.startswith("lib/python3.12/") and not text.startswith("lib/python3.12/site-packages/"):
+        return True
+    if text.startswith(("include/python3.12", "conda-meta/")):
+        return True
+    if re.match(r"^bin/(?:python|pip)(?:3(?:\.12)?)?(?:$|\.)", text):
+        return True
+    if re.match(r"^lib/libpython3\.12(?:\..*)?$", text):
+        return True
+    return False
+
+
+def reject_handoff_symlink_components(root: Path, relative: PurePosixPath) -> Path:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise SystemExit(f"native rebuild handoff payload traverses a symlink: {relative}")
+    return current
 
 
 def under(path: Path, root: Path) -> bool:
@@ -446,6 +520,295 @@ def package_excluded(name: str, base_site: Path) -> bool:
     )
 
 
+def validate_stock_preflight_for_handoff(
+    path: Path, lock_sha256: str, prefix_verification_sha256: str
+) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"native rebuild handoff requires regular stock ABI preflight evidence: {path}")
+    report = read_json(path)
+    if (
+        report.get("format_version") != 1
+        or report.get("stage") != "stock-binary-closure-before-selective-rebuild"
+        or report.get("status") != "fail"
+        or report.get("source_rebuilds_authorized") is not False
+        or report.get("package_lock_sha256") != lock_sha256
+        or report.get("prefix_verification_sha256") != prefix_verification_sha256
+    ):
+        raise SystemExit(f"invalid stock ABI preflight evidence for native rebuild handoff: {path}")
+    fingerprint = require_sha256(
+        report.get("selection_fingerprint_sha256"), "stock ABI selection fingerprint"
+    )
+    fingerprint_payload = dict(report)
+    fingerprint_payload.pop("selection_fingerprint_sha256", None)
+    if canonical_json_sha(fingerprint_payload) != fingerprint:
+        raise SystemExit("stock ABI preflight selection fingerprint mismatch")
+    violating = report.get("violating_packages")
+    if violating != list(NATIVE_HANDOFF_EXPECTED_STOCK_VIOLATING_PACKAGES):
+        raise SystemExit("stock ABI preflight violating package set differs from the fixed selective-rebuild boundary")
+    return report
+
+
+def load_native_rebuild_handoff(
+    path: Path,
+    *,
+    prefix: Path,
+    lock_path: Path,
+    prefix_evidence_path: Path,
+    stock_abi_preflight_path: Path,
+    records: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"native rebuild handoff is missing or is not a regular file: {path}")
+    payload = read_json(path)
+    if set(payload) != {
+        "format_version",
+        "kind",
+        "status",
+        "source_rebuild_provenance_eligible",
+        "inputs",
+        "conditional_omissions",
+        "replacements",
+        "qualification",
+    }:
+        raise SystemExit("native rebuild handoff has unexpected or missing top-level fields")
+    if (
+        payload.get("format_version") != NATIVE_HANDOFF_FORMAT_VERSION
+        or payload.get("kind") != NATIVE_HANDOFF_KIND
+        or payload.get("status") != NATIVE_HANDOFF_STATUS
+        or payload.get("source_rebuild_provenance_eligible") is not False
+    ):
+        raise SystemExit(f"unsupported native rebuild handoff identity: {path}")
+    qualification = payload.get("qualification")
+    if qualification != {
+        "full_native_closure": "not-run",
+        "hosted_linux_glibc217": "not-run",
+        "jit": "not-run",
+        "poisson": "not-run",
+        "relocation": "not-run",
+    }:
+        raise SystemExit("native rebuild handoff must remain explicitly unqualified")
+
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        raise SystemExit("native rebuild handoff has no inputs object")
+    if set(inputs) != {
+        "package_lock_sha256",
+        "prefix_verification_sha256",
+        "stock_abi_preflight_sha256",
+        "stock_abi_selection_fingerprint_sha256",
+        "source_manifest_sha256",
+        "source_sha256",
+        "build_tool_explicit_sha256",
+        "python_builder_manifest_sha256",
+        "libxml2_build_deps_manifest_sha256",
+        "private_provider_manifest_sha256",
+        "private_provider_library_sha256",
+        "native_closure_report_sha256",
+        "native_closure",
+    }:
+        raise SystemExit("native rebuild handoff inputs object has unexpected or missing fields")
+    lock_sha = sha256_file(lock_path)
+    prefix_evidence_sha = sha256_file(prefix_evidence_path)
+    if require_sha256(inputs.get("package_lock_sha256"), "handoff package lock sha256") != lock_sha:
+        raise SystemExit("native rebuild handoff package-lock identity mismatch")
+    if require_sha256(inputs.get("prefix_verification_sha256"), "handoff prefix verification sha256") != prefix_evidence_sha:
+        raise SystemExit("native rebuild handoff prefix-verification identity mismatch")
+    stock_preflight = validate_stock_preflight_for_handoff(
+        stock_abi_preflight_path, lock_sha, prefix_evidence_sha
+    )
+    if require_sha256(inputs.get("stock_abi_preflight_sha256"), "handoff stock ABI preflight sha256") != sha256_file(stock_abi_preflight_path):
+        raise SystemExit("native rebuild handoff stock ABI preflight identity mismatch")
+    if require_sha256(inputs.get("stock_abi_selection_fingerprint_sha256"), "handoff stock ABI selection fingerprint") != stock_preflight["selection_fingerprint_sha256"]:
+        raise SystemExit("native rebuild handoff stock ABI selection fingerprint mismatch")
+
+    for key in (
+        "build_tool_explicit_sha256",
+        "python_builder_manifest_sha256",
+        "libxml2_build_deps_manifest_sha256",
+        "private_provider_manifest_sha256",
+        "private_provider_library_sha256",
+        "native_closure_report_sha256",
+    ):
+        require_sha256(inputs.get(key), f"handoff {key}")
+    checked_source_manifest_path = Path(__file__).resolve().parents[2] / NATIVE_HANDOFF_SOURCE_MANIFEST
+    checked_source_manifest_sha = sha256_file(checked_source_manifest_path)
+    if require_sha256(inputs.get("source_manifest_sha256"), "handoff source manifest sha256") != checked_source_manifest_sha:
+        raise SystemExit("native rebuild handoff source-manifest identity mismatch")
+    checked_source_manifest = read_json(checked_source_manifest_path)
+    checked_sources = checked_source_manifest.get("sources")
+    if not isinstance(checked_sources, dict):
+        raise SystemExit("checked-in native rebuild source manifest has no sources object")
+    source_hashes = inputs.get("source_sha256")
+    if not isinstance(source_hashes, dict) or tuple(sorted(source_hashes)) != tuple(sorted(NATIVE_HANDOFF_SOURCE_COMPONENTS)):
+        raise SystemExit("native rebuild handoff source hash set differs from the fixed selective-rebuild inputs")
+    for component in NATIVE_HANDOFF_SOURCE_COMPONENTS:
+        actual = require_sha256(source_hashes.get(component), f"handoff source {component} sha256")
+        expected = require_sha256(
+            checked_sources.get(component, {}).get("sha256") if isinstance(checked_sources.get(component), dict) else None,
+            f"checked-in source {component} sha256",
+        )
+        if actual != expected:
+            raise SystemExit(f"native rebuild handoff source hash mismatch for {component}")
+    native_closure = inputs.get("native_closure")
+    if not isinstance(native_closure, dict) or set(native_closure) != {
+        "dolfinx_build_flags",
+        "closure_elf_count",
+        "icu_reached_paths",
+        "icu_resolution_required",
+    } or native_closure.get("dolfinx_build_flags") != {
+        "DOLFINX_ENABLE_ADIOS2": "OFF",
+        "DOLFINX_ENABLE_KAHIP": "OFF",
+    }:
+        raise SystemExit("native rebuild handoff does not bind the required DOLFINx omission flags")
+    if not isinstance(native_closure.get("icu_reached_paths"), list) or not isinstance(
+        native_closure.get("icu_resolution_required"), bool
+    ):
+        raise SystemExit("native rebuild handoff has invalid ICU closure evidence")
+
+    omissions = payload.get("conditional_omissions")
+    if not isinstance(omissions, list) or [item.get("package") if isinstance(item, dict) else None for item in omissions] != list(NATIVE_HANDOFF_OMISSIONS):
+        raise SystemExit("native rebuild handoff conditional omission set is not the fixed KaHIP/ADIOS2/ZeroMQ set")
+    closure_sha = inputs["native_closure_report_sha256"]
+    for item in omissions:
+        assert isinstance(item, dict)
+        if set(item) != {"package", "native_closure_report_sha256", "evidence", "evidence_sha256"}:
+            raise SystemExit("native rebuild handoff omission record has unexpected or missing fields")
+        name = str(item["package"])
+        if item.get("native_closure_report_sha256") != closure_sha:
+            raise SystemExit(f"native rebuild handoff omission is not bound to closure evidence: {name}")
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "reached_paths",
+            "reverse_direct_noncandidate",
+            "staged_paths",
+            "abi_maxima",
+        } or evidence.get("reached_paths") != []:
+            raise SystemExit(f"native rebuild handoff omission has reached paths: {name}")
+        reverse = evidence.get("reverse_direct_noncandidate")
+        staged_paths = evidence.get("staged_paths")
+        if (
+            not isinstance(reverse, list)
+            or any(not isinstance(entry, dict) or entry.get("in_closure") is not False for entry in reverse)
+            or not isinstance(staged_paths, list)
+            or any(not isinstance(entry, str) for entry in staged_paths)
+        ):
+            raise SystemExit(f"native rebuild handoff omission evidence is invalid: {name}")
+        normalized_staged_paths = [
+            safe_handoff_relative(entry, f"handoff omission {name} staged path").as_posix()
+            for entry in staged_paths
+        ]
+        if staged_paths != sorted(normalized_staged_paths):
+            raise SystemExit(f"native rebuild handoff omission staged paths are not canonical and sorted: {name}")
+        evidence_sha = require_sha256(item.get("evidence_sha256"), f"handoff omission {name} evidence sha256")
+        if canonical_json_sha(evidence) != evidence_sha:
+            raise SystemExit(f"native rebuild handoff omission evidence hash mismatch: {name}")
+
+    raw_replacements = payload.get("replacements")
+    if not isinstance(raw_replacements, list) or not raw_replacements:
+        raise SystemExit("native rebuild handoff has no replacements")
+    handoff_root = path.parent.resolve()
+    replacements: list[dict[str, Any]] = []
+    destinations: list[str] = []
+    owned_cache: dict[str, set[str]] = {}
+    provider_seen = False
+    required_keys = {"destination", "payload", "owner", "sha256", "bytes", "mode", "replaces_sha256"}
+    for item in raw_replacements:
+        if not isinstance(item, dict) or set(item) != required_keys:
+            raise SystemExit(f"invalid native rebuild replacement record: {item!r}")
+        destination_relative = safe_handoff_relative(item.get("destination"), "handoff replacement destination")
+        destination_text = destination_relative.as_posix()
+        if handoff_forbidden_destination(destination_relative):
+            raise SystemExit(f"native rebuild handoff attempts CPython/NumPy ownership: {destination_text}")
+        if path_exclusion_reason(destination_relative) is not None:
+            raise SystemExit(f"native rebuild handoff replacement is outside staged runtime policy: {destination_text}")
+        owner = item.get("owner")
+        if owner not in NATIVE_HANDOFF_REPLACEMENT_OWNERS:
+            raise SystemExit(f"native rebuild handoff has unexpected replacement owner: {owner!r}")
+        payload_relative = safe_handoff_relative(item.get("payload"), "handoff replacement payload")
+        expected_payload = PurePosixPath("payload") / destination_relative
+        if payload_relative != expected_payload:
+            raise SystemExit(f"native rebuild handoff payload path is not deterministic for {destination_text}")
+        source = reject_handoff_symlink_components(handoff_root, payload_relative)
+        try:
+            source.resolve(strict=True).relative_to(handoff_root)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"native rebuild handoff payload escapes its root: {payload_relative}") from exc
+        if not source.is_file() or source.is_symlink():
+            raise SystemExit(f"native rebuild handoff payload is not a regular file: {payload_relative}")
+        expected_sha = require_sha256(item.get("sha256"), f"handoff replacement {destination_text} sha256")
+        if sha256_file(source) != expected_sha or source.stat().st_size != item.get("bytes"):
+            raise SystemExit(f"native rebuild handoff payload identity mismatch: {destination_text}")
+        mode = item.get("mode")
+        if not isinstance(mode, int) or mode < 0 or mode > 0o777 or stat.S_IMODE(source.stat().st_mode) != mode:
+            raise SystemExit(f"native rebuild handoff payload mode mismatch: {destination_text}")
+
+        if owner == NATIVE_HANDOFF_PROVIDER_OWNER:
+            if destination_text != "lib/libfenics_cxxrt.so.1" or item.get("replaces_sha256") is not None:
+                raise SystemExit("native rebuild private provider has an invalid replacement contract")
+            provider_seen = True
+        else:
+            if owner in ALWAYS_EXCLUDED_PACKAGES or owner not in records:
+                raise SystemExit(f"native rebuild handoff cannot assign replacement ownership to {owner}")
+            if owner not in owned_cache:
+                owned_cache[owner] = {entry["relative"].as_posix() for entry in package_owned_paths(records[owner])}
+            if destination_text not in owned_cache[owner]:
+                raise SystemExit(f"native rebuild replacement is not stock-owned by {owner}: {destination_text}")
+            stock = prefix / Path(*destination_relative.parts)
+            if not stock.is_file() or stock.is_symlink():
+                raise SystemExit(f"native rebuild replacement stock destination is not a regular file: {owner}: {destination_text}")
+            replaces_sha = require_sha256(
+                item.get("replaces_sha256"), f"handoff replacement {destination_text} stock sha256"
+            )
+            if sha256_file(stock) != replaces_sha:
+                raise SystemExit(f"native rebuild replacement stock identity mismatch: {owner}: {destination_text}")
+        destinations.append(destination_text)
+        replacements.append(dict(item) | {"source": source, "relative": destination_relative})
+
+    if destinations != sorted(destinations) or len(destinations) != len(set(destinations)):
+        raise SystemExit("native rebuild handoff replacements must be uniquely sorted by destination")
+    if not provider_seen:
+        raise SystemExit("native rebuild handoff is missing the private C++ provider replacement")
+    provider_record = next(item for item in replacements if item["owner"] == NATIVE_HANDOFF_PROVIDER_OWNER)
+    if inputs["private_provider_library_sha256"] != provider_record["sha256"]:
+        raise SystemExit("native rebuild handoff provider input hash differs from staged provider bytes")
+
+    return {
+        "manifest": payload,
+        "manifest_sha256": sha256_file(path),
+        "replacements": replacements,
+        "replacement_destinations": set(destinations),
+        "omitted_packages": set(NATIVE_HANDOFF_OMISSIONS),
+        "stock_preflight": stock_preflight,
+    }
+
+
+def stage_native_rebuild_replacements(
+    stage_root: Path,
+    private_prefix: Path,
+    handoff: dict[str, Any],
+    owners: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    staged: list[dict[str, Any]] = []
+    for item in handoff["replacements"]:
+        relative: PurePosixPath = item["relative"]
+        destination = private_prefix / Path(*relative.parts)
+        if destination.exists() or destination.is_symlink():
+            raise SystemExit(f"native rebuild replacement destination was already staged: {relative}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item["source"], destination, follow_symlinks=False)
+        destination.chmod(int(item["mode"]))
+        if destination.is_symlink() or sha256_file(destination) != item["sha256"]:
+            raise SystemExit(f"native rebuild replacement changed while staging: {relative}")
+        staged_rel = destination.relative_to(stage_root).as_posix()
+        owners[staged_rel] = [str(item["owner"])]
+        staged.append({key: item[key] for key in required_handoff_stage_fields()})
+    return staged
+
+
+def required_handoff_stage_fields() -> tuple[str, ...]:
+    return ("destination", "owner", "sha256", "bytes", "mode", "replaces_sha256")
+
+
 def copy_path(source: Path, destination: Path, source_prefix: Path, private_prefix: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
@@ -759,11 +1122,15 @@ def relocate_metadata_prefixes(
     records: dict[str, dict[str, Any]],
     retained_packages: list[str],
     owners: dict[str, list[str]],
+    replacement_destinations: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
+    replacement_destinations = replacement_destinations or set()
     for name in retained_packages:
         for metadata in package_cache_prefix_entries(package_cache, records[name]):
             installed_relative: PurePosixPath = metadata["installed_relative"]
+            if installed_relative.as_posix() in replacement_destinations:
+                continue
             if installed_relative == GCC_SPECS_RELATIVE and name == "conda-gcc-specs":
                 continue
             staged = private_prefix / Path(*installed_relative.parts)
@@ -1439,6 +1806,10 @@ def main() -> int:
         "--abi-preflight-evidence",
         help="write deterministic locked-stock native ABI selection evidence before rejecting violations",
     )
+    parser.add_argument(
+        "--native-rebuild-handoff",
+        help="validated unqualified native-rebuild candidate handoff produced by rebuild_fenics_native.py",
+    )
     parser.add_argument("--version", default="0.1.0")
     parser.add_argument("--producer-revision", default=os.environ.get("PRODUCER_REVISION", os.environ.get("GITHUB_SHA", "local")))
     args = parser.parse_args()
@@ -1454,6 +1825,9 @@ def main() -> int:
     base = Path(args.base_runtime).resolve()
     base_qualification = Path(args.base_qualification).resolve()
     output = Path(args.output).resolve()
+    native_rebuild_handoff_path = (
+        Path(args.native_rebuild_handoff).resolve() if args.native_rebuild_handoff else None
+    )
     bootstrap_source = Path(__file__).resolve().parents[2] / "runtime" / "linux" / "fenics_embed_runtime.py"
     archive_helper = Path(__file__).resolve().parents[1] / "common" / "archive_runtime.py"
     for required in (prefix, evidence_path, package_cache, lock_path, base, base_qualification, bootstrap_source, archive_helper):
@@ -1466,6 +1840,19 @@ def main() -> int:
     base_info = validate_base_runtime(base, base_qualification)
     base_site = base / "lib" / "python3.12" / "site-packages"
     numpy_identity = numpy_tree_identity(base)
+    native_rebuild_handoff: dict[str, Any] | None = None
+    if native_rebuild_handoff_path is not None:
+        if args.abi_preflight_evidence is None:
+            raise SystemExit("--native-rebuild-handoff requires --abi-preflight-evidence from the immutable stock failure")
+        stock_preflight_path = Path(args.abi_preflight_evidence).resolve()
+        native_rebuild_handoff = load_native_rebuild_handoff(
+            native_rebuild_handoff_path,
+            prefix=prefix,
+            lock_path=lock_path,
+            prefix_evidence_path=evidence_path,
+            stock_abi_preflight_path=stock_preflight_path,
+            records=records,
+        )
 
     output.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="fenics-linux-overlay-"))
@@ -1476,11 +1863,24 @@ def main() -> int:
     retained_packages: list[str] = []
     excluded_packages: list[str] = []
     not_staged_packages: list[str] = []
+    omitted_packages: list[str] = []
     excluded_owned_paths: list[dict[str, str]] = []
+    replacement_destinations = (
+        native_rebuild_handoff["replacement_destinations"] if native_rebuild_handoff is not None else set()
+    )
+    replacement_by_destination = (
+        {item["destination"]: item for item in native_rebuild_handoff["replacements"]}
+        if native_rebuild_handoff is not None
+        else {}
+    )
+    staged_native_replacements: list[dict[str, Any]] = []
 
     try:
         for lock_record in lock["packages"]:
             name = str(lock_record["name"])
+            if native_rebuild_handoff is not None and name in native_rebuild_handoff["omitted_packages"]:
+                omitted_packages.append(name)
+                continue
             if package_excluded(name, base_site):
                 excluded_packages.append(name)
                 continue
@@ -1495,6 +1895,15 @@ def main() -> int:
                     excluded_owned_paths.append(
                         {"package": name, "path": relative.as_posix(), "reason": reason}
                     )
+                    continue
+                replacement = replacement_by_destination.get(relative.as_posix())
+                if replacement is not None:
+                    if replacement["owner"] != name:
+                        raise SystemExit(
+                            f"native rebuild replacement owner differs from locked stock owner: "
+                            f"{relative}: {replacement['owner']} != {name}"
+                        )
+                    contributed = True
                     continue
                 source = prefix / Path(*relative.parts)
                 if not source.exists() and not source.is_symlink():
@@ -1517,6 +1926,16 @@ def main() -> int:
                 retained_packages.append(name)
             else:
                 not_staged_packages.append(name)
+
+        if native_rebuild_handoff is not None:
+            staged_native_replacements = stage_native_rebuild_replacements(
+                stage_root, private_prefix, native_rebuild_handoff, owners
+            )
+            retained_set = set(retained_packages)
+            for item in staged_native_replacements:
+                owner = str(item["owner"])
+                if owner != NATIVE_HANDOFF_PROVIDER_OWNER and owner not in retained_set:
+                    raise SystemExit(f"native rebuild replacement owner was not retained from the lock: {owner}")
 
         bootstrap = stage_root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
         bootstrap.parent.mkdir(parents=True, exist_ok=True)
@@ -1557,6 +1976,7 @@ def main() -> int:
             records,
             retained_packages,
             owners,
+            replacement_destinations,
         )
         gcc_specs = relocate_conda_gcc_specs(
             private_prefix,
@@ -1579,7 +1999,11 @@ def main() -> int:
             private_prefix,
             base_info["provenance"],
             owners,
-            Path(args.abi_preflight_evidence).resolve() if args.abi_preflight_evidence else None,
+            (
+                None
+                if native_rebuild_handoff is not None
+                else Path(args.abi_preflight_evidence).resolve() if args.abi_preflight_evidence else None
+            ),
             sha256_file(lock_path),
             sha256_file(evidence_path),
         )
@@ -1592,18 +2016,67 @@ def main() -> int:
         shutil.copy2(evidence_path, prefix_evidence_copy)
         owners[prefix_evidence_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
 
+        native_rebuild_candidate: dict[str, Any] | None = None
+        if native_rebuild_handoff is not None:
+            assert native_rebuild_handoff_path is not None
+            assert args.abi_preflight_evidence is not None
+            handoff_copy = provenance_root / "native-rebuild-handoff.json"
+            shutil.copy2(native_rebuild_handoff_path, handoff_copy)
+            owners[handoff_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+            stock_preflight_copy = provenance_root / "stock-native-abi-preflight.json"
+            shutil.copy2(Path(args.abi_preflight_evidence).resolve(), stock_preflight_copy)
+            owners[stock_preflight_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+            handoff_manifest = native_rebuild_handoff["manifest"]
+            native_rebuild_candidate = {
+                "status": NATIVE_HANDOFF_STATUS,
+                "source_rebuild_provenance_eligible": False,
+                "handoff": {
+                    "path": handoff_copy.relative_to(stage_root).as_posix(),
+                    "sha256": native_rebuild_handoff["manifest_sha256"],
+                },
+                "stock_abi_preflight": {
+                    "path": stock_preflight_copy.relative_to(stage_root).as_posix(),
+                    "sha256": sha256_file(stock_preflight_copy),
+                    "selection_fingerprint_sha256": native_rebuild_handoff["stock_preflight"]["selection_fingerprint_sha256"],
+                },
+                "inputs": handoff_manifest["inputs"],
+                "conditional_omissions": [
+                    {
+                        "package": item["package"],
+                        "native_closure_report_sha256": item["native_closure_report_sha256"],
+                        "evidence_sha256": item["evidence_sha256"],
+                    }
+                    for item in handoff_manifest["conditional_omissions"]
+                ],
+                "replacements": staged_native_replacements,
+                "qualification": handoff_manifest["qualification"],
+            }
+
         package_summary = []
         retained_set = set(retained_packages)
         excluded_set = set(excluded_packages)
+        omitted_set = set(omitted_packages)
         for record in lock["packages"]:
             name = str(record["name"])
-            ownership = "retained" if name in retained_set else "excluded" if name in excluded_set else "not-staged"
+            ownership = (
+                "retained"
+                if name in retained_set
+                else "excluded"
+                if name in excluded_set
+                else "omitted-by-native-rebuild-candidate"
+                if name in omitted_set
+                else "not-staged"
+            )
             package_summary.append(
                 {key: record.get(key) for key in REQUIRED_FIELDS} | {"overlay_ownership": ownership}
             )
         package_provenance = {
             "format_version": 1,
-            "source": "conda-forge-exact-binary-lock",
+            "source": (
+                "conda-forge-exact-binary-lock"
+                if native_rebuild_candidate is None
+                else "conda-forge-exact-binary-lock-with-unqualified-native-rebuild-candidate"
+            ),
             "solver_used_by_packager": False,
             "source_rebuilds": [],
             "package_lock_sha256": sha256_file(lock_path),
@@ -1612,6 +2085,8 @@ def main() -> int:
             "excluded_owned_paths": excluded_owned_paths,
             "prefix_relocation": prefix_relocation,
         }
+        if native_rebuild_candidate is not None:
+            package_provenance["native_rebuild_candidate"] = native_rebuild_candidate
         package_provenance_path = provenance_root / "package-provenance.json"
         package_provenance_path.write_text(
             json.dumps(package_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1648,6 +2123,8 @@ def main() -> int:
                 "numpy_tree_sha256": numpy_identity["tree_sha256"],
             },
         }
+        if native_rebuild_candidate is not None:
+            source_provenance["native_rebuild_candidate"] = native_rebuild_candidate
         source_provenance_path = provenance_root / "source-provenance.json"
         source_provenance_path.write_text(
             json.dumps(source_provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1748,6 +2225,9 @@ def main() -> int:
             },
             "files": files,
         }
+        if native_rebuild_candidate is not None:
+            manifest["producer"]["native_rebuild_candidate"] = native_rebuild_candidate
+            manifest["producer"]["omitted_packages"] = omitted_packages
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         archive = output / asset_name
@@ -1767,6 +2247,15 @@ def main() -> int:
             "measured_max_cxxabi": census["measured_max_cxxabi"],
             "measured_max_gcc": census["measured_max_gcc"],
         }
+        if native_rebuild_candidate is not None:
+            summary["native_rebuild_candidate"] = {
+                    "status": native_rebuild_candidate["status"],
+                    "handoff_sha256": native_rebuild_candidate["handoff"]["sha256"],
+                    "replacement_count": len(native_rebuild_candidate["replacements"]),
+                    "conditional_omissions": [
+                        item["package"] for item in native_rebuild_candidate["conditional_omissions"]
+                    ],
+                }
         (output / f"{asset_name}.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

@@ -54,6 +54,16 @@ be rebuilt/reconfigured or supplied a separately qualified native provider
 before ICU is removed. Generic PETSc/HDF5 plugin `dlopen` facilities mean
 ELF `DT_NEEDED` alone cannot qualify arbitrary opt-in plugins.
 
+The version-1 native rebuild handoff is deliberately limited to the current
+six pinned source components (Basix, DOLFINx, fmt, spdlog, pugixml and
+libxml2), the two rebuilt Python wheels, and the private C++ provider. It binds
+candidate replacement bytes and the KaHIP/ADIOS2/ZeroMQ omissions to exact
+hashes while remaining `candidate-unqualified`; it does not authorize
+`source_rebuilds`. Resolving the still-live ICU edge may require adding a
+pinned curl/libcurl rebuild to a future handoff revision. The current schema
+rejects such an unknown replacement owner until its source and ownership
+evidence are defined explicitly.
+
 ## Controlled C++20 runtime feasibility, not production evidence
 
 The initial rebuilt Basix/DOLFINx prototype used a versioned private static

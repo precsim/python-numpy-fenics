@@ -16,9 +16,10 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -66,6 +67,23 @@ ABI_CEILINGS = {
     "CXXABI": (1, 3, 7),
     "GCC": (4, 8, 0),
 }
+HANDOFF_FORMAT_VERSION = 1
+HANDOFF_KIND = "linux-fenics-native-rebuild-handoff"
+HANDOFF_STATUS = "candidate-unqualified"
+HANDOFF_OMISSION_PACKAGES = ("kahip", "libadios2", "zeromq")
+HANDOFF_PROVIDER_OWNER = "python-numpy-fenics-native-provider"
+REBUILD_COMPONENT_OWNERS = {
+    "basix": "fenics-libbasix",
+    "fmt": "fmt",
+    "spdlog": "spdlog",
+    "pugixml": "pugixml",
+    "libxml2": "libxml2-16",
+    "dolfinx": "fenics-libdolfinx",
+}
+WHEEL_OWNERS = {
+    "fenics_basix": "fenics-basix",
+    "fenics_dolfinx": "fenics-dolfinx",
+}
 
 
 class InputError(RuntimeError):
@@ -94,6 +112,21 @@ def require_sha(value: object, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise InputError(f"{label} must be a lowercase SHA-256")
     return value
+
+
+def canonical_json_sha(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def safe_handoff_relative(raw: object, label: str) -> PurePosixPath:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise InputError(f"{label} must be a canonical POSIX relative path")
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != raw:
+        raise InputError(f"{label} must be a canonical POSIX relative path: {raw!r}")
+    return path
 
 
 def verify_file(path: Path, expected: object, label: str) -> dict:
@@ -338,14 +371,38 @@ def validate_native_closure_report(path: Path) -> dict:
     if not isinstance(candidates, dict):
         raise InputError("native closure proof has no candidates object")
     omitted: dict[str, dict] = {}
-    for name in ("kahip", "libadios2", "zeromq"):
+    for name in HANDOFF_OMISSION_PACKAGES:
         candidate = candidates.get(name)
         if not isinstance(candidate, dict) or candidate.get("reached_paths") != []:
             raise InputError(f"conditional omission is not proven for {name}")
         reverse = candidate.get("reverse_direct_noncandidate")
-        if not isinstance(reverse, list) or any(item.get("in_closure") is not False for item in reverse if isinstance(item, dict)):
+        if (
+            not isinstance(reverse, list)
+            or any(not isinstance(item, dict) for item in reverse)
+            or any(item.get("in_closure") is not False for item in reverse)
+        ):
             raise InputError(f"conditional omission has an in-closure reverse dependency for {name}")
-        omitted[name] = {"staged_path_count": len(candidate.get("staged_paths", [])), "abi_maxima": candidate.get("abi_maxima")}
+        staged_paths = candidate.get("staged_paths")
+        if not isinstance(staged_paths, list) or any(not isinstance(item, str) for item in staged_paths):
+            raise InputError(f"conditional omission has invalid staged paths for {name}")
+        normalized_staged_paths = sorted(
+            safe_handoff_relative(item, f"{name} omission staged path").as_posix()
+            for item in staged_paths
+        )
+        omission_evidence = {
+            "reached_paths": [],
+            "reverse_direct_noncandidate": sorted(
+                reverse, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+            ),
+            "staged_paths": normalized_staged_paths,
+            "abi_maxima": candidate.get("abi_maxima"),
+        }
+        omitted[name] = {
+            "staged_path_count": len(normalized_staged_paths),
+            "abi_maxima": candidate.get("abi_maxima"),
+            "evidence": omission_evidence,
+            "evidence_sha256": canonical_json_sha(omission_evidence),
+        }
     icu = candidates.get("icu")
     if not isinstance(icu, dict):
         raise InputError("native closure proof has no ICU candidate analysis")
@@ -579,11 +636,13 @@ def build_candidate(
     libxml2_include: Path,
     zlib_library: Path,
     lzma_library: Path,
-) -> tuple[list[Path], list[Path]]:
-    prefix, src, build, wheels, audit = roots["prefix"], roots["src"], roots["build"], roots["wheels"], roots["audit"]
+) -> tuple[list[Path], list[Path], dict[str, str]]:
+    prefix = roots["prefix"].resolve()
+    src, build, wheels, audit = roots["src"], roots["build"], roots["wheels"], roots["audit"]
     lib = prefix / "lib"
     lib.mkdir(parents=True, exist_ok=True)
     shutil.copy2(roots["inputs"] / "libfenics_cxxrt.so.1", lib / "libfenics_cxxrt.so.1")
+    install_owners: dict[str, str] = {"lib/libfenics_cxxrt.so.1": HANDOFF_PROVIDER_OWNER}
     link_root = roots["build"] / "provider-link"
     link_root.mkdir()
     (link_root / "libstdc++.so").symlink_to(lib / "libfenics_cxxrt.so.1")
@@ -619,6 +678,20 @@ def build_candidate(
         run(tools["cmake"], *common, "-S", str(source), "-B", str(bdir), f"-DCMAKE_INSTALL_PREFIX={prefix}", *extra, env=env)
         run(tools["cmake"], "--build", str(bdir), "--parallel", "4", env=env)
         run(tools["cmake"], "--install", str(bdir), env=env)
+        manifest = bdir / "install_manifest.txt"
+        if not manifest.is_file():
+            raise InputError(f"CMake install manifest is missing for {name}: {manifest}")
+        owner = REBUILD_COMPONENT_OWNERS[name]
+        for raw in manifest.read_text(encoding="utf-8").splitlines():
+            installed = Path(raw)
+            try:
+                relative = installed.relative_to(prefix).as_posix()
+            except ValueError as exc:
+                raise InputError(f"CMake install path escapes rebuild prefix for {name}: {installed}") from exc
+            previous = install_owners.get(relative)
+            if previous is not None and previous != owner:
+                raise InputError(f"rebuild install ownership collision: {relative}: {previous} vs {owner}")
+            install_owners[relative] = owner
 
     cmake_build("basix", src / "basix-0.11.0" / "cpp", [
         f"-DCMAKE_PREFIX_PATH={stock}", f"-DCMAKE_LIBRARY_PATH={stock}/lib",
@@ -686,7 +759,7 @@ def build_candidate(
     dolfinx_audit = audit / "dolfinx"
     with zipfile.ZipFile(dolfinx_wheel) as zf:
         zf.extractall(dolfinx_audit)
-    return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit]
+    return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit], install_owners
 
 
 def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path]) -> tuple[list[dict], list[dict]]:
@@ -719,6 +792,217 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
             raise InputError(f"rebuilt output retains host C++ runtime symbol versions: {record['path']}")
     wheel_records = [{"path": str(path), "sha256": sha256(path), "size": path.stat().st_size} for path in wheels]
     return elf_records, wheel_records
+
+
+def installed_package_records(prefix: Path) -> dict[str, dict]:
+    records: dict[str, dict] = {}
+    for path in sorted((prefix / "conda-meta").glob("*.json")):
+        record = load_json(path)
+        name = record.get("name")
+        if not isinstance(name, str) or not name or name in records:
+            raise InputError(f"ambiguous installed package metadata while writing handoff: {path}")
+        records[name] = record
+    return records
+
+
+def installed_owned_paths(record: dict) -> set[str]:
+    paths_data = record.get("paths_data")
+    raw_paths = paths_data.get("paths") if isinstance(paths_data, dict) else None
+    if isinstance(raw_paths, list) and raw_paths:
+        values = [item.get("_path") if isinstance(item, dict) else None for item in raw_paths]
+    else:
+        files = record.get("files")
+        if not isinstance(files, list):
+            raise InputError(f"installed package has no owned path inventory: {record.get('name')}")
+        values = files
+    result: set[str] = set()
+    for raw in values:
+        relative = safe_handoff_relative(raw, f"installed path for {record.get('name')}")
+        text = relative.as_posix()
+        if text in result:
+            raise InputError(f"installed package repeats owned path: {record.get('name')}: {text}")
+        result.add(text)
+    return result
+
+
+def handoff_runtime_prefix_path(relative: PurePosixPath) -> bool:
+    text = relative.as_posix()
+    if text.startswith("include/"):
+        return True
+    return re.fullmatch(r"lib/[^/]+\.so(?:\..*)?", text) is not None
+
+
+def ignored_build_install_path(relative: PurePosixPath) -> bool:
+    text = relative.as_posix()
+    return text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+
+
+def write_package_handoff(
+    destination: Path,
+    *,
+    roots: dict[str, Path],
+    locked_prefix: Path,
+    package_lock: Path,
+    prefix_verification: dict,
+    stock_abi_preflight: dict,
+    source_manifest: Path,
+    source_evidence: list[dict],
+    build_tool_explicit: Path,
+    python_builder_manifest: Path,
+    libxml2_build_deps_manifest: Path,
+    private_provider_manifest: Path,
+    native_closure: dict,
+    install_owners: dict[str, str],
+    wheels: list[Path],
+) -> dict:
+    """Write a deterministic, unqualified packaging handoff for candidate bytes."""
+
+    if destination.exists():
+        raise InputError(f"native rebuild handoff destination already exists: {destination}")
+    handoff_root = destination.parent
+    payload_root = handoff_root / "payload"
+    payload_root.mkdir(parents=True, exist_ok=False)
+
+    installed = installed_package_records(locked_prefix)
+    owned_by_package = {
+        name: installed_owned_paths(installed[name])
+        for name in set(REBUILD_COMPONENT_OWNERS.values()) | set(WHEEL_OWNERS.values())
+        if name in installed
+    }
+    expected_owners = set(REBUILD_COMPONENT_OWNERS.values()) | set(WHEEL_OWNERS.values())
+    if set(owned_by_package) != expected_owners:
+        missing = sorted(expected_owners - set(owned_by_package))
+        raise InputError(f"locked prefix is missing rebuilt package ownership metadata: {missing}")
+
+    replacements: dict[str, dict] = {}
+
+    def add_payload(destination_relative: PurePosixPath, owner: str, data: bytes, mode: int) -> None:
+        text = destination_relative.as_posix()
+        if text in replacements:
+            raise InputError(f"native rebuild handoff has duplicate replacement destination: {text}")
+        if owner == HANDOFF_PROVIDER_OWNER:
+            if text != "lib/libfenics_cxxrt.so.1":
+                raise InputError(f"private provider has unexpected handoff destination: {text}")
+            replaces_sha = None
+        else:
+            if owner not in owned_by_package or text not in owned_by_package[owner]:
+                raise InputError(f"candidate replacement is not owned by locked package {owner}: {text}")
+            stock = locked_prefix / Path(*destination_relative.parts)
+            if not stock.is_file() or stock.is_symlink():
+                raise InputError(f"candidate replacement stock destination is not a regular file: {owner}: {text}")
+            replaces_sha = sha256(stock)
+        payload_relative = PurePosixPath("payload") / destination_relative
+        payload = handoff_root / Path(*payload_relative.parts)
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_bytes(data)
+        payload.chmod(mode & 0o777)
+        replacements[text] = {
+            "destination": text,
+            "payload": payload_relative.as_posix(),
+            "owner": owner,
+            "sha256": sha256(payload),
+            "bytes": payload.stat().st_size,
+            "mode": mode & 0o777,
+            "replaces_sha256": replaces_sha,
+        }
+
+    for raw_relative, owner in sorted(install_owners.items()):
+        relative = safe_handoff_relative(raw_relative, "candidate install destination")
+        source = roots["prefix"] / Path(*relative.parts)
+        if source.is_symlink():
+            stock = locked_prefix / Path(*relative.parts)
+            if owner != HANDOFF_PROVIDER_OWNER and stock.is_symlink():
+                continue
+            raise InputError(f"candidate handoff does not accept symlink replacements: {relative}")
+        if not source.is_file():
+            raise InputError(f"candidate install manifest path is not a regular file: {relative}")
+        if owner != HANDOFF_PROVIDER_OWNER and not handoff_runtime_prefix_path(relative):
+            if ignored_build_install_path(relative):
+                continue
+            raise InputError(f"candidate install path is outside the runtime handoff boundary: {relative}")
+        add_payload(relative, owner, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
+
+    for wheel in sorted(wheels, key=lambda path: path.name):
+        wheel_owner = next((owner for stem, owner in WHEEL_OWNERS.items() if wheel.name.startswith(stem + "-")), None)
+        if wheel_owner is None:
+            raise InputError(f"candidate wheel has no fixed handoff owner: {wheel.name}")
+        with zipfile.ZipFile(wheel) as bundle:
+            for info in sorted(bundle.infolist(), key=lambda item: item.filename):
+                if info.is_dir():
+                    continue
+                member = safe_handoff_relative(info.filename, f"wheel member in {wheel.name}")
+                zip_mode = (info.external_attr >> 16) & 0o177777
+                if stat.S_ISLNK(zip_mode):
+                    raise InputError(f"candidate wheel contains a symlink: {wheel.name}: {member}")
+                destination_relative = PurePosixPath("lib/python3.12/site-packages") / member
+                mode = zip_mode & 0o777 or 0o644
+                add_payload(destination_relative, wheel_owner, bundle.read(info), mode)
+
+    if not replacements:
+        raise InputError("native rebuild produced no package handoff replacements")
+
+    native_closure_sha = require_sha(native_closure.get("sha256"), "native closure report sha256")
+    omissions = []
+    conditional = native_closure.get("conditional_omissions")
+    if not isinstance(conditional, dict) or tuple(conditional) != HANDOFF_OMISSION_PACKAGES:
+        raise InputError("native closure evidence does not contain the fixed conditional omission set")
+    for name in HANDOFF_OMISSION_PACKAGES:
+        evidence = conditional[name].get("evidence")
+        evidence_sha = require_sha(conditional[name].get("evidence_sha256"), f"{name} omission evidence sha256")
+        if canonical_json_sha(evidence) != evidence_sha:
+            raise InputError(f"conditional omission evidence hash mismatch for {name}")
+        omissions.append({
+            "package": name,
+            "native_closure_report_sha256": native_closure_sha,
+            "evidence": evidence,
+            "evidence_sha256": evidence_sha,
+        })
+
+    inputs = {
+        "package_lock_sha256": sha256(package_lock),
+        "prefix_verification_sha256": require_sha(
+            prefix_verification.get("verification", {}).get("sha256"), "prefix verification sha256"
+        ),
+        "stock_abi_preflight_sha256": require_sha(stock_abi_preflight.get("sha256"), "stock ABI preflight sha256"),
+        "stock_abi_selection_fingerprint_sha256": require_sha(
+            stock_abi_preflight.get("selection_fingerprint_sha256"), "stock ABI selection fingerprint"
+        ),
+        "source_manifest_sha256": sha256(source_manifest),
+        "source_sha256": {
+            str(record["component"]): require_sha(record.get("sha256"), f"source {record.get('component')} sha256")
+            for record in sorted(source_evidence, key=lambda item: str(item["component"]))
+        },
+        "build_tool_explicit_sha256": sha256(build_tool_explicit),
+        "python_builder_manifest_sha256": sha256(python_builder_manifest),
+        "libxml2_build_deps_manifest_sha256": sha256(libxml2_build_deps_manifest),
+        "private_provider_manifest_sha256": sha256(private_provider_manifest),
+        "private_provider_library_sha256": replacements["lib/libfenics_cxxrt.so.1"]["sha256"],
+        "native_closure_report_sha256": native_closure_sha,
+        "native_closure": {
+            "dolfinx_build_flags": native_closure.get("dolfinx_build_flags"),
+            "closure_elf_count": native_closure.get("closure_elf_count"),
+            "icu_reached_paths": native_closure.get("icu_reached_paths"),
+            "icu_resolution_required": native_closure.get("icu_resolution_required"),
+        },
+    }
+    payload = {
+        "format_version": HANDOFF_FORMAT_VERSION,
+        "kind": HANDOFF_KIND,
+        "status": HANDOFF_STATUS,
+        "source_rebuild_provenance_eligible": False,
+        "inputs": inputs,
+        "conditional_omissions": omissions,
+        "replacements": [replacements[key] for key in sorted(replacements)],
+        "qualification": {
+            "full_native_closure": "not-run",
+            "hosted_linux_glibc217": "not-run",
+            "jit": "not-run",
+            "poisson": "not-run",
+            "relocation": "not-run",
+        },
+    }
+    destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
 
 
 def write_provenance(path: Path, *, inputs: dict, outputs: dict, executed: bool) -> None:
@@ -858,8 +1142,10 @@ def main(argv: list[str] | None = None) -> int:
         wheels: list[Path] = []
         elf_records: list[dict] = []
         wheel_records: list[dict] = []
+        install_owners: dict[str, str] = {}
+        handoff_record: dict | None = None
         if args.execute:
-            wheels, audits = build_candidate(
+            wheels, audits, install_owners = build_candidate(
                 roots,
                 args.locked_prefix.resolve(),
                 tools,
@@ -869,6 +1155,34 @@ def main(argv: list[str] | None = None) -> int:
                 lzma_library,
             )
             elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools)
+            handoff_path = roots["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
+            handoff_payload = write_package_handoff(
+                handoff_path,
+                roots=roots,
+                locked_prefix=args.locked_prefix.resolve(),
+                package_lock=args.package_lock.resolve(),
+                prefix_verification=prefix_evidence,
+                stock_abi_preflight=stock_abi_evidence,
+                source_manifest=args.source_manifest.resolve(),
+                source_evidence=source_evidence,
+                build_tool_explicit=args.build_tool_explicit.resolve(),
+                python_builder_manifest=args.python_builder_manifest.resolve(),
+                libxml2_build_deps_manifest=args.libxml2_build_deps_manifest.resolve(),
+                private_provider_manifest=args.private_provider_manifest.resolve(),
+                native_closure=closure_evidence,
+                install_owners=install_owners,
+                wheels=wheels,
+            )
+            handoff_record = {
+                "path": str(handoff_path),
+                "sha256": sha256(handoff_path),
+                "status": handoff_payload["status"],
+                "replacement_count": len(handoff_payload["replacements"]),
+                "conditional_omissions": [item["package"] for item in handoff_payload["conditional_omissions"]],
+            }
+        provenance_outputs: dict[str, object] = {"elf": elf_records, "wheels": wheel_records}
+        if handoff_record is not None:
+            provenance_outputs["package_handoff"] = handoff_record
         provenance = roots["evidence"] / "native-rebuild-provenance.json"
         write_provenance(
             provenance,
@@ -900,11 +1214,13 @@ def main(argv: list[str] | None = None) -> int:
                 "native_closure": closure_evidence,
                 "stock_abi_preflight": stock_abi_evidence,
             },
-            outputs={"elf": elf_records, "wheels": wheel_records},
+            outputs=provenance_outputs,
             executed=args.execute,
         )
         print(f"rebuild_mode={'execute' if args.execute else 'validate-only'}")
         print(f"provenance={provenance}")
+        if handoff_record is not None:
+            print(f"package_handoff={handoff_record['path']}")
         print("source_rebuild_provenance_eligible=false")
         return 0
     except InputError as exc:
