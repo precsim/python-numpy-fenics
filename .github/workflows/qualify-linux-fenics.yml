@@ -60,6 +60,12 @@ jobs:
           echo "PRODUCER_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           mkdir -p ci-artifact build/linux-fenics-overlay dist
 
+      - name: Run Linux FEniCS native rebuild static tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
+
       - name: Pull and verify pinned manylinux2014 image
         shell: bash
         run: |
@@ -400,14 +406,17 @@ jobs:
           print("exact_lock_replay=pass")
           PY
           echo "FENICS_LOCK_FILE=$lock" >> "$GITHUB_ENV"
+          echo "FENICS_SOURCE_EXPLICIT=$source_explicit" >> "$GITHUB_ENV"
           echo "FENICS_LOCKED_PREFIX=$prefix" >> "$GITHUB_ENV"
           echo "FENICS_PACKAGE_CACHE=$package_cache" >> "$GITHUB_ENV"
           echo "FENICS_OVERLAY_EVIDENCE=$evidence" >> "$GITHUB_ENV"
 
-      - name: Package relocatable stock FEniCS overlay
+      - name: Capture required stock ABI failure evidence
         shell: bash
         run: |
           set -euo pipefail
+          preflight="$FENICS_OVERLAY_EVIDENCE/stock-native-abi-preflight.json"
+          set +e
           python3 scripts/linux/package_fenics_overlay.py \
             --prefix "$FENICS_LOCKED_PREFIX" \
             --prefix-evidence "$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
@@ -415,14 +424,172 @@ jobs:
             --lock "$FENICS_LOCK_FILE" \
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
-            --abi-preflight-evidence "$FENICS_OVERLAY_EVIDENCE/stock-native-abi-preflight.json" \
+            --abi-preflight-evidence "$preflight" \
             --output dist \
             --version 0.1.0 \
             --producer-revision "$PRODUCER_REVISION" \
-            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/package-overlay.log"
-          test -f "dist/$OVERLAY_ASSET"
-          test -f "dist/$OVERLAY_ASSET.json"
-          test -f "dist/$OVERLAY_ASSET.sha256"
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/stock-package-expected-failure.log"
+          package_status=${PIPESTATUS[0]}
+          set -e
+          if [[ "$package_status" -eq 0 ]]; then
+            echo "stock FEniCS overlay unexpectedly passed; selective rebuild prototype has no executable justification" >&2
+            exit 1
+          fi
+          test -f "$preflight"
+          python3 - "$preflight" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_packages = [
+              "fenics-basix",
+              "fenics-dolfinx",
+              "fenics-libbasix",
+              "fenics-libdolfinx",
+              "fmt",
+              "icu",
+              "kahip",
+              "libadios2",
+              "pugixml",
+              "spdlog",
+              "zeromq",
+          ]
+          assert data["format_version"] == 1
+          assert data["stage"] == "stock-binary-closure-before-selective-rebuild"
+          assert data["status"] == "fail"
+          assert data["source_rebuilds_authorized"] is False
+          assert data["violation_count"] == 164
+          assert data["violating_packages"] == expected_packages
+          assert re.fullmatch(r"[0-9a-f]{64}", data["selection_fingerprint_sha256"])
+          print(f"stock_abi_violation_count={data['violation_count']}")
+          print(f"stock_abi_selection_fingerprint={data['selection_fingerprint_sha256']}")
+          PY
+          sha256sum "$preflight" > "$FENICS_OVERLAY_EVIDENCE/stock-native-abi-preflight.sha256"
+          echo "FENICS_STOCK_ABI_PREFLIGHT=$preflight" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify pinned public native rebuild sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/linux-fenics-rebuild-sources"
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          rm -rf "$source_dir" "$prototype"
+          mkdir -p "$source_dir" "$prototype"
+          python3 scripts/linux/fetch_fenics_rebuild_sources.py \
+            --manifest locks/linux/linux-x86_64-fenics-rebuild-sources.json \
+            --output-dir "$source_dir" \
+            --evidence "$prototype/source-inputs.json" \
+            | tee "$prototype/source-fetch.log"
+          echo "FENICS_REBUILD_SOURCE_DIR=$source_dir" >> "$GITHUB_ENV"
+
+      - name: Replay and verify pinned 41-record native build-tool lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          explicit=locks/linux/linux-x86_64-fenics-build-tools-explicit.txt
+          prefix="$RUNNER_TEMP/linux-fenics-build-tools"
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          rm -rf "$prefix"
+          CONDA_SUBDIR=linux-64 "$MAMBA_EXE" create -y \
+            -p "$prefix" \
+            --file "$explicit" \
+            2>&1 | tee "$prototype/build-tool-replay.log"
+          python3 scripts/linux/verify_fenics_build_tools.py \
+            --explicit "$explicit" \
+            --source-prefix "$prefix" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --evidence "$prototype/build-tool-verification.json" \
+            --exact-prefix \
+            | tee "$prototype/build-tool-verification.log"
+          echo "FENICS_BUILD_TOOL_PREFIX=$prefix" >> "$GITHUB_ENV"
+
+      - name: Exercise pinned C++20 build toolchain offline on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          cat > "$prototype/cxx20-smoke.cpp" <<'CPP'
+          #include <concepts>
+          template <std::integral T> constexpr T twice(T value) { return value + value; }
+          static_assert(twice(21) == 42);
+          CPP
+          docker run --rm --network none \
+            --env "FENICS_BUILD_TOOL_PREFIX=$FENICS_BUILD_TOOL_PREFIX" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              "$FENICS_BUILD_TOOL_PREFIX/bin/x86_64-conda-linux-gnu-g++" \
+                -std=c++20 -Werror -c \
+                /workspace/build/linux-fenics-overlay/native-rebuild-prototype/cxx20-smoke.cpp \
+                -o /workspace/build/linux-fenics-overlay/native-rebuild-prototype/cxx20-smoke.o
+            '
+          sha256sum \
+            "$prototype/cxx20-smoke.cpp" \
+            "$prototype/cxx20-smoke.o" \
+            "$FENICS_BUILD_TOOL_PREFIX/bin/x86_64-conda-linux-gnu-g++" \
+            > "$prototype/cxx20-smoke.sha256"
+
+      - name: Validate hosted native rebuild public-input skeleton
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/rebuild"
+          rm -rf "$scratch"
+          python3 scripts/linux/rebuild_fenics_native.py \
+            --source-manifest locks/linux/linux-x86_64-fenics-rebuild-sources.json \
+            --source-dir "$FENICS_REBUILD_SOURCE_DIR" \
+            --package-lock "$FENICS_LOCK_FILE" \
+            --source-explicit "$FENICS_SOURCE_EXPLICIT" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --locked-prefix "$FENICS_LOCKED_PREFIX" \
+            --build-tool-explicit locks/linux/linux-x86_64-fenics-build-tools-explicit.txt \
+            --build-tool-prefix "$FENICS_BUILD_TOOL_PREFIX" \
+            --build-tool-package-cache "$FENICS_PACKAGE_CACHE" \
+            --stock-abi-preflight "$FENICS_STOCK_ABI_PREFLIGHT" \
+            --scratch-root "$scratch" \
+            --validate-public-inputs-only \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/public-input-validation.log"
+          test -f "$scratch/evidence/native-rebuild-provenance.json"
+          python3 - "$scratch/evidence/native-rebuild-provenance.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert data["status"] == "validated-input-skeleton"
+          assert data["source_rebuild_provenance_eligible"] is False
+          assert data["outputs"]["public_input_validation_only"] is True
+          assert data["inputs"]["deferred_full_rebuild_inputs"] == [
+              "python_builder_manifest",
+              "libxml2_build_deps_manifest",
+              "private_provider_manifest",
+              "native_closure_report",
+          ]
+          print("hosted_public_input_skeleton=pass")
+          PY
+
+      - name: Keep Linux FEniCS release gate closed until rebuilt overlay handoff exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          blocker="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/release-blockers.txt"
+          cat > "$blocker" <<'EOF'
+          Linux FEniCS selective native rebuild remains unqualified.
+          Required before the release path can proceed:
+          - reproducible pinned Python wheel-builder manifest
+          - reproducible pinned libxml2 build-dependency manifest
+          - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
+          - post-rebuild native-closure report proving KaHIP/ADIOS2/ZeroMQ omission and ICU resolution
+          - package_fenics_overlay.py handoff for rebuilt native outputs and wheels
+          - standalone glibc 2.17 relocation/JIT/PETSc/Poisson qualification
+          EOF
+          cat "$blocker" >&2
+          exit 1
 
       - name: Qualify overlay offline inside pinned glibc 2.17 container
         shell: bash

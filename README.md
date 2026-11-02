@@ -69,6 +69,18 @@ The default path is exact package reuse:
 
 A blanket FEniCS stack rebuild is not an acceptable fallback.
 
+The Linux workflow also exercises a hosted selective-rebuild prototype after
+capturing the required stock ABI failure. The prototype binds that immutable
+preflight evidence, fetches the pinned public Basix/DOLFINx dependency sources
+by SHA-256, replays the separate 41-record build-only toolchain lock, compiles a
+C++20 probe offline in the pinned glibc 2.17 image, and records a fail-closed
+public-input provenance skeleton. That skeleton is not a qualified source
+rebuild. Full execution still requires separately reproducible Python
+wheel-builder, libxml2 build-dependency, private C++ provider, and native-closure
+evidence inputs. ICU remains live in the stock native closure, and the overlay
+packager does not yet accept rebuilt native outputs, so the hosted release path
+fails closed after recording the prototype evidence.
+
 ## CI
 
 CI is GitHub Actions only. Workflows live in .github/workflows; build and

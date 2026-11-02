@@ -17,6 +17,7 @@ from scripts.linux.verify_fenics_build_tools import (
     archive_path,
     canonical_text_sha256,
     dependency_closure,
+    locate_archive,
     parse_explicit,
     verify_archives,
 )
@@ -106,6 +107,19 @@ class LinuxFenicsBuildToolLockTests(unittest.TestCase):
             (extracted / "index.json").write_text(json.dumps(record), encoding="utf-8")
             with self.assertRaisesRegex(BuildToolLockError, "SHA-256 mismatch"):
                 verify_archives(cache, [ExplicitEntry(url, "0" * 64)], {"fake": record})
+
+    def test_flat_micromamba_archive_cache_is_supported_without_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            url = "https://conda.anaconda.org/conda-forge/linux-64/fake-1.0-0.conda"
+            archive = cache / "fake-1.0-0.conda"
+            archive.write_bytes(b"archive")
+            self.assertEqual(locate_archive(cache, url), archive)
+            nested = cache / "other"
+            nested.mkdir()
+            (nested / archive.name).write_bytes(b"archive")
+            with self.assertRaisesRegex(BuildToolLockError, "expected exactly one cached archive"):
+                locate_archive(cache, url)
 
     def test_explicit_digest_is_sha256_of_canonical_text(self) -> None:
         text = EXPLICIT.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")

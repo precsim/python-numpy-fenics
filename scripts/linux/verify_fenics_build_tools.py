@@ -223,6 +223,25 @@ def archive_path(package_cache: Path, url: str) -> Path:
     return package_cache / parsed.scheme / parsed.netloc / parsed.path.lstrip("/")
 
 
+def locate_archive(package_cache: Path, url: str) -> Path:
+    """Locate one locked archive in either preserved or micromamba cache layout."""
+
+    mirrored = archive_path(package_cache, url)
+    if mirrored.is_file():
+        return mirrored
+    filename = Path(urlparse(url).path).name
+    if not filename:
+        raise BuildToolLockError(f"locked package URL has no archive filename: {url!r}")
+    matches = sorted(
+        path for path in package_cache.rglob(filename) if path.is_file() and not path.is_symlink()
+    )
+    if len(matches) != 1:
+        raise BuildToolLockError(
+            f"expected exactly one cached archive for {filename!r}, found {len(matches)}"
+        )
+    return matches[0]
+
+
 def extracted_package_path(archive: Path) -> Path:
     name = archive.name
     if name.endswith(".conda"):
@@ -244,9 +263,7 @@ def verify_archives(
     for entry in entries:
         record = by_url[entry.url]
         name = str(record["name"])
-        archive = archive_path(package_cache, entry.url)
-        if not archive.is_file():
-            raise BuildToolLockError(f"cached archive is missing for {name}: {archive}")
+        archive = locate_archive(package_cache, entry.url)
         actual_sha = sha256_file(archive)
         if actual_sha != entry.sha256:
             raise BuildToolLockError(
