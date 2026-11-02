@@ -269,7 +269,6 @@ rewrite_dylib_dep "$staged_app_executable" Python '@loader_path/../../../../Pyth
 # The pinned universal distribution includes optional architecture-specific
 # launchers. Keep only helpers usable by this output profile, and relocate
 # their framework imports before the full-tree Mach-O closure audit.
-staged_helper_executables=()
 for helper in "$runtime"/Python.framework/Versions/3.12/bin/python3.12-*; do
     [[ -f "$helper" && ! -L "$helper" ]] || continue
     if ! file -b "$helper" | grep -q 'Mach-O'; then
@@ -280,18 +279,19 @@ for helper in "$runtime"/Python.framework/Versions/3.12/bin/python3.12-*; do
         continue
     fi
     rewrite_dylib_dep "$helper" Python '@loader_path/../Python'
-    staged_helper_executables+=("$helper")
 done
 codesign --force --sign - "$tkinter_so" >/dev/null
 codesign --force --sign - "$staged_python_executable" >/dev/null
 codesign --force --sign - "$staged_app_executable" >/dev/null
-for helper in "${staged_helper_executables[@]}"; do
+for helper in "$runtime"/Python.framework/Versions/3.12/bin/python3.12-*; do
+    [[ -f "$helper" && ! -L "$helper" ]] || continue
     codesign --force --sign - "$helper" >/dev/null
 done
 codesign --verify --strict "$tkinter_so"
 codesign --verify --strict "$staged_python_executable"
 codesign --verify --strict "$staged_app_executable"
-for helper in "${staged_helper_executables[@]}"; do
+for helper in "$runtime"/Python.framework/Versions/3.12/bin/python3.12-*; do
+    [[ -f "$helper" && ! -L "$helper" ]] || continue
     codesign --verify --strict "$helper"
 done
 
@@ -302,7 +302,8 @@ for binary in "$tkinter_so" "$staged_python_executable" "$staged_app_executable"
         exit 1
     fi
 done
-for binary in "$staged_python_executable" "$staged_app_executable" "${staged_helper_executables[@]}"; do
+for binary in "$staged_python_executable" "$staged_app_executable" "$runtime"/Python.framework/Versions/3.12/bin/python3.12-*; do
+    [[ -f "$binary" && ! -L "$binary" ]] || continue
     if otool -L "$binary" | awk 'NR > 1 { print $1 }' | grep -Fq '/Library/Frameworks/Python.framework/'; then
         echo "ambient Python framework dependency remains after launcher relocation: $binary" >&2
         otool -L "$binary" >&2
