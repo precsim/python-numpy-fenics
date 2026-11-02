@@ -412,7 +412,7 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "unused-boost-shared-library"
     if re.fullmatch(r"lib/libhdf5_cpp\.so(?:\..*)?", text):
         return "unused-hdf5-cxx-binding"
-    if re.fullmatch(r"lib/libmpicxx\.so(?:\..*)?", text):
+    if text == "lib/libmpichcxx.so" or re.fullmatch(r"lib/libmpicxx\.so(?:\..*)?", text):
         return "unused-mpich-cxx-binding"
     if text in {"bin/nghttp", "bin/nghttpd", "bin/nghttpx"}:
         return "unused-nghttp2-cli"

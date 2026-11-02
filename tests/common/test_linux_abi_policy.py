@@ -43,6 +43,13 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             path_exclusion_reason(PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/libstdc++.a"))
         )
 
+    def test_pruned_mpich_cxx_binding_cannot_leave_alias(self) -> None:
+        self.assertEqual(
+            path_exclusion_reason(PurePosixPath("lib/libmpichcxx.so")),
+            "unused-mpich-cxx-binding",
+        )
+        self.assertIsNone(path_exclusion_reason(PurePosixPath("lib/libmpi.so.12")))
+
 
 if __name__ == "__main__":
     unittest.main()
