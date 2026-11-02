@@ -260,23 +260,33 @@ staged_tcl_binary="$runtime/Python.framework/Versions/3.12/lib/libtcl8.6.dylib"
 staged_tk_binary="$runtime/Python.framework/Versions/3.12/lib/libtk8.6.dylib"
 staged_python_executable="$runtime/Python.framework/Versions/3.12/bin/python3.12"
 rewrite_dylib_dep "$staged_python_executable" Python '@loader_path/../Python'
+staged_app_executable="$runtime/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+[[ -f "$staged_app_executable" ]] || {
+    echo "staged Python.app executable is missing" >&2
+    exit 1
+}
+rewrite_dylib_dep "$staged_app_executable" Python '@loader_path/../../../../Python'
 codesign --force --sign - "$tkinter_so" >/dev/null
 codesign --force --sign - "$staged_python_executable" >/dev/null
+codesign --force --sign - "$staged_app_executable" >/dev/null
 codesign --verify --strict "$tkinter_so"
 codesign --verify --strict "$staged_python_executable"
+codesign --verify --strict "$staged_app_executable"
 
-for binary in "$tkinter_so" "$staged_python_executable"; do
+for binary in "$tkinter_so" "$staged_python_executable" "$staged_app_executable"; do
     if otool -L "$binary" | grep -Eq '/Library/Frameworks/Python\.framework/.*/lib/lib(tcl|tk)8\.6\.dylib|/Library/Frameworks/(Tcl|Tk)\.framework/'; then
         echo "ambient Tcl/Tk dependency remains after relocation: $binary" >&2
         otool -L "$binary" >&2
         exit 1
     fi
 done
-if otool -L "$staged_python_executable" | awk 'NR > 1 { print $1 }' | grep -Fq '/Library/Frameworks/Python.framework/'; then
-    echo "ambient Python framework dependency remains after launcher relocation" >&2
-    otool -L "$staged_python_executable" >&2
-    exit 1
-fi
+for binary in "$staged_python_executable" "$staged_app_executable"; do
+    if otool -L "$binary" | awk 'NR > 1 { print $1 }' | grep -Fq '/Library/Frameworks/Python.framework/'; then
+        echo "ambient Python framework dependency remains after launcher relocation: $binary" >&2
+        otool -L "$binary" >&2
+        exit 1
+    fi
+done
 
 tcl_scripts="$runtime/Python.framework/Versions/3.12/lib/tcl8.6"
 tk_scripts="$runtime/Python.framework/Versions/3.12/lib/tk8.6"
