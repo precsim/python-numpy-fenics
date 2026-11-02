@@ -67,13 +67,20 @@ evidence are defined explicitly.
 The next hosted experiment isolates the first ICU branch without rebuilding
 HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with the
 conda-forge recipe's `--with-libpsl` flag changed to `--without-libpsl`, then
-requires the HDF5-rooted closure to lose both libpsl and ICU while an
-independent MPICH-rooted control still reaches hwloc, libxml2 and ICU. The
+requires the libcurl-rooted closure to lose both libpsl and ICU while HDF5
+still resolves to that rebuilt libcurl and an independent MPICH-rooted control
+still reaches hwloc, libxml2 and ICU. The
 experiment keeps HDF5 ROS3 enabled, but it deliberately removes libcurl's
 Public Suffix List feature; cookie-domain PSL validation is therefore outside
 the capability of that candidate. This result is closure evidence only and
 cannot authorize ICU omission until the separately pinned libxml2 ICU-off
-rebuild also makes the final post-rebuild closure ICU-free.
+rebuild also makes the final post-rebuild closure ICU-free. The hosted probe
+also rechecks the exact 128-record runtime replay, the exact 41-record GCC 14
+build-only replay, the stock ICU ABI failure, x86_64/glibc 2.17, and absence of
+a non-loopback default route before building from the pinned public inputs.
+The pinned feedstock is source/configuration evidence: the probe uses the
+producer's frozen GCC 14/make/pkg-config transaction rather than claiming to
+reproduce every conda-forge feedstock build-environment helper.
 
 ## Controlled C++20 runtime feasibility, not production evidence
 

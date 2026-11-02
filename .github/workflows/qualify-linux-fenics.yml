@@ -572,6 +572,9 @@ jobs:
               --locked-prefix "$FENICS_LOCKED_PREFIX" \
               --build-tool-prefix "$FENICS_BUILD_TOOL_PREFIX" \
               --base-provenance /workspace/out/linux-x64/numpy/build-provenance-linux.json \
+              --prefix-verification /workspace/build/linux-fenics-overlay/package-lock-verification.json \
+              --build-tool-verification /workspace/build/linux-fenics-overlay/native-rebuild-prototype/build-tool-verification.json \
+              --stock-abi-preflight /workspace/build/linux-fenics-overlay/stock-native-abi-preflight.json \
               --scratch-root "$scratch" \
               --evidence /workspace/build/linux-fenics-overlay/native-rebuild-prototype/icu-edge-probe.json \
             2>&1 | tee "$prototype/icu-edge-probe.log"
@@ -583,12 +586,17 @@ jobs:
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           assert data["status"] == "pass-experimental-closure-only"
           assert data["release_eligible"] is False
+          assert data["hosted_container"] == {
+              "architecture": "x86_64",
+              "glibc": "glibc 2.17",
+              "non_loopback_default_routes": [],
+          }
           assert data["runtime_lock"]["record_count"] == 128
           assert data["dt_needed_delta"]["added"] == []
           assert data["dt_needed_delta"]["removed"] and all(
               item.startswith("libpsl.so") for item in data["dt_needed_delta"]["removed"]
           )
-          candidate_names = data["candidate_hdf5_closure"]["reached_names"]
+          candidate_names = data["candidate_libcurl_closure"]["reached_names"]
           control_names = data["mpich_icu_control"]["reached_names"]
           assert not any(name.startswith(("libpsl.so", "libicu")) for name in candidate_names)
           assert any(name.startswith("libicuuc.so") for name in control_names)

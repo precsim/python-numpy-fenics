@@ -90,7 +90,7 @@
       "--with-nghttp2={locked_prefix}",
       "--without-libpsl"
     ],
-    "feedstock_delta": {
+    "configure_delta_from_feedstock": {
       "remove": [
         "--with-libpsl"
       ],
@@ -105,13 +105,12 @@
       "CXXABI": "1.3.7",
       "GCC": "4.8.0"
     },
-    "required_baseline_hdf5_reachability": [
-      "libcurl.so",
+    "required_baseline_curl_reachability": [
       "libpsl.so",
       "libicuuc.so",
       "libicudata.so"
     ],
-    "forbidden_candidate_hdf5_reachability": [
+    "forbidden_candidate_curl_reachability": [
       "libpsl.so",
       "libicuuc.so",
       "libicudata.so"

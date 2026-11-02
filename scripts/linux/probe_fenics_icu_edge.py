@@ -138,13 +138,24 @@ def load_contract(path: Path) -> dict:
     flags = probe.get("configure_flags")
     if not isinstance(flags, list) or "--without-libpsl" not in flags or "--with-libpsl" in flags:
         raise ProbeError("probe configure flags must contain only the PSL-disabling variant")
-    delta = probe.get("feedstock_delta")
+    delta = probe.get("configure_delta_from_feedstock")
     if delta != {"remove": ["--with-libpsl"], "add": ["--without-libpsl"], "other_changes": []}:
-        raise ProbeError("ICU-edge experiment must remain a one-flag feedstock delta")
+        raise ProbeError("ICU-edge experiment must remain a one-flag configure delta from the feedstock")
     ceilings = probe.get("strict_symbol_ceilings")
     expected_ceilings = {name: ".".join(map(str, value)) for name, value in ABI_CEILINGS.items()}
     if ceilings != expected_ceilings:
         raise ProbeError("ICU-edge ABI ceilings changed")
+    if probe.get("required_baseline_curl_reachability") != ["libpsl.so", "libicuuc.so", "libicudata.so"]:
+        raise ProbeError("stock libcurl closure contract changed")
+    if probe.get("forbidden_candidate_curl_reachability") != ["libpsl.so", "libicuuc.so", "libicudata.so"]:
+        raise ProbeError("candidate libcurl closure contract changed")
+    if probe.get("required_mpich_control_reachability") != [
+        "libhwloc.so",
+        "libxml2.so",
+        "libicuuc.so",
+        "libicudata.so",
+    ]:
+        raise ProbeError("MPICH ICU-control closure contract changed")
 
     capability = data.get("capability_impact")
     if not isinstance(capability, dict) or "disabled" not in str(capability.get("libcurl_public_suffix_list", "")):
@@ -187,6 +198,66 @@ def verify_runtime_lock(contract: dict, lock_path: Path) -> dict:
         "sha256": sha256_file(lock_path),
         "record_count": len(records),
         "packages": verified,
+    }
+
+
+def validate_hosted_evidence(prefix_verification: Path, build_tool_verification: Path, stock_abi_preflight: Path) -> dict:
+    prefix = load_json(prefix_verification)
+    if (
+        prefix.get("solver_used") is not False
+        or prefix.get("lock_record_count") != EXPECTED_LOCK_RECORD_COUNT
+        or prefix.get("installed_record_count") != EXPECTED_LOCK_RECORD_COUNT
+        or prefix.get("verified_package_archive_count") != EXPECTED_LOCK_RECORD_COUNT
+        or prefix.get("package_hash_verification") != "cached-package-sha256-plus-installed-record-match"
+        or prefix.get("replay_input_format") != "@EXPLICIT-url-plus-sha256"
+        or not isinstance(prefix.get("packages"), list)
+        or len(prefix["packages"]) != EXPECTED_LOCK_RECORD_COUNT
+    ):
+        raise ProbeError("hosted FEniCS prefix verification does not prove the exact 128-record locked replay")
+
+    build_tools = load_json(build_tool_verification)
+    expected_roots = {
+        "gcc_linux-64": ("14.4.0", "hc469d41_2"),
+        "gxx_linux-64": ("14.4.0", "h0047a55_2"),
+        "sysroot_linux-64": ("2.17", "h0157908_18"),
+        "pkg-config": ("0.29.2", "h1114479_1013"),
+        "make": ("4.4.1", "h1114479_4"),
+    }
+    roots = build_tools.get("roots")
+    if (
+        build_tools.get("purpose") != "linux-fenics-cxx20-build-toolchain-only"
+        or build_tools.get("build_only") is not True
+        or build_tools.get("runtime_lock_modified") is not False
+        or build_tools.get("dependency_solver_used") is not False
+        or build_tools.get("package_count") != 41
+        or build_tools.get("source_prefix_record_count") != 41
+        or build_tools.get("exact_prefix") is not True
+        or not isinstance(roots, dict)
+    ):
+        raise ProbeError("hosted build-tool verification does not prove the exact 41-record build-only replay")
+    for name, (version, build) in expected_roots.items():
+        record = roots.get(name)
+        if not isinstance(record, dict) or (record.get("version"), record.get("build")) != (version, build):
+            raise ProbeError(f"hosted build-tool verification root mismatch: {name}")
+
+    preflight = load_json(stock_abi_preflight)
+    violating = preflight.get("violating_packages")
+    if (
+        preflight.get("format_version") != 1
+        or preflight.get("stage") != "stock-binary-closure-before-selective-rebuild"
+        or preflight.get("status") != "fail"
+        or preflight.get("source_rebuilds_authorized") is not False
+        or not isinstance(violating, list)
+        or "icu" not in violating
+    ):
+        raise ProbeError("stock ABI preflight does not prove ICU is in the failing locked native closure")
+    return {
+        "prefix_verification": {"path": str(prefix_verification.resolve()), "sha256": sha256_file(prefix_verification)},
+        "build_tool_verification": {
+            "path": str(build_tool_verification.resolve()),
+            "sha256": sha256_file(build_tool_verification),
+        },
+        "stock_abi_preflight": {"path": str(stock_abi_preflight.resolve()), "sha256": sha256_file(stock_abi_preflight)},
     }
 
 
@@ -285,6 +356,28 @@ def run(args: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
     if result.returncode:
         raise ProbeError(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stdout}")
     return result
+
+
+def verify_hosted_container() -> dict:
+    architecture = run(["uname", "-m"]).stdout.strip()
+    glibc = run(["getconf", "GNU_LIBC_VERSION"]).stdout.strip()
+    if architecture != "x86_64":
+        raise ProbeError(f"ICU-edge probe requires x86_64 hosted container, got {architecture!r}")
+    if glibc != "glibc 2.17":
+        raise ProbeError(f"ICU-edge probe requires exact glibc 2.17 baseline, got {glibc!r}")
+
+    route_path = Path("/proc/net/route")
+    if not route_path.is_file():
+        raise ProbeError("ICU-edge probe cannot verify network isolation: /proc/net/route is missing")
+    rows = route_path.read_text(encoding="ascii", errors="strict").splitlines()[1:]
+    default_routes = []
+    for row in rows:
+        fields = row.split()
+        if len(fields) >= 2 and fields[1] == "00000000" and fields[0] != "lo":
+            default_routes.append(fields[0])
+    if default_routes:
+        raise ProbeError(f"ICU-edge probe requires docker --network none; default routes remain: {default_routes}")
+    return {"architecture": architecture, "glibc": glibc, "non_loopback_default_routes": default_routes}
 
 
 def is_elf(path: Path) -> bool:
@@ -458,16 +551,26 @@ def has_name_prefix(summary: dict, prefix: str) -> bool:
     return any(name.startswith(prefix) for name in summary["reached_names"])
 
 
-def validate_closure_contract(contract: dict, baseline_hdf5: dict, candidate_hdf5: dict, mpich_control: dict) -> None:
+def validate_closure_contract(
+    contract: dict,
+    baseline_curl: dict,
+    candidate_curl: dict,
+    candidate_hdf5: dict,
+    mpich_control: dict,
+) -> None:
     probe = contract["probe"]
-    missing_baseline = [prefix for prefix in probe["required_baseline_hdf5_reachability"] if not has_name_prefix(baseline_hdf5, prefix)]
+    missing_baseline = [
+        prefix for prefix in probe["required_baseline_curl_reachability"] if not has_name_prefix(baseline_curl, prefix)
+    ]
     if missing_baseline:
-        raise ProbeError(f"stock HDF5 closure no longer proves the ICU edge: missing {missing_baseline}")
+        raise ProbeError(f"stock libcurl closure no longer proves the PSL/ICU edge: missing {missing_baseline}")
     if not has_name_prefix(candidate_hdf5, "libcurl.so"):
         raise ProbeError("candidate HDF5 closure does not reach rebuilt libcurl")
-    forbidden = [prefix for prefix in probe["forbidden_candidate_hdf5_reachability"] if has_name_prefix(candidate_hdf5, prefix)]
+    forbidden = [
+        prefix for prefix in probe["forbidden_candidate_curl_reachability"] if has_name_prefix(candidate_curl, prefix)
+    ]
     if forbidden:
-        raise ProbeError(f"candidate HDF5 closure still reaches removed PSL/ICU providers: {forbidden}")
+        raise ProbeError(f"candidate libcurl closure still reaches removed PSL/ICU providers: {forbidden}")
     missing_control = [prefix for prefix in probe["required_mpich_control_reachability"] if not has_name_prefix(mpich_control, prefix)]
     if missing_control:
         raise ProbeError(f"independent MPICH->ICU control disappeared: missing {missing_control}")
@@ -521,24 +624,28 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
         if not required.exists():
             raise ProbeError(f"locked prefix is missing curl build input: {required}")
 
-    env = os.environ.copy()
-    env.update(
-        {
-            "PATH": os.pathsep.join(
-                [str(build_tool_prefix / "bin"), str(locked_prefix / "bin"), "/usr/bin", "/bin"]
-            ),
-            "CC": str(tools["cc"]),
-            "AR": str(tools["ar"]),
-            "RANLIB": str(tools["ranlib"]),
-            "PKG_CONFIG": str(tools["pkg_config"]),
-            "PKG_CONFIG_PATH": os.pathsep.join([str(locked_prefix / "lib" / "pkgconfig"), str(locked_prefix / "share" / "pkgconfig")]),
-            "PKG_CONFIG_LIBDIR": os.pathsep.join([str(locked_prefix / "lib" / "pkgconfig"), str(locked_prefix / "share" / "pkgconfig")]),
-            "CPPFLAGS": f"-I{locked_prefix / 'include'}",
-            "CFLAGS": "-O2 -fPIC",
-            "LDFLAGS": f"-L{locked_prefix / 'lib'}",
-            "LD_LIBRARY_PATH": str(locked_prefix / "lib"),
-        }
-    )
+    home = scratch / "home"
+    home.mkdir()
+    env = {
+        "PATH": os.pathsep.join([str(build_tool_prefix / "bin"), str(locked_prefix / "bin"), "/usr/bin", "/bin"]),
+        "HOME": str(home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "CC": str(tools["cc"]),
+        "AR": str(tools["ar"]),
+        "RANLIB": str(tools["ranlib"]),
+        "PKG_CONFIG": str(tools["pkg_config"]),
+        "PKG_CONFIG_PATH": os.pathsep.join(
+            [str(locked_prefix / "lib" / "pkgconfig"), str(locked_prefix / "share" / "pkgconfig")]
+        ),
+        "PKG_CONFIG_LIBDIR": os.pathsep.join(
+            [str(locked_prefix / "lib" / "pkgconfig"), str(locked_prefix / "share" / "pkgconfig")]
+        ),
+        "CPPFLAGS": f"-I{locked_prefix / 'include'}",
+        "CFLAGS": "-O2 -fPIC",
+        "LDFLAGS": f"-L{locked_prefix / 'lib'}",
+        "LD_LIBRARY_PATH": str(locked_prefix / "lib"),
+    }
     configure = [str(source_root / "configure"), f"--prefix={install_prefix}", f"--host={contract['probe']['host_triplet']}"]
     configure.extend(flag.format(locked_prefix=locked_prefix) for flag in contract["probe"]["configure_flags"])
     configure_result = run(configure, cwd=source_root, env=env)
@@ -547,7 +654,7 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
     return install_prefix, {
         "configure": configure,
         "configure_output_sha256": hashlib.sha256(configure_result.stdout.encode("utf-8")).hexdigest(),
-        "feedstock_delta": contract["probe"]["feedstock_delta"],
+        "configure_delta_from_feedstock": contract["probe"]["configure_delta_from_feedstock"],
     }
 
 
@@ -588,12 +695,17 @@ def run_probe(
     locked_prefix: Path,
     build_tool_prefix: Path,
     base_provenance: Path,
+    prefix_verification: Path,
+    build_tool_verification: Path,
+    stock_abi_preflight: Path,
     scratch: Path,
     evidence_path: Path,
 ) -> None:
     contract = load_contract(contract_path)
+    hosted_container = verify_hosted_container()
     lock_evidence = verify_runtime_lock(contract, runtime_lock)
     input_evidence = verify_input_bundle(contract, input_dir)
+    hosted_evidence = validate_hosted_evidence(prefix_verification, build_tool_verification, stock_abi_preflight)
     if scratch.exists():
         if any(scratch.iterdir()):
             raise ProbeError(f"ICU-edge scratch root must start empty: {scratch}")
@@ -620,21 +732,28 @@ def run_probe(
 
     hdf5 = find_root(locked_prefix, "libhdf5.so.*")
     mpi = find_root(locked_prefix, "libmpi.so.*")
+    baseline_curl = closure(stock_curl_path, providers, readelf, allowlist)
     baseline_hdf5 = closure(hdf5, providers, readelf, allowlist)
     candidate_providers = dict(providers)
     candidate_providers.update(candidate_aliases)
+    candidate_curl_closure = closure(candidate_curl, candidate_providers, readelf, allowlist)
     candidate_hdf5 = closure(hdf5, candidate_providers, readelf, allowlist)
     mpich_control = closure(mpi, candidate_providers, readelf, allowlist)
-    validate_closure_contract(contract, baseline_hdf5, candidate_hdf5, mpich_control)
+    validate_closure_contract(contract, baseline_curl, candidate_curl_closure, candidate_hdf5, mpich_control)
 
     candidate_path_set = {Path(raw).resolve() for raw in candidate_hdf5["paths"]}
     if candidate_curl.resolve() not in candidate_path_set:
         raise ProbeError("HDF5 candidate closure resolved libcurl somewhere other than the rebuilt provider")
-    closure_abi = audit_candidate_closure(candidate_hdf5, readelf)
+    closure_abi = audit_candidate_closure(candidate_curl_closure, readelf)
     ldd_sha256 = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix)
 
-    feature_env = os.environ.copy()
-    feature_env["LD_LIBRARY_PATH"] = os.pathsep.join([str(install_prefix / "lib"), str(locked_prefix / "lib")])
+    feature_env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(scratch / "home"),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "LD_LIBRARY_PATH": os.pathsep.join([str(install_prefix / "lib"), str(locked_prefix / "lib")]),
+    }
     curl_binary = install_prefix / "bin" / "curl"
     if not curl_binary.is_file():
         raise ProbeError("rebuilt curl installation did not produce the curl feature probe executable")
@@ -649,16 +768,20 @@ def run_probe(
         "status": "pass-experimental-closure-only",
         "release_eligible": False,
         "contract": {"path": str(contract_path.resolve()), "sha256": sha256_file(contract_path)},
+        "hosted_container": hosted_container,
         "runtime_lock": lock_evidence,
         "inputs": input_evidence,
+        "hosted_verification": hosted_evidence,
         "build": build_evidence,
         "stock_libcurl": stock_curl_audit,
         "candidate_libcurl": candidate_audit,
         "dt_needed_delta": needed_delta,
+        "baseline_libcurl_closure": {key: value for key, value in baseline_curl.items() if key != "audits"},
+        "candidate_libcurl_closure": {key: value for key, value in candidate_curl_closure.items() if key != "audits"},
         "baseline_hdf5_closure": {key: value for key, value in baseline_hdf5.items() if key != "audits"},
         "candidate_hdf5_closure": {key: value for key, value in candidate_hdf5.items() if key != "audits"},
         "mpich_icu_control": {key: value for key, value in mpich_control.items() if key != "audits"},
-        "candidate_hdf5_strict_abi": closure_abi,
+        "candidate_libcurl_strict_abi": closure_abi,
         "ldd_r_output_sha256": ldd_sha256,
         "curl_feature_line": feature_line,
         "capability_impact": contract["capability_impact"],
@@ -684,6 +807,9 @@ def main() -> int:
     probe.add_argument("--locked-prefix", type=Path, required=True)
     probe.add_argument("--build-tool-prefix", type=Path, required=True)
     probe.add_argument("--base-provenance", type=Path, required=True)
+    probe.add_argument("--prefix-verification", type=Path, required=True)
+    probe.add_argument("--build-tool-verification", type=Path, required=True)
+    probe.add_argument("--stock-abi-preflight", type=Path, required=True)
     probe.add_argument("--scratch-root", type=Path, required=True)
     probe.add_argument("--evidence", type=Path, required=True)
 
@@ -701,6 +827,9 @@ def main() -> int:
             args.locked_prefix.resolve(),
             args.build_tool_prefix.resolve(),
             args.base_provenance.resolve(),
+            args.prefix_verification.resolve(),
+            args.build_tool_verification.resolve(),
+            args.stock_abi_preflight.resolve(),
             args.scratch_root.resolve(),
             args.evidence.resolve(),
         )
