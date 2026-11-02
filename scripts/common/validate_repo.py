@@ -75,6 +75,8 @@ def main() -> int:
         ROOT / "contracts" / "runtime-manifest-v1.schema.json",
         ROOT / "contracts" / "qualification-v1.schema.json",
         ROOT / "config" / "runtime-matrix.json",
+        ROOT / "locks" / "core" / "tcltk-8.6.18.json",
+        ROOT / "scripts" / "common" / "fetch_tcltk_sources.py",
         ROOT / "locks" / "windows" / "windows-x64-fenics-explicit.txt",
         ROOT / "locks" / "windows" / "windows-x64-fenics-package-lock.json",
         ROOT / "scripts" / "windows" / "package_lock.py",
@@ -91,6 +93,29 @@ def main() -> int:
             json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             errors.append(f"invalid JSON {path.relative_to(ROOT)}: {exc}")
+
+    matrix_path = ROOT / "config" / "runtime-matrix.json"
+    tcltk_lock_path = ROOT / "locks" / "core" / "tcltk-8.6.18.json"
+    if matrix_path.is_file() and tcltk_lock_path.is_file():
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        python = matrix.get("python", {})
+        tcl_tk = matrix.get("tcl_tk", {})
+        if python != {"abi": "cp314", "consumer_baseline": "3.14.10"}:
+            errors.append("runtime matrix must pin CPython 3.14.10 / cp314")
+        if tcl_tk != {"version": "8.6.18", "ownership": "producer"}:
+            errors.append("runtime matrix must declare producer-owned Tcl/Tk 8.6.18")
+        tcltk_lock = json.loads(tcltk_lock_path.read_text(encoding="utf-8"))
+        if tcltk_lock.get("version") != "8.6.18":
+            errors.append("core Tcl/Tk lock must pin version 8.6.18")
+        sources = tcltk_lock.get("sources", {})
+        expected_tcltk = {
+            "tcl": ("tcl8.6.18-src.tar.gz", "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e"),
+            "tk": ("tk8.6.18-src.tar.gz", "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c"),
+        }
+        for component, (filename, digest) in expected_tcltk.items():
+            record = sources.get(component, {})
+            if record.get("filename") != filename or record.get("sha256") != digest:
+                errors.append(f"core Tcl/Tk lock has invalid {component} source identity")
 
     workflow_root = ROOT / ".github" / "workflows"
     if workflow_root.is_dir():

@@ -5,7 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 build="$root/build/linux-glibc217-numpy-runtime"
 default_manifest="$root/locks/linux/linux-glibc217-numpy-sources.json"
 default_output="$root/out/linux-x64/numpy"
-helper_python="/opt/python/cp312-cp312/bin/python"
+helper_python="/opt/python/cp314-cp314/bin/python"
 image_repository="quay.io/pypa/manylinux2014_x86_64"
 image_digest="sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851"
 image_ref="$image_repository@$image_digest"
@@ -104,7 +104,7 @@ case "$output_runtime/" in "$core_runtime/"*) die "NumPy output must not be nest
 case "$core_runtime/" in "$output_runtime/"*) die "core runtime must not be nested inside NumPy output" ;; esac
 
 core_provenance="$core_runtime/build-provenance-linux.json"
-core_python="$core_runtime/bin/python3.12"
+core_python="$core_runtime/bin/python3.14"
 [[ -f "$core_provenance" ]] || die "core provenance is missing: $core_provenance"
 [[ -x "$core_python" ]] || die "core CPython is missing: $core_python"
 
@@ -145,14 +145,14 @@ allowlist = baseline.get("pep599_external_allowlist")
 if not isinstance(allowlist, list) or not allowlist or allowlist != sorted(set(allowlist)):
     fail("qualified core PEP 599 allowlist is invalid")
 python = data.get("python", {})
-if python.get("implementation") != "CPython" or python.get("version") != "3.12.10" or \
-   python.get("site_packages") != "lib/python3.12/site-packages" or \
+if python.get("implementation") != "CPython" or python.get("version") != "3.14.10" or \
+   python.get("site_packages") != "lib/python3.14/site-packages" or \
    python.get("site_packages_empty") is not True or python.get("numpy_bundled") is not False:
     fail("qualified core Python provenance is not the NumPy-free baseline")
-for rel, field in (("bin/python3.12", "executable_sha256"), ("lib/libpython3.12.so.1.0", "libpython_sha256")):
+for rel, field in (("bin/python3.14", "executable_sha256"), ("lib/libpython3.14.so.1.0", "libpython_sha256")):
     path = runtime / rel
     if not path.is_file() or sha(path) != python.get(field): fail(f"core byte identity differs: {rel}")
-site = runtime / "lib/python3.12/site-packages"
+site = runtime / "lib/python3.14/site-packages"
 if not site.is_dir() or any(site.iterdir()): fail("qualified core site-packages is not empty")
 
 toolchain = data.get("toolchain", {})
@@ -250,7 +250,7 @@ def strings(value):
     elif isinstance(value,str): yield value
 records, all_text = list(dicts(manifest)), set(strings(manifest))
 if image_ref not in all_text: fail("source manifest does not bind the pinned image digest")
-if "x86_64" not in all_text or not ({"cp312","3.12"} & all_text): fail("source manifest lacks x86_64/cp312 identity")
+if "x86_64" not in all_text or not ({"cp314","3.14"} & all_text): fail("source manifest lacks x86_64/cp314 identity")
 for required in ("bridge_np252_","OPTERON","X86_V2","X86_V3"):
     if not any(required == v or required in v for v in all_text): fail(f"source manifest lacks policy: {required}")
 def record(label,digest):
@@ -351,8 +351,8 @@ import json, pathlib, sys
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 image_ref = sys.argv[2]
 expected_target = {
-    "architecture": "x86_64", "python_version": "3.12.10", "python_abi": "cp312",
-    "python_wheel_abi": "cp312-cp312",
+    "architecture": "x86_64", "python_version": "3.14.10", "python_abi": "cp314",
+    "python_wheel_abi": "cp314-cp314",
     "platform_policy": "manylinux2014_x86_64 / manylinux_2_17_x86_64", "glibc_floor": "2.17",
 }
 expected_numpy_args = [
@@ -720,7 +720,7 @@ if observed != expected:
 print("numpy_temporary_console_scripts_excluded=pass")
 PY
 
-site_packages="$output_runtime/lib/python3.12/site-packages"
+site_packages="$output_runtime/lib/python3.14/site-packages"
 [[ -d "$site_packages" && -z "$(find "$site_packages" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "core site-packages is not empty"
 cp -a "$numpy_install/numpy" "$site_packages/numpy"
 numpy_dist_info="$(find "$numpy_install" -mindepth 1 -maxdepth 1 -type d -name 'numpy-2.5.2.dist-info' -print -quit)"
@@ -784,7 +784,7 @@ PY
 
 mkdir -p "$build/isolated-home"
 env -i HOME="$build/isolated-home" PATH="/usr/bin:/bin" PYTHONDONTWRITEBYTECODE=1 \
-    "$output_runtime/bin/python3.12" -I - "$output_runtime" "$staged_provider" <<'PY'
+    "$output_runtime/bin/python3.14" -I - "$output_runtime" "$staged_provider" <<'PY'
 import pathlib,sys
 root=pathlib.Path(sys.argv[1]).resolve(); provider=pathlib.Path(sys.argv[2]).resolve()
 import numpy as np
@@ -1205,7 +1205,7 @@ elif len(corenames) == 1:
 else:
     fail(f"private OpenBLAS has no unique verification symbol: {corenames}")
 
-numpy_root = runtime / "lib/python3.12/site-packages/numpy"
+numpy_root = runtime / "lib/python3.14/site-packages/numpy"
 numpy_undefined_blas = set()
 blas_symbol_roots = ("dgemm", "sgemm", "dgesv", "sgesv", "dgetrf", "dgetrs", "cblas_", "lapacke_")
 for record in census:

@@ -11,10 +11,15 @@ on:
       - "scripts/macos/stage-core-runtime.sh"
       - "scripts/macos/stage-numpy-runtime.sh"
       - "scripts/macos/inspect-macos-runtime.sh"
+      - "scripts/macos/qualify-relocated-runtime.sh"
+      - "scripts/macos/verify-runtime-evidence.py"
+      - "scripts/macos/audit_macos_runtime.py"
       - "scripts/common/**"
+      - "locks/core/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
       - "specs/02-core-numpy-profiles.md"
+      - "tests/common/test_macos_*.py"
 
 permissions:
   contents: read
@@ -34,20 +39,20 @@ jobs:
         include:
           - target_arch: arm64
             artifact_platform: macos-arm64
-            python_asset_id: "244701302"
-            python_asset_name: python-3.12.10-darwin-arm64.tar.gz
+            python_asset_id: "678419297"
+            python_asset_name: python-3.14.10-darwin-arm64.tar.gz
             toolcache_arch: arm64
-            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_url: https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl
-            numpy_sha256: 6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb
+            numpy_wheel: numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
+            numpy_url: https://files.pythonhosted.org/packages/b9/ee/d08226fc858044355983a6e5b94f08ff6f3969e0a2b160a4a89f0ddb3445/numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
+            numpy_sha256: 9e9413326d726c2545bfa65d2c0876871e8d8386e77f992c1d426e180bbd4323
           - target_arch: x86_64
             artifact_platform: macos-x64
-            python_asset_id: "244701305"
-            python_asset_name: python-3.12.10-darwin-x64.tar.gz
+            python_asset_id: "678419298"
+            python_asset_name: python-3.14.10-darwin-x64.tar.gz
             toolcache_arch: x64
-            numpy_wheel: numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
-            numpy_url: https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl
-            numpy_sha256: 65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414
+            numpy_wheel: numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl
+            numpy_url: https://files.pythonhosted.org/packages/94/f0/6d3d933056440ebbc5e6bad92065fc6c26a48a84a36b1208580e94eea76c/numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl
+            numpy_sha256: 60e902ac295855348a5ca2ea4c89108989a9f5fddfad3dfc0a8f36b10358567e
 
     env:
       TARGET_ARCH: ${{ matrix.target_arch }}
@@ -92,7 +97,7 @@ jobs:
           asset_id = int(sys.argv[1])
           asset_name = sys.argv[2]
           destination = pathlib.Path(sys.argv[3])
-          assets = [(asset_id, asset_name), (244701301, "hashes.sha256")]
+          assets = [(asset_id, asset_name), (678419306, "hashes.sha256")]
           for current_id, expected_name in assets:
               request = urllib.request.Request(
                   f"https://api.github.com/repos/actions/python-versions/releases/assets/{current_id}",
@@ -131,10 +136,10 @@ jobs:
           tar -xzf "$CPYTHON_ARCHIVE" -C "$setup_dir"
           export AGENT_TOOLSDIRECTORY="$RUNNER_TEMP/toolcache"
           (cd "$setup_dir" && bash ./setup.sh)
-          python_real="$AGENT_TOOLSDIRECTORY/Python/3.12.10/$TOOLCACHE_ARCH/bin/python3.12"
+          python_real="$AGENT_TOOLSDIRECTORY/Python/3.14.10/$TOOLCACHE_ARCH/bin/python3.14"
           test -x "$python_real"
           if [[ "$TARGET_ARCH" == x86_64 ]]; then
-            python_launcher="$RUNNER_TEMP/python3.12-x86_64"
+            python_launcher="$RUNNER_TEMP/python3.14-x86_64"
             cat > "$python_launcher" <<EOF
           #!/bin/bash
           exec /usr/bin/arch -x86_64 "$python_real" "\$@"
@@ -147,7 +152,7 @@ jobs:
           echo "PRODUCER_PYTHON=$selected" >> "$GITHUB_ENV"
           "$selected" -I -S - <<'PY'
           import platform, struct
-          assert platform.python_version() == "3.12.10"
+          assert platform.python_version() == "3.14.10"
           assert 8 * struct.calcsize("P") == 64
           print(f"selected_machine={platform.machine()}")
           PY
@@ -161,6 +166,27 @@ jobs:
           echo "$NUMPY_WHEEL_SHA256  $wheel" | shasum -a 256 -c -
           echo "NUMPY_WHEEL=$wheel" >> "$GITHUB_ENV"
 
+      - name: Fetch locked Tcl/Tk 8.6.18 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/tcltk-8.6.18-sources"
+          python3 scripts/common/fetch_tcltk_sources.py --output-dir "$source_dir"
+          echo "TCL_SOURCE=$source_dir/tcl8.6.18-src.tar.gz" >> "$GITHUB_ENV"
+          echo "TK_SOURCE=$source_dir/tk8.6.18-src.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Fetch CPython 3.14.10 source for _tkinter rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/Python-3.14.10.tar.xz"
+          curl --fail --location --retry 3 --retry-all-errors \
+            -o "$source" \
+            https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz
+          echo "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032  $source" \
+            | shasum -a 256 -c -
+          echo "CPYTHON_SOURCE=$source" >> "$GITHUB_ENV"
+
       - name: Stage public core runtime
         shell: bash
         run: |
@@ -170,6 +196,9 @@ jobs:
             --python "$PRODUCER_PYTHON" \
             --python-archive "$CPYTHON_ARCHIVE" \
             --python-hashes "$CPYTHON_HASHES" \
+            --python-source "$CPYTHON_SOURCE" \
+            --tcl-source "$TCL_SOURCE" \
+            --tk-source "$TK_SOURCE" \
             --arch "$TARGET_ARCH"
           test -f "out/macos-$TARGET_ARCH/core/build-provenance-macos.json"
 
@@ -199,8 +228,9 @@ jobs:
             python3 scripts/common/write_runtime_manifest.py \
               --root "$root" \
               --platform "$ARTIFACT_PLATFORM" \
-              --profile "$profile"
-            archive="dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-$profile.zip"
+              --profile "$profile" \
+              --component-provenance "$root/build-provenance-macos.json"
+            archive="dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp314-$profile.zip"
             python3 scripts/common/archive_runtime.py --root "$root" --output "$archive" --format zip
             archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
             printf '%s  %s\n' "$archive_sha" "$(basename "$archive")" > "$archive.sha256"
@@ -209,11 +239,12 @@ jobs:
           python3 scripts/common/write_qualification.py \
             --platform "$ARTIFACT_PLATFORM" \
             --profile core \
-            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-core.zip" \
+            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp314-core.zip" \
             --output "dist/qualification-$ARTIFACT_PLATFORM-core.json" \
             --check pinned_cpython_asset=pass \
             --check relocated_framework=pass \
             --check tkinter=pass \
+            --check tcl_tk_8_6_18=pass \
             --check relocated_tcl_tk=pass \
             --check native_closure=pass \
             --check macos_floor=pass \
@@ -223,7 +254,7 @@ jobs:
           python3 scripts/common/write_qualification.py \
             --platform "$ARTIFACT_PLATFORM" \
             --profile numpy \
-            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp312-numpy.zip" \
+            --artifact "dist/python-runtime-v0.1.0-$ARTIFACT_PLATFORM-cp314-numpy.zip" \
             --output "dist/qualification-$ARTIFACT_PLATFORM-numpy.json" \
             --check inherited_core_identity=pass \
             --check pinned_numpy_wheel=pass \
@@ -237,7 +268,7 @@ jobs:
       - name: Upload qualified producer runtimes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: python-runtime-${{ matrix.artifact_platform }}-cp312
+          name: python-runtime-${{ matrix.artifact_platform }}-cp314
           path: |
             dist/
             out/macos-${{ matrix.target_arch }}/core/build-provenance-macos.json

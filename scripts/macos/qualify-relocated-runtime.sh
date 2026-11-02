@@ -48,8 +48,8 @@ printf '%s\n' 'raise RuntimeError("ambient sitecustomize imported")' > "$poison/
 printf '%s\n' 'raise RuntimeError("ambient usercustomize imported")' > "$poison/python/usercustomize.py"
 ditto "$runtime" "$relocated"
 
-python_executable="$relocated/Python.framework/Versions/3.12/bin/python3.12"
-python_home="$relocated/Python.framework/Versions/3.12"
+python_executable="$relocated/Python.framework/Versions/3.14/bin/python3.14"
+python_home="$relocated/Python.framework/Versions/3.14"
 tcl_library="$relocated/tcl/tcl8.6"
 tk_library="$relocated/tcl/tk8.6"
 [[ -x "$python_executable" && -d "$tcl_library" && -d "$tk_library" ]] || {
@@ -88,7 +88,7 @@ runtime = pathlib.Path(sys.argv[1]).resolve()
 target_arch = sys.argv[2]
 profile = sys.argv[3]
 output = pathlib.Path(sys.argv[4])
-python_home = runtime / "Python.framework/Versions/3.12"
+python_home = runtime / "Python.framework/Versions/3.14"
 tcl_library = runtime / "tcl/tcl8.6"
 tk_library = runtime / "tcl/tk8.6"
 provenance = json.loads((runtime / "build-provenance-macos.json").read_text(encoding="utf-8"))
@@ -98,8 +98,10 @@ if pathlib.Path(sys.prefix).resolve() != python_home:
     raise SystemExit(f"relocated sys.prefix mismatch: {sys.prefix} != {python_home}")
 if pathlib.Path(sys.base_prefix).resolve() != python_home:
     raise SystemExit(f"relocated sys.base_prefix mismatch: {sys.base_prefix} != {python_home}")
-if pathlib.Path(sys.executable).resolve() != (python_home / "bin/python3.12"):
+if pathlib.Path(sys.executable).resolve() != (python_home / "bin/python3.14"):
     raise SystemExit(f"relocated executable mismatch: {sys.executable}")
+if platform.python_version() != "3.14.10":
+    raise SystemExit(f"relocated CPython version mismatch: {platform.python_version()}")
 if platform.machine() != target_arch:
     raise SystemExit(f"relocated architecture mismatch: {platform.machine()} != {target_arch}")
 if (runtime / "RUNTIME_PROFILE").read_text(encoding="utf-8").strip() != profile:
@@ -107,6 +109,8 @@ if (runtime / "RUNTIME_PROFILE").read_text(encoding="utf-8").strip() != profile:
 
 interp = tkinter.Tcl()
 tcl_version = interp.eval("info patchlevel")
+if tcl_version != "8.6.18":
+    raise SystemExit(f"relocated Tcl patchlevel is not 8.6.18: {tcl_version}")
 tcl_info_library = pathlib.Path(interp.eval("info library")).resolve()
 if tcl_info_library != tcl_library:
     raise SystemExit(f"relocated Tcl script root mismatch: {tcl_info_library} != {tcl_library}")
@@ -116,11 +120,13 @@ if pathlib.Path(os.environ.get("TK_LIBRARY", "")).resolve() != tk_library:
     raise SystemExit("TK_LIBRARY does not identify relocated scripts")
 if not (tk_library / "tk.tcl").is_file():
     raise SystemExit("relocated Tk script root is incomplete")
-if str(_tkinter.TCL_VERSION) != str(tcl_tk.get("tcl_api_version")):
+if tcl_tk.get("version") != "8.6.18":
+    raise SystemExit("staged Tcl/Tk provenance is not pinned to 8.6.18")
+if str(_tkinter.TCL_VERSION) != "8.6" or str(_tkinter.TCL_VERSION) != str(tcl_tk.get("tcl_api_version")):
     raise SystemExit("relocated Tcl API version differs from staged provenance")
-if str(_tkinter.TK_VERSION) != str(tcl_tk.get("tk_api_version")):
+if str(_tkinter.TK_VERSION) != "8.6" or str(_tkinter.TK_VERSION) != str(tcl_tk.get("tk_api_version")):
     raise SystemExit("relocated Tk API version differs from staged provenance")
-if tcl_version != str(tcl_tk.get("tcl_runtime_version")):
+if tcl_version != "8.6.18" or tcl_version != str(tcl_tk.get("tcl_runtime_version")):
     raise SystemExit("relocated Tcl runtime version differs from staged provenance")
 tk_text = (tk_library / "tk.tcl").read_text(encoding="utf-8", errors="strict")
 tk_versions = re.findall(
@@ -129,7 +135,11 @@ tk_versions = re.findall(
     re.MULTILINE,
 )
 tk_versions = list(dict.fromkeys(tk_versions))
-if len(tk_versions) != 1 or tk_versions[0] != str(tcl_tk.get("tk_runtime_version")):
+if (
+    len(tk_versions) != 1
+    or tk_versions[0] != "8.6.18"
+    or tk_versions[0] != str(tcl_tk.get("tk_runtime_version"))
+):
     raise SystemExit(
         f"relocated Tk script version differs from staged provenance: {tk_versions!r}"
     )
@@ -157,6 +167,21 @@ provider_sha = {
 if provider_sha["tcl"] != provider_hashes.get("tcl") or provider_sha["tk"] != provider_hashes.get("tk"):
     raise SystemExit("relocated Tcl/Tk provider bytes differ from staged provenance")
 
+mapped_tcl_tk = set()
+for path in images:
+    text = str(path)
+    if (
+        path.name.startswith(("libtcl", "libtk"))
+        or "/Tcl.framework/" in text
+        or "/Tk.framework/" in text
+    ):
+        mapped_tcl_tk.add(path)
+expected_tcl_tk = {expected_tcl, expected_tk}
+if mapped_tcl_tk != expected_tcl_tk:
+    raise SystemExit(
+        f"relocated runtime mapped unexpected Tcl/Tk providers: {sorted(map(str, mapped_tcl_tk))!r}"
+    )
+
 foreign = []
 for path in sorted(images):
     if path == runtime or runtime in path.parents:
@@ -173,21 +198,22 @@ payload = {
     "status": "pass",
     "profile": profile,
     "architecture": target_arch,
-    "python_prefix": "Python.framework/Versions/3.12",
+    "python_prefix": "Python.framework/Versions/3.14",
     "tcl": {
         "api_version": str(_tkinter.TCL_VERSION),
         "runtime_version": tcl_version,
         "script_root": "tcl/tcl8.6",
-        "provider": "Python.framework/Versions/3.12/lib/libtcl8.6.dylib",
+        "provider": "Python.framework/Versions/3.14/lib/libtcl8.6.dylib",
         "provider_sha256": provider_sha["tcl"],
     },
     "tk": {
         "api_version": str(_tkinter.TK_VERSION),
         "runtime_version": tk_versions[0],
         "script_root": "tcl/tk8.6",
-        "provider": "Python.framework/Versions/3.12/lib/libtk8.6.dylib",
+        "provider": "Python.framework/Versions/3.14/lib/libtk8.6.dylib",
         "provider_sha256": provider_sha["tk"],
     },
+    "tcl_tk_provider_isolation": "pass",
     "hostile_environment": {
         "python_path": "poisoned",
         "user_base": "poisoned",
@@ -199,6 +225,7 @@ output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding
 print(f"relocated_tcl_version={tcl_version}")
 print(f"relocated_tcl_provider={expected_tcl.relative_to(runtime).as_posix()}")
 print(f"relocated_tk_provider={expected_tk.relative_to(runtime).as_posix()}")
+print("relocated_tcl_tk_provider_isolation=pass")
 print("relocated_tcl_tk=pass")
 PY
 

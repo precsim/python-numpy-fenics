@@ -14,6 +14,8 @@ on:
       - "scripts/windows/pe_native_closure.py"
       - "tests/common/test_windows_core_layer.py"
       - "tests/common/test_windows_pe_native_closure.py"
+      - "locks/core/**"
+      - "scripts/common/fetch_tcltk_sources.py"
       - "scripts/common/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
@@ -36,7 +38,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: "3.12.10"
+          python-version: "3.14.10"
           architecture: x64
 
       - name: Capture exact CPython
@@ -44,7 +46,32 @@ jobs:
         run: |
           $python = (Get-Command python.exe -ErrorAction Stop).Source
           "PRODUCER_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & $python -I -S -c "import platform,struct; assert platform.python_version() == '3.12.10'; assert 8*struct.calcsize('P') == 64"
+          & $python -I -S -c "import platform,struct; assert platform.python_version() == '3.14.10'; assert 8*struct.calcsize('P') == 64"
+
+      - name: Fetch verified Tcl/Tk 8.6.18 sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $input = Join-Path $env:RUNNER_TEMP "tcltk-8.6.18-sources"
+          python scripts/common/fetch_tcltk_sources.py --lock locks/core/tcltk-8.6.18.json --output-dir $input
+          if ($LASTEXITCODE -ne 0) { throw "Tcl/Tk source fetch failed" }
+          "TCL_SOURCE=$(Join-Path $input 'tcl8.6.18-src.tar.gz')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TK_SOURCE=$(Join-Path $input 'tk8.6.18-src.tar.gz')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Fetch verified CPython 3.14.10 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $input = Join-Path $env:RUNNER_TEMP "cpython-3.14.10-source"
+          New-Item -ItemType Directory -Force -Path $input | Out-Null
+          $archive = Join-Path $input "Python-3.14.10.tgz"
+          & curl.exe --fail --location --retry 3 --retry-all-errors -o $archive https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz
+          if ($LASTEXITCODE -ne 0) { throw "CPython source download failed" }
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne "9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192") {
+            throw "CPython source SHA-256 mismatch: $sha"
+          }
+          "CPYTHON_SOURCE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Fetch and verify pinned NumPy wheel
         shell: pwsh
@@ -54,10 +81,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $input | Out-Null
           & $env:PRODUCER_PYTHON -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
           if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
-          $wheel = Join-Path $input "numpy-2.5.2-cp312-cp312-win_amd64.whl"
+          $wheel = Join-Path $input "numpy-2.5.2-cp314-cp314-win_amd64.whl"
           if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned Windows NumPy wheel is missing" }
           $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($sha -ne "28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4") {
+          if ($sha -ne "7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d") {
             throw "Pinned Windows NumPy wheel SHA-256 mismatch: $sha"
           }
           "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -73,7 +100,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\build\windows-qualification | Out-Null
-          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -Output .\out\win-x64\core
+          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -CpythonSource $env:CPYTHON_SOURCE -TclSource $env:TCL_SOURCE -TkSource $env:TK_SOURCE -TclTkLock .\locks\core\tcltk-8.6.18.json -Output .\out\win-x64\core
           python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\core --profile core --output .\out\win-x64\core\provenance\pe-native-closure-core.json --seal-manifest
           .\scripts\windows\stage-runtime.ps1 -CoreRuntime .\out\win-x64\core -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy -LayerEvidence .\build\windows-qualification\numpy-core-layer-staged.json
           python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\numpy --profile numpy --output .\out\win-x64\numpy\provenance\pe-native-closure-numpy.json --seal-manifest
@@ -103,20 +130,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          python scripts/common/archive_runtime.py --root out/win-x64/core --output dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --format zip
-          python scripts/common/archive_runtime.py --root out/win-x64/numpy --output dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --format zip
+          python scripts/common/archive_runtime.py --root out/win-x64/core --output dist/python-runtime-v0.1.0-win-x64-cp314-core.zip --format zip
+          python scripts/common/archive_runtime.py --root out/win-x64/numpy --output dist/python-runtime-v0.1.0-win-x64-cp314-numpy.zip --format zip
           foreach ($profile in @("core","numpy")) {
-            $archive = "dist/python-runtime-v0.1.0-win-x64-cp312-$profile.zip"
+            $archive = "dist/python-runtime-v0.1.0-win-x64-cp314-$profile.zip"
             $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
             Set-Content -LiteralPath "$archive.sha256" -Value "$sha  $([IO.Path]::GetFileName($archive))" -Encoding utf8NoBOM
           }
-          python scripts/common/write_qualification.py --platform win-x64 --profile core --artifact dist/python-runtime-v0.1.0-win-x64-cp312-core.zip --output dist/qualification-win-x64-core.json --check isolated_cpython=pass --check tkinter=pass --check numpy_absent=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
-          python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp312-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_identity=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+          python scripts/common/write_qualification.py --platform win-x64 --profile core --artifact dist/python-runtime-v0.1.0-win-x64-cp314-core.zip --output dist/qualification-win-x64-core.json --check isolated_cpython=pass --check tkinter=pass --check tcl_tk_8_6_18=pass --check numpy_absent=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
+          python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp314-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_identity=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified producer runtimes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: python-runtime-win-x64-cp312
+          name: python-runtime-win-x64-cp314
           path: |
             dist/
             build/windows-qualification/

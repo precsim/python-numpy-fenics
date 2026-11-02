@@ -63,7 +63,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
         self.assertFalse(lock["policy"]["dependency_resolution"])
         self.assertFalse(lock["policy"]["index_access"])
 
-    def test_python312_dependency_marker_reduction_is_fail_closed(self) -> None:
+    def test_python314_dependency_marker_reduction_is_fail_closed(self) -> None:
         requirements = [
             "packaging>=23.2",
             "pathspec>=0.10.1",
@@ -71,7 +71,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             'pytest>=7; extra == "test"',
         ]
         self.assertEqual(active_dependency_names(requirements), ("packaging", "pathspec"))
-        with self.assertRaisesRegex(BuilderInputError, "unsupported Python 3.12 dependency marker"):
+        with self.assertRaisesRegex(BuilderInputError, "unsupported Python 3.14 dependency marker"):
             active_dependency_names(['mystery>=1; sys_platform == "linux"'])
 
     def test_wheel_metadata_cannot_expand_the_locked_dependency_closure(self) -> None:
@@ -126,10 +126,10 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             runtime = root / "runtime"
-            python = runtime / "bin" / "python3.12"
+            python = runtime / "bin" / "python3.14"
             python.parent.mkdir(parents=True)
             python.write_bytes(b"qualified-cpython-fixture")
-            stdlib = runtime / "lib" / "python3.12" / "site.py"
+            stdlib = runtime / "lib" / "python3.14" / "site.py"
             stdlib.parent.mkdir(parents=True)
             stdlib.write_bytes(b"qualified-stdlib-fixture")
             revision = "1" * 40
@@ -137,16 +137,16 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                 "format_version": 1,
                 "platform": "linux-x64",
                 "profile": "numpy",
-                "python_abi": "cp312",
+                "python_abi": "cp314",
                 "producer": {"repository": "precsim/python-numpy-fenics", "revision": revision},
                 "files": [{
-                    "path": "bin/python3.12",
+                    "path": "bin/python3.14",
                     "kind": "file",
                     "bytes": python.stat().st_size,
                     "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
                     "owners": ["python-numpy-fenics"],
                 }, {
-                    "path": "lib/python3.12/site.py",
+                    "path": "lib/python3.14/site.py",
                     "kind": "file",
                     "bytes": stdlib.stat().st_size,
                     "sha256": hashlib.sha256(stdlib.read_bytes()).hexdigest(),
@@ -155,7 +155,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             }
             manifest_path = runtime / "runtime-manifest.json"
             manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-            archive = root / "python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz"
+            archive = root / "python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz"
             with tarfile.open(archive, "w:gz") as bundle:
                 # Match the workflow's `tar -C "$runtime_root" .` member layout,
                 # including the leading ./ on files beneath the archive root.
@@ -196,7 +196,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             with self.assertRaisesRegex(BuilderInputError, "file differs from runtime-manifest"):
                 validate_base_runtime(runtime, archive, qualification)
             stdlib.write_bytes(b"qualified-stdlib-fixture")
-            (runtime / "lib" / "python3.12" / "unrecorded.py").write_bytes(b"unexpected")
+            (runtime / "lib" / "python3.14" / "unrecorded.py").write_bytes(b"unexpected")
             with self.assertRaisesRegex(BuilderInputError, "file inventory differs"):
                 validate_base_runtime(runtime, archive, qualification)
 
@@ -204,7 +204,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             runtime = root / "runtime"
-            python = runtime / "bin" / "python3.12"
+            python = runtime / "bin" / "python3.14"
             python.parent.mkdir(parents=True)
             python.write_bytes(b"qualified-cpython-fixture")
             revision = "2" * 40
@@ -212,10 +212,10 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                 "format_version": 1,
                 "platform": "linux-x64",
                 "profile": "numpy",
-                "python_abi": "cp312",
+                "python_abi": "cp314",
                 "producer": {"repository": "precsim/python-numpy-fenics", "revision": revision},
                 "files": [{
-                    "path": "bin/python3.12",
+                    "path": "bin/python3.14",
                     "kind": "file",
                     "bytes": python.stat().st_size,
                     "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
@@ -224,7 +224,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             }
             manifest_path = runtime / "runtime-manifest.json"
             manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-            archive = root / "python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz"
+            archive = root / "python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz"
             with tarfile.open(archive, "w:gz") as bundle:
                 bundle.add(runtime, arcname=".")
                 escaped = tarfile.TarInfo("../escape")

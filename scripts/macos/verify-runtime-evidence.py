@@ -33,8 +33,11 @@ def verify(runtime: Path, profile: str, arch: str) -> dict[str, str]:
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     if provenance.get("runtime_profile") != profile:
         raise SystemExit("macOS provenance profile mismatch")
-    if provenance.get("python", {}).get("architecture") != arch:
+    python = provenance.get("python", {})
+    if not isinstance(python, dict) or python.get("architecture") != arch:
         raise SystemExit("macOS provenance architecture mismatch")
+    if python.get("version") != "3.14.10":
+        raise SystemExit("macOS provenance CPython version mismatch")
 
     native = provenance.get("native_closure")
     if not isinstance(native, dict) or native.get("status") != "pass":
@@ -125,19 +128,73 @@ def verify(runtime: Path, profile: str, arch: str) -> dict[str, str]:
         or evidence.get("status") != "pass"
         or evidence.get("profile") != profile
         or evidence.get("architecture") != arch
+        or evidence.get("python_prefix") != "Python.framework/Versions/3.14"
         or evidence.get("tcl", {}).get("provider")
-        != "Python.framework/Versions/3.12/lib/libtcl8.6.dylib"
+        != "Python.framework/Versions/3.14/lib/libtcl8.6.dylib"
         or evidence.get("tk", {}).get("provider")
-        != "Python.framework/Versions/3.12/lib/libtk8.6.dylib"
+        != "Python.framework/Versions/3.14/lib/libtk8.6.dylib"
         or evidence.get("tcl", {}).get("script_root") != "tcl/tcl8.6"
         or evidence.get("tk", {}).get("script_root") != "tcl/tk8.6"
+        or evidence.get("tcl", {}).get("api_version") != "8.6"
+        or evidence.get("tk", {}).get("api_version") != "8.6"
+        or evidence.get("tcl", {}).get("runtime_version") != "8.6.18"
+        or evidence.get("tk", {}).get("runtime_version") != "8.6.18"
+        or evidence.get("tcl_tk_provider_isolation") != "pass"
     ):
         raise SystemExit("macOS relocation evidence metadata is invalid")
     tcl_tk = provenance.get("tcl_tk", {})
+    if not isinstance(tcl_tk, dict):
+        raise SystemExit("macOS provenance Tcl/Tk metadata is invalid")
+    sources = tcl_tk.get("sources")
+    expected_sources = {
+        "tcl": (
+            "tcl8.6.18-src.tar.gz",
+            "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
+            "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e",
+        ),
+        "tk": (
+            "tk8.6.18-src.tar.gz",
+            "https://prdownloads.sourceforge.net/tcl/tk8.6.18-src.tar.gz",
+            "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c",
+        ),
+    }
+    if (
+        tcl_tk.get("version") != "8.6.18"
+        or tcl_tk.get("ownership") != "producer"
+        or tcl_tk.get("tcl_api_version") != "8.6"
+        or tcl_tk.get("tk_api_version") != "8.6"
+        or tcl_tk.get("tcl_runtime_version") != "8.6.18"
+        or tcl_tk.get("tk_runtime_version") != "8.6.18"
+        or tcl_tk.get("source_lock") != "locks/core/tcltk-8.6.18.json"
+        or not isinstance(sources, dict)
+    ):
+        raise SystemExit("macOS provenance is not pinned to Tcl/Tk 8.6.18")
+    for key, (filename, url, digest) in expected_sources.items():
+        record = sources.get(key)
+        if (
+            not isinstance(record, dict)
+            or record.get("filename") != filename
+            or record.get("url") != url
+            or record.get("sha256") != digest
+        ):
+            raise SystemExit(f"macOS Tcl/Tk {key} source provenance is invalid")
+    source_hashes = tcl_tk.get("source_hashes")
+    build = tcl_tk.get("build")
+    if (
+        not isinstance(source_hashes, dict)
+        or source_hashes.get("tcl") != expected_sources["tcl"][2]
+        or source_hashes.get("tk") != expected_sources["tk"][2]
+        or source_hashes.get("cpython")
+        != "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032"
+        or not isinstance(build, dict)
+        or build.get("architecture") != arch
+        or build.get("macos_floor") != "14.0"
+    ):
+        raise SystemExit("macOS Tcl/Tk/_tkinter source hash provenance is invalid")
     staged_hashes = tcl_tk.get("staged_hashes", {}) if isinstance(tcl_tk, dict) else {}
     for key, expected_path in (
-        ("tcl", "Python.framework/Versions/3.12/lib/libtcl8.6.dylib"),
-        ("tk", "Python.framework/Versions/3.12/lib/libtk8.6.dylib"),
+        ("tcl", "Python.framework/Versions/3.14/lib/libtcl8.6.dylib"),
+        ("tk", "Python.framework/Versions/3.14/lib/libtk8.6.dylib"),
     ):
         provider = runtime / expected_path
         provider_sha = sha256(provider) if provider.is_file() else None
@@ -147,8 +204,49 @@ def verify(runtime: Path, profile: str, arch: str) -> dict[str, str]:
             or staged_hashes.get(key) != provider_sha
         ):
             raise SystemExit(f"macOS relocated {key} provider identity is invalid")
+    rebuild = tcl_tk.get("tkinter_rebuild")
+    if not isinstance(rebuild, dict):
+        raise SystemExit("macOS _tkinter rebuild provenance is missing")
+    rebuild_source = rebuild.get("cpython_source")
+    rebuild_rel = rebuild.get("output_path")
     if (
-        evidence.get("tcl", {}).get("api_version") != str(tcl_tk.get("tcl_api_version"))
+        not isinstance(rebuild_source, dict)
+        or rebuild_source.get("filename") != "Python-3.14.10.tar.xz"
+        or rebuild_source.get("url")
+        != "https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz"
+        or rebuild_source.get("sha256")
+        != "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032"
+        or rebuild.get("architecture") != arch
+        or rebuild.get("macos_floor") != "14.0"
+        or rebuild.get("compiler") != "clang"
+        or not isinstance(rebuild_rel, str)
+        or not rebuild_rel.startswith(
+            "Python.framework/Versions/3.14/lib/python3.14/lib-dynload/_tkinter"
+        )
+        or not rebuild_rel.endswith(".so")
+    ):
+        raise SystemExit("macOS _tkinter rebuild identity is invalid")
+    rebuild_pure = PurePosixPath(rebuild_rel)
+    if rebuild_pure.is_absolute() or ".." in rebuild_pure.parts or not rebuild_pure.parts:
+        raise SystemExit("macOS _tkinter rebuild path is unsafe")
+    rebuilt_tkinter = runtime.joinpath(*rebuild_pure.parts)
+    rebuilt_sha = sha256(rebuilt_tkinter) if rebuilt_tkinter.is_file() else None
+    if (
+        rebuilt_sha is None
+        or rebuild.get("staged_sha256") != rebuilt_sha
+        or staged_hashes.get("tkinter_after_rewrite") != rebuilt_sha
+        or rebuild.get("compiled_sha256") != staged_hashes.get("tkinter_rebuilt_before_rewrite")
+        or rebuild.get("package_original_sha256") != staged_hashes.get("tkinter_package_original")
+        or source_hashes.get("tkinter_package") != staged_hashes.get("tkinter_package_original")
+        or rebuild.get("package_original_sha256") == rebuilt_sha
+    ):
+        raise SystemExit("macOS rebuilt _tkinter byte identity is invalid")
+    if (
+        evidence.get("tcl", {}).get("api_version") != "8.6"
+        or evidence.get("tk", {}).get("api_version") != "8.6"
+        or evidence.get("tcl", {}).get("runtime_version") != "8.6.18"
+        or evidence.get("tk", {}).get("runtime_version") != "8.6.18"
+        or evidence.get("tcl", {}).get("api_version") != str(tcl_tk.get("tcl_api_version"))
         or evidence.get("tk", {}).get("api_version") != str(tcl_tk.get("tk_api_version"))
         or evidence.get("tcl", {}).get("runtime_version") != str(tcl_tk.get("tcl_runtime_version"))
         or evidence.get("tk", {}).get("runtime_version") != str(tcl_tk.get("tk_runtime_version"))

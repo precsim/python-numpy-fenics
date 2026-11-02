@@ -28,9 +28,9 @@ PRIVATE_SOURCE_MARKERS = (
 )
 NUMPY_SITE_PREFIXES = {
     "win-x64": "Lib/site-packages/",
-    "macos-arm64": "Python.framework/Versions/3.12/lib/python3.12/site-packages/",
-    "macos-x64": "Python.framework/Versions/3.12/lib/python3.12/site-packages/",
-    "linux-x64": "lib/python3.12/site-packages/",
+    "macos-arm64": "Python.framework/Versions/3.14/lib/python3.14/site-packages/",
+    "macos-x64": "Python.framework/Versions/3.14/lib/python3.14/site-packages/",
+    "linux-x64": "lib/python3.14/site-packages/",
 }
 EXPECTED_WORKFLOW_COVERAGE = {
     "qualify-windows-core-numpy": {
@@ -68,6 +68,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
     ("win-x64", "core"): {
         "isolated_cpython": "pass",
         "tkinter": "pass",
+        "tcl_tk_8_6_18": "pass",
         "numpy_absent": "pass",
         "pe_native_closure": "pass",
         "relocation": "pass",
@@ -99,6 +100,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_cpython_asset": "pass",
         "relocated_framework": "pass",
         "tkinter": "pass",
+        "tcl_tk_8_6_18": "pass",
         "relocated_tcl_tk": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
@@ -109,6 +111,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_cpython_asset": "pass",
         "relocated_framework": "pass",
         "tkinter": "pass",
+        "tcl_tk_8_6_18": "pass",
         "relocated_tcl_tk": "pass",
         "native_closure": "pass",
         "macos_floor": "pass",
@@ -165,6 +168,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "pinned_manylinux": "pass",
         "glibc_floor": "pass",
         "isolated_cpython": "pass",
+        "tcl_tk_8_6_18": "pass",
         "native_closure": "pass",
         "numpy_absent": "pass",
         "private_consumer_checkout": "not-applicable",
@@ -692,7 +696,7 @@ def main() -> int:
             or embedded_manifest.get("version") != release_version
             or embedded_manifest.get("platform") != platform
             or embedded_manifest.get("profile") != profile
-            or embedded_manifest.get("python_abi") != "cp312"
+            or embedded_manifest.get("python_abi") != "cp314"
             or embedded_producer.get("repository") != "precsim/python-numpy-fenics"
             or embedded_producer.get("revision") != head_sha
         ):

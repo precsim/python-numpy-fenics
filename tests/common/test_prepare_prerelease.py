@@ -81,7 +81,7 @@ class PreparePrereleaseTests(unittest.TestCase):
             "format_version": 1,
             "platform": platform,
             "profile": "numpy",
-            "python_abi": "cp312",
+            "python_abi": "cp314",
             "version": "0.1.0",
             "producer": {
                 "repository": "precsim/python-numpy-fenics",
@@ -148,6 +148,9 @@ class PreparePrereleaseTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # The deferred Linux FEniCS packager still targets its existing cp312
+            # lock. Its tree identity is prefix-independent, so compare that
+            # historical base tree with the active cp314 manifest normalization.
             site = root / "lib" / "python3.12" / "site-packages"
             payloads = {
                 "numpy/__init__.py": b"numpy\n",
@@ -161,7 +164,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                 path.write_bytes(payload)
                 files.append(
                     {
-                        "path": f"lib/python3.12/site-packages/{relative}",
+                        "path": f"lib/python3.14/site-packages/{relative}",
                         "kind": "file",
                         "bytes": len(payload),
                         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -281,7 +284,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                     "version": "0.1.0",
                     "platform": platform,
                     "profile": "core",
-                    "python_abi": "cp312",
+                    "python_abi": "cp314",
                     "producer": {
                         "repository": "precsim/python-numpy-fenics",
                         "revision": revision,
@@ -311,7 +314,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                     "version": "0.1.0",
                     "platform": platform,
                     "profile": "fenics",
-                    "python_abi": "cp312",
+                    "python_abi": "cp314",
                     "producer": {
                         "repository": "precsim/python-numpy-fenics",
                         "revision": revision,
@@ -351,7 +354,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                     extension = ".tar.gz" if platform == "linux-x64" else ".zip"
                     stem = "fenics-embed-runtime" if profile == "fenics" else "python-runtime"
                     profile_suffix = "" if profile == "fenics" else f"-{profile}"
-                    artifact_name = f"{stem}-v0.1.0-{platform}-cp312{profile_suffix}{extension}"
+                    artifact_name = f"{stem}-v0.1.0-{platform}-cp314{profile_suffix}{extension}"
                     artifact = run_dir / artifact_name
                     self.write_artifact(
                         artifact,

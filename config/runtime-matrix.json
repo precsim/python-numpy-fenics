@@ -1,8 +1,12 @@
 {
   "schema_version": 1,
   "python": {
-    "abi": "cp312",
-    "consumer_baseline": "3.12.10"
+    "abi": "cp314",
+    "consumer_baseline": "3.14.10"
+  },
+  "tcl_tk": {
+    "version": "8.6.18",
+    "ownership": "producer"
   },
   "numpy": {
     "version": "2.5.2"

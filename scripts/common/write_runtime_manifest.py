@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--profile", choices=("core", "numpy", "fenics"), required=True)
     parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--component-provenance")
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -61,10 +62,10 @@ def main() -> int:
 
     payload = {
         "format_version": 1,
-        "artifact": f"python-runtime-{args.platform}-cp312-{args.profile}",
+        "artifact": f"python-runtime-{args.platform}-cp314-{args.profile}",
         "version": args.version,
         "platform": args.platform,
-        "python_abi": "cp312",
+        "python_abi": "cp314",
         "profile": args.profile,
         "producer": {
             "repository": "precsim/python-numpy-fenics",
@@ -75,6 +76,27 @@ def main() -> int:
         },
         "files": entries,
     }
+    if args.component_provenance:
+        provenance = Path(args.component_provenance).resolve()
+        if not provenance.is_file() or root not in provenance.parents:
+            raise SystemExit("component provenance must be an existing file inside the runtime root")
+        data = json.loads(provenance.read_text(encoding="utf-8-sig"))
+        tcl_tk = data.get("tcl_tk")
+        if not isinstance(tcl_tk, dict):
+            raise SystemExit("component provenance has no Tcl/Tk record")
+        version = tcl_tk.get("version")
+        if version is None:
+            versions = {tcl_tk.get("tcl_version"), tcl_tk.get("tk_version")}
+            if versions == {"8.6.18"}:
+                version = "8.6.18"
+        if version != "8.6.18" or tcl_tk.get("ownership") != "producer":
+            raise SystemExit("component provenance does not identify Tcl/Tk 8.6.18")
+        payload["tcl_tk"] = {
+            "version": "8.6.18",
+            "ownership": "producer",
+            "provenance_path": provenance.relative_to(root).as_posix(),
+            "provenance_sha256": sha256(provenance),
+        }
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"runtime_manifest={output}")
     print(f"runtime_manifest_entries={len(entries)}")

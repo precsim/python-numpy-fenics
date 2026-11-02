@@ -106,8 +106,8 @@ def validate_lock(lock_path: Path, numpy_sources_path: Path, fenics_package_lock
         raise BuilderInputError("unsupported Python builder wheel-lock schema")
     if lock.get("target") != {
         "architecture": "x86_64",
-        "python_version": "3.12.10",
-        "python_abi": "cp312",
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
         "glibc_floor": "2.17",
     }:
         raise BuilderInputError("Python builder target differs from the frozen Linux CPython contract")
@@ -159,8 +159,13 @@ def validate_lock(lock_path: Path, numpy_sources_path: Path, fenics_package_lock
             raise BuilderInputError(f"Python builder wheel URL is not the fixed public PyPI file: {name}")
 
     numpy_sources = load_json(numpy_sources_path)
-    if numpy_sources.get("target", {}).get("python_version") != "3.12.10":
-        raise BuilderInputError("NumPy source manifest does not identify CPython 3.12.10")
+    numpy_target = numpy_sources.get("target", {})
+    if (
+        numpy_target.get("python_version") != "3.14.10"
+        or numpy_target.get("python_abi") != "cp314"
+        or numpy_target.get("python_wheel_abi") != "cp314-cp314"
+    ):
+        raise BuilderInputError("NumPy source manifest does not identify CPython 3.14.10 / cp314")
     numpy_wheels = {
         normalize_name(str(record.get("name"))): record
         for record in numpy_sources.get("python_build_wheels", [])
@@ -259,7 +264,7 @@ def requirement_name(requirement: str) -> str:
 
 def active_dependency_names(requirements: list[str]) -> tuple[str, ...]:
     active: set[str] = set()
-    target_python = (3, 12)
+    target_python = (3, 14)
     for raw in requirements:
         if ";" not in raw:
             active.add(requirement_name(raw))
@@ -283,7 +288,7 @@ def active_dependency_names(requirements: list[str]) -> tuple[str, ...]:
             if applies:
                 active.add(requirement_name(requirement))
             continue
-        raise BuilderInputError(f"unsupported Python 3.12 dependency marker in wheel metadata: {raw!r}")
+        raise BuilderInputError(f"unsupported Python 3.14 dependency marker in wheel metadata: {raw!r}")
     return tuple(sorted(active))
 
 
@@ -387,15 +392,15 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
         runtime_manifest.get("format_version") != 1
         or runtime_manifest.get("platform") != "linux-x64"
         or runtime_manifest.get("profile") != "numpy"
-        or runtime_manifest.get("python_abi") != "cp312"
+        or runtime_manifest.get("python_abi") != "cp314"
     ):
-        raise BuilderInputError("base runtime manifest is not the qualified Linux x64 NumPy cp312 profile")
+        raise BuilderInputError("base runtime manifest is not the qualified Linux x64 NumPy cp314 profile")
     python_records = [
         record for record in runtime_manifest.get("files", [])
-        if isinstance(record, dict) and record.get("path") == "bin/python3.12"
+        if isinstance(record, dict) and record.get("path") == "bin/python3.14"
     ]
     if len(python_records) != 1 or python_records[0].get("kind") != "file":
-        raise BuilderInputError("base runtime manifest does not bind one regular bin/python3.12")
+        raise BuilderInputError("base runtime manifest does not bind one regular bin/python3.14")
 
     # The builder executes code from the staged base, including its stdlib and
     # shared libraries. A pinned executable alone cannot establish the staged
@@ -444,7 +449,7 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
     if actual_paths != expected_paths:
         raise BuilderInputError("staged base runtime file inventory differs from runtime-manifest.json")
 
-    base_python = base_runtime / "bin" / "python3.12"
+    base_python = base_runtime / "bin" / "python3.14"
     if not base_python.is_file() or base_python.is_symlink():
         raise BuilderInputError(f"base runtime Python is missing or not a regular file: {base_python}")
     python_sha = sha256_file(base_python)
@@ -497,8 +502,8 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
             raise BuilderInputError("qualified NumPy archive runtime manifest differs from staged base runtime")
     return {
         "profile": "numpy",
-        "python_version": "3.12.10",
-        "python_abi": "cp312",
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
         "producer_revision": runtime_revision,
         "runtime_manifest_sha256": sha256_file(runtime_manifest_path),
         "qualified_archive_sha256": qualification["artifact_sha256"],

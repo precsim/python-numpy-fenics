@@ -153,7 +153,9 @@ def parse_pe_imports(path: Path) -> PEImports:
     )
 
 
-def _runtime_manifest(runtime: Path, profile: str) -> tuple[Path, dict[str, dict[str, object]]]:
+def _runtime_manifest(
+    runtime: Path, profile: str
+) -> tuple[Path, dict[str, object], dict[str, dict[str, object]]]:
     manifest_path = runtime / "runtime-manifest.json"
     if not manifest_path.is_file():
         raise PEClosureError(f"runtime manifest is missing: {manifest_path}")
@@ -164,7 +166,7 @@ def _runtime_manifest(runtime: Path, profile: str) -> tuple[Path, dict[str, dict
         manifest.get("format_version") != 1
         or manifest.get("platform") != "win-x64"
         or manifest.get("profile") != profile
-        or manifest.get("python_abi") != "cp312"
+        or manifest.get("python_abi") != "cp314"
     ):
         raise PEClosureError("runtime manifest identity is invalid for PE closure")
     raw_files = manifest.get("files")
@@ -182,7 +184,86 @@ def _runtime_manifest(runtime: Path, profile: str) -> tuple[Path, dict[str, dict
         if key in files:
             raise PEClosureError(f"runtime manifest contains duplicate path: {key}")
         files[key] = raw
-    return manifest_path, files
+    return manifest_path, manifest, files
+
+
+def _tkinter_tcl_tk_binding(
+    manifest: dict[str, object], records: list[dict[str, object]]
+) -> dict[str, object] | None:
+    tcl_tk = manifest.get("tcl_tk")
+    if tcl_tk is None:
+        return None
+    if not isinstance(tcl_tk, dict) or tcl_tk.get("version") != "8.6.18":
+        raise PEClosureError("runtime Tcl/Tk manifest identity is invalid for PE closure")
+    providers = tcl_tk.get("providers")
+    rebuild = tcl_tk.get("tkinter_rebuild")
+    if not isinstance(providers, dict) or not isinstance(rebuild, dict):
+        raise PEClosureError("runtime Tcl/Tk manifest lacks provider/_tkinter rebuild binding")
+    tkinter_path = str(rebuild.get("path", ""))
+    if tkinter_path != "DLLs/_tkinter.pyd":
+        raise PEClosureError("runtime _tkinter rebuild path is invalid for PE closure")
+
+    by_path = {
+        str(record.get("path", "")): record
+        for record in records
+        if isinstance(record, dict)
+    }
+    tkinter = by_path.get(tkinter_path)
+    if not isinstance(tkinter, dict):
+        raise PEClosureError("rebuilt _tkinter PE image is missing from runtime closure")
+    expected_tkinter_sha = str(rebuild.get("sha256", "")).lower()
+    if (
+        len(expected_tkinter_sha) != 64
+        or str(tkinter.get("sha256", "")).lower() != expected_tkinter_sha
+    ):
+        raise PEClosureError("rebuilt _tkinter PE image differs from its rebuild provenance")
+    imports = tkinter.get("imports")
+    if not isinstance(imports, list):
+        raise PEClosureError("rebuilt _tkinter has no PE import records")
+    imports_by_name = {
+        str(record.get("name", "")).casefold(): record
+        for record in imports
+        if isinstance(record, dict)
+    }
+    forbidden = sorted(
+        name
+        for name in imports_by_name
+        if (name.startswith("tcl9") or name.startswith("tk9")) and name.endswith(".dll")
+    )
+    if forbidden:
+        raise PEClosureError(f"rebuilt _tkinter still imports Tcl/Tk 9 providers: {forbidden!r}")
+
+    bindings: dict[str, object] = {}
+    for label, dll_name in (("tcl", "tcl86t.dll"), ("tk", "tk86t.dll")):
+        provider = providers.get(label)
+        if not isinstance(provider, dict):
+            raise PEClosureError(f"runtime Tcl/Tk manifest lacks {label} provider binding")
+        expected_path = str(provider.get("path", ""))
+        expected_sha = str(provider.get("sha256", "")).lower()
+        if expected_path != f"DLLs/{dll_name}" or len(expected_sha) != 64:
+            raise PEClosureError(f"runtime {label} provider identity is invalid")
+        edge = imports_by_name.get(dll_name)
+        if not isinstance(edge, dict):
+            raise PEClosureError(f"rebuilt _tkinter does not import {dll_name}")
+        if (
+            edge.get("provider_kind") != "runtime"
+            or edge.get("provider_path") != expected_path
+            or str(edge.get("provider_sha256", "")).lower() != expected_sha
+        ):
+            raise PEClosureError(
+                f"rebuilt _tkinter {label} edge is not bound to the producer provider: {edge!r}"
+            )
+        bindings[label] = {
+            "import": dll_name,
+            "provider_path": expected_path,
+            "provider_sha256": expected_sha,
+        }
+    return {
+        "version": "8.6.18",
+        "tkinter_path": tkinter_path,
+        "tkinter_sha256": expected_tkinter_sha,
+        "providers": bindings,
+    }
 
 
 def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[str, object]:
@@ -192,7 +273,7 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
         raise PEClosureError(f"runtime does not exist: {root}")
     if not system_dir.is_dir():
         raise PEClosureError(f"Windows system directory does not exist: {system_dir}")
-    _, manifest_files = _runtime_manifest(root, profile)
+    _, manifest, manifest_files = _runtime_manifest(root, profile)
 
     pe_files: dict[str, PEImports] = {}
     pe_sha: dict[str, str] = {}
@@ -288,6 +369,7 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
         pe_tree.update(relative.encode("utf-8") + b"\0")
         pe_tree.update(pe_sha[relative].encode("ascii") + b"\n")
 
+    tkinter_binding = _tkinter_tcl_tk_binding(manifest, records)
     return {
         "format_version": 1,
         "kind": "windows-pe-native-closure",
@@ -300,6 +382,7 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
         "system_provider_edge_count": system_edges,
         "unresolved": unresolved,
         "ambiguous": ambiguous,
+        "tkinter_tcl_tk": tkinter_binding,
         "files": records,
     }
 

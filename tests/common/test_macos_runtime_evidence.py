@@ -36,8 +36,8 @@ class MacOSRuntimeAuditTests(unittest.TestCase):
     def test_nonloadable_macho_object_is_not_a_runtime_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "runtime"
-            binary = runtime / "Python.framework/Versions/3.12/bin/python3.12"
-            object_file = runtime / "Python.framework/Versions/3.12/lib/python3.12/config-3.12-darwin/python.o"
+            binary = runtime / "Python.framework/Versions/3.14/bin/python3.14"
+            object_file = runtime / "Python.framework/Versions/3.14/lib/python3.14/config-3.14-darwin/python.o"
             binary.parent.mkdir(parents=True)
             object_file.parent.mkdir(parents=True)
             binary.write_bytes(b"runtime-mach-o")
@@ -92,8 +92,8 @@ Load command 4
     def test_full_runtime_audit_resolves_bundled_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "runtime"
-            python = runtime / "Python.framework/Versions/3.12/bin/python3.12"
-            provider = runtime / "Python.framework/Versions/3.12/lib/libprivate.dylib"
+            python = runtime / "Python.framework/Versions/3.14/bin/python3.14"
+            provider = runtime / "Python.framework/Versions/3.14/lib/libprivate.dylib"
             python.parent.mkdir(parents=True)
             provider.parent.mkdir(parents=True)
             python.write_bytes(b"python-mach-o")
@@ -109,7 +109,7 @@ Load command 4
                     path = Path(args[-1])
                     dependency = (
                         "@loader_path/../lib/libprivate.dylib"
-                        if path.name == "python3.12"
+                        if path.name == "python3.14"
                         else "/usr/lib/libSystem.B.dylib"
                     )
                     return f"""
@@ -128,16 +128,16 @@ Load command 1
             self.assertEqual(payload["macho_count"], 2)
             self.assertEqual(payload["bundled_dependency_count"], 1)
             self.assertEqual(payload["system_dependency_count"], 1)
-            python_entry = next(item for item in payload["mach_o"] if item["path"].endswith("python3.12"))
+            python_entry = next(item for item in payload["mach_o"] if item["path"].endswith("python3.14"))
             self.assertEqual(
                 python_entry["dependency_resolutions"][0]["provider"],
-                "Python.framework/Versions/3.12/lib/libprivate.dylib",
+                "Python.framework/Versions/3.14/lib/libprivate.dylib",
             )
 
     def test_full_runtime_audit_rejects_minos_above_floor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "runtime"
-            python = runtime / "Python.framework/Versions/3.12/bin/python3.12"
+            python = runtime / "Python.framework/Versions/3.14/bin/python3.14"
             python.parent.mkdir(parents=True)
             python.write_bytes(b"python-mach-o")
 
@@ -162,9 +162,9 @@ Load command 0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = root / "runtime"
-            site = runtime / "Python.framework/Versions/3.12/lib/python3.12/site-packages"
+            site = runtime / "Python.framework/Versions/3.14/lib/python3.14/site-packages"
             extension = site / "numpy/_core/example.so"
-            executable = runtime / "Python.framework/Versions/3.12/bin/python3.12"
+            executable = runtime / "Python.framework/Versions/3.14/bin/python3.14"
             extension.parent.mkdir(parents=True)
             executable.parent.mkdir(parents=True)
             extension.write_bytes(b"numpy-mach-o")
@@ -202,16 +202,22 @@ Load command 1
 class MacOSRuntimeEvidenceTests(unittest.TestCase):
     def make_runtime(self, root: Path) -> Path:
         runtime = root / "runtime"
-        binary = runtime / "Python.framework/Versions/3.12/bin/python3.12"
-        provider = runtime / "Python.framework/Versions/3.12/lib/libprivate.dylib"
-        tcl_provider = runtime / "Python.framework/Versions/3.12/lib/libtcl8.6.dylib"
-        tk_provider = runtime / "Python.framework/Versions/3.12/lib/libtk8.6.dylib"
+        binary = runtime / "Python.framework/Versions/3.14/bin/python3.14"
+        provider = runtime / "Python.framework/Versions/3.14/lib/libprivate.dylib"
+        tcl_provider = runtime / "Python.framework/Versions/3.14/lib/libtcl8.6.dylib"
+        tk_provider = runtime / "Python.framework/Versions/3.14/lib/libtk8.6.dylib"
+        tkinter_extension = (
+            runtime
+            / "Python.framework/Versions/3.14/lib/python3.14/lib-dynload/_tkinter.cpython-314-darwin.so"
+        )
         binary.parent.mkdir(parents=True)
         provider.parent.mkdir(parents=True)
+        tkinter_extension.parent.mkdir(parents=True)
         binary.write_bytes(b"python-mach-o")
         provider.write_bytes(b"provider-mach-o")
         tcl_provider.write_bytes(b"tcl-provider")
         tk_provider.write_bytes(b"tk-provider")
+        tkinter_extension.write_bytes(b"rebuilt-tkinter")
         census = {
             "format_version": 2,
             "target_arch": "arm64",
@@ -224,7 +230,7 @@ class MacOSRuntimeEvidenceTests(unittest.TestCase):
             "target_measured_max_minos": "14.0",
             "mach_o": [
                 {
-                    "path": "Python.framework/Versions/3.12/bin/python3.12",
+                    "path": "Python.framework/Versions/3.14/bin/python3.14",
                     "sha256": digest(binary),
                     "architectures": ["arm64"],
                     "target_arch": "arm64",
@@ -233,7 +239,7 @@ class MacOSRuntimeEvidenceTests(unittest.TestCase):
                         {
                             "name": "@loader_path/../lib/libprivate.dylib",
                             "resolution": "bundled",
-                            "provider": "Python.framework/Versions/3.12/lib/libprivate.dylib",
+                            "provider": "Python.framework/Versions/3.14/lib/libprivate.dylib",
                             "provider_sha256": digest(provider),
                         }
                     ],
@@ -243,7 +249,7 @@ class MacOSRuntimeEvidenceTests(unittest.TestCase):
                     "file": "Mach-O",
                 },
                 {
-                    "path": "Python.framework/Versions/3.12/lib/libprivate.dylib",
+                    "path": "Python.framework/Versions/3.14/lib/libprivate.dylib",
                     "sha256": digest(provider),
                     "architectures": ["arm64"],
                     "target_arch": "arm64",
@@ -265,36 +271,76 @@ class MacOSRuntimeEvidenceTests(unittest.TestCase):
             "status": "pass",
             "profile": "core",
             "architecture": "arm64",
-            "python_prefix": "Python.framework/Versions/3.12",
+            "python_prefix": "Python.framework/Versions/3.14",
             "tcl": {
                 "api_version": "8.6",
-                "runtime_version": "8.6.16",
+                "runtime_version": "8.6.18",
                 "script_root": "tcl/tcl8.6",
-                "provider": "Python.framework/Versions/3.12/lib/libtcl8.6.dylib",
+                "provider": "Python.framework/Versions/3.14/lib/libtcl8.6.dylib",
                 "provider_sha256": digest(tcl_provider),
             },
             "tk": {
                 "api_version": "8.6",
-                "runtime_version": "8.6.16",
+                "runtime_version": "8.6.18",
                 "script_root": "tcl/tk8.6",
-                "provider": "Python.framework/Versions/3.12/lib/libtk8.6.dylib",
+                "provider": "Python.framework/Versions/3.14/lib/libtk8.6.dylib",
                 "provider_sha256": digest(tk_provider),
             },
+            "tcl_tk_provider_isolation": "pass",
         }
         relocation_path = runtime / "core-relocation-qualification-macos.json"
         relocation_path.write_text(json.dumps(relocation, sort_keys=True), encoding="utf-8")
         provenance = {
             "format_version": 1,
             "runtime_profile": "core",
-            "python": {"architecture": "arm64"},
+            "python": {"architecture": "arm64", "version": "3.14.10"},
             "tcl_tk": {
+                "version": "8.6.18",
+                "ownership": "producer",
                 "tcl_api_version": "8.6",
                 "tk_api_version": "8.6",
-                "tcl_runtime_version": "8.6.16",
-                "tk_runtime_version": "8.6.16",
+                "tcl_runtime_version": "8.6.18",
+                "tk_runtime_version": "8.6.18",
+                "source_lock": "locks/core/tcltk-8.6.18.json",
+                "sources": {
+                    "tcl": {
+                        "filename": "tcl8.6.18-src.tar.gz",
+                        "url": "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
+                        "sha256": "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e",
+                    },
+                    "tk": {
+                        "filename": "tk8.6.18-src.tar.gz",
+                        "url": "https://prdownloads.sourceforge.net/tcl/tk8.6.18-src.tar.gz",
+                        "sha256": "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c",
+                    },
+                },
+                "source_hashes": {
+                    "tcl": "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e",
+                    "tk": "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c",
+                    "cpython": "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032",
+                    "tkinter_package": "d" * 64,
+                },
+                "build": {"architecture": "arm64", "macos_floor": "14.0"},
                 "staged_hashes": {
                     "tcl": digest(tcl_provider),
                     "tk": digest(tk_provider),
+                    "tkinter_package_original": "d" * 64,
+                    "tkinter_rebuilt_before_rewrite": "c" * 64,
+                    "tkinter_after_rewrite": digest(tkinter_extension),
+                },
+                "tkinter_rebuild": {
+                    "cpython_source": {
+                        "filename": "Python-3.14.10.tar.xz",
+                        "url": "https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz",
+                        "sha256": "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032",
+                    },
+                    "output_path": "Python.framework/Versions/3.14/lib/python3.14/lib-dynload/_tkinter.cpython-314-darwin.so",
+                    "compiled_sha256": "c" * 64,
+                    "staged_sha256": digest(tkinter_extension),
+                    "package_original_sha256": "d" * 64,
+                    "architecture": "arm64",
+                    "macos_floor": "14.0",
+                    "compiler": "clang",
                 },
             },
             "native_closure": {
@@ -320,8 +366,27 @@ class MacOSRuntimeEvidenceTests(unittest.TestCase):
             runtime = self.make_runtime(Path(temporary))
             result = verify.verify(runtime, "core", "arm64")
             self.assertEqual(result["target_measured_max_minos"], "14.0")
-            (runtime / "Python.framework/Versions/3.12/lib/libprivate.dylib").write_bytes(b"changed")
+            (runtime / "Python.framework/Versions/3.14/lib/libprivate.dylib").write_bytes(b"changed")
             with self.assertRaisesRegex(SystemExit, "hash mismatch"):
+                verify.verify(runtime, "core", "arm64")
+
+    def test_verifier_rejects_consistent_non_8_6_18_tcl_tk_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = self.make_runtime(Path(temporary))
+            relocation_path = runtime / "core-relocation-qualification-macos.json"
+            relocation = json.loads(relocation_path.read_text(encoding="utf-8"))
+            relocation["tcl"]["runtime_version"] = "8.6.17"
+            relocation["tk"]["runtime_version"] = "8.6.17"
+            relocation_path.write_text(json.dumps(relocation, sort_keys=True), encoding="utf-8")
+
+            provenance_path = runtime / "build-provenance-macos.json"
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            provenance["tcl_tk"]["tcl_runtime_version"] = "8.6.17"
+            provenance["tcl_tk"]["tk_runtime_version"] = "8.6.17"
+            provenance["relocation_qualification"]["evidence_sha256"] = digest(relocation_path)
+            provenance_path.write_text(json.dumps(provenance, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "relocation evidence metadata is invalid"):
                 verify.verify(runtime, "core", "arm64")
 
 

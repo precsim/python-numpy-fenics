@@ -119,9 +119,9 @@ provenance="$(cd "$(dirname "$provenance")" && pwd -P)/$(basename "$provenance")
 
 core_provenance="$core_runtime/build-provenance-linux.json"
 copied_core_provenance="$runtime/build-provenance-linux.json"
-audit_python="$core_runtime/bin/python3.12"
-python="$runtime/bin/python3.12"
-site_packages="$runtime/lib/python3.12/site-packages"
+audit_python="$core_runtime/bin/python3.14"
+python="$runtime/bin/python3.14"
+site_packages="$runtime/lib/python3.14/site-packages"
 
 required_paths=("$core_provenance" "$copied_core_provenance" "$audit_python" "$python" "$site_packages")
 for required_path in "${required_paths[@]}"; do
@@ -208,7 +208,7 @@ EXPECTED_PIN_HASHES = {
     "b42d3c7ff9f4da0f7fedd354051b002fe68dbb56dc59c713c61bdf92773b3d9c",
 }
 PRIVATE_SUFFIX = "bridge_np252_"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "b8c3d2a0d8b43f521cfddd0dd63bba199daa1d95dbf6ffd7b9c3a11f7a210759"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "47c5864635ea7b5a2890245f544065fcdf2ed90cc640644260f41b3e7ae98559"
 
 
 def fail(message):
@@ -493,9 +493,9 @@ if sources_manifest.get("schema_version") != 1:
 target = sources_manifest.get("target", {})
 if target != {
     "architecture": "x86_64",
-    "python_version": "3.12.10",
-    "python_abi": "cp312",
-    "python_wheel_abi": "cp312-cp312",
+    "python_version": "3.14.10",
+    "python_abi": "cp314",
+    "python_wheel_abi": "cp314-cp314",
     "platform_policy": "manylinux2014_x86_64 / manylinux_2_17_x86_64",
     "glibc_floor": "2.17",
 }:
@@ -624,7 +624,7 @@ if build_record.get("installed_metadata_normalization") != {
 }:
     fail("NumPy provenance does not record the required deterministic install-metadata normalization")
 
-site_packages_root = runtime / "lib/python3.12/site-packages"
+site_packages_root = runtime / "lib/python3.14/site-packages"
 dist_info_matches = sorted(site_packages_root.glob("numpy-2.5.2.dist-info"))
 if len(dist_info_matches) != 1:
     fail(f"expected exactly one staged NumPy 2.5.2 dist-info directory: {dist_info_matches}")
@@ -972,7 +972,7 @@ elif len(corename_symbols) == 1:
 else:
     fail(f"expected one usable openblas_get_corename symbol, found: {corename_symbols}")
 
-numpy_root = runtime / "lib/python3.12/site-packages/numpy"
+numpy_root = runtime / "lib/python3.14/site-packages/numpy"
 if not numpy_root.is_dir():
     fail("staged NumPy package directory is missing")
 numpy_elfs = [path for path in added_elfs if under(path, numpy_root)]
@@ -1219,7 +1219,7 @@ provider = pathlib.Path(sys.argv[2]).resolve()
 provider_soname = sys.argv[3]
 corename_symbol = sys.argv[4]
 mode = sys.argv[5]
-site_packages = (runtime / "lib/python3.12/site-packages").resolve()
+site_packages = (runtime / "lib/python3.14/site-packages").resolve()
 
 if "OPENBLAS_CORETYPE" in os.environ:
     raise SystemExit("qualification must not override OpenBLAS runtime core selection")
@@ -1231,7 +1231,7 @@ def under(path, root):
     return path == root or root in path.parents
 
 
-if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.12").resolve():
+if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.14").resolve():
     raise SystemExit(f"unexpected staged Python executable: {sys.executable}")
 sys.path.insert(0, str(site_packages))
 for entry in sys.path:
