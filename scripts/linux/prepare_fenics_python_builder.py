@@ -410,6 +410,10 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
             raise BuilderInputError(f"invalid or duplicate base runtime manifest path: {name!r}")
         expected_paths.add(name)
         path = base_runtime.joinpath(*relative.parts)
+        resolved_path = path.resolve()
+        resolved_root = base_runtime.resolve()
+        if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
+            raise BuilderInputError(f"base runtime manifest path escapes qualified runtime: {name}")
         kind = record.get("kind")
         if kind == "file":
             if path.is_symlink() or not path.is_file():
@@ -419,9 +423,6 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
         elif kind == "symlink":
             if not path.is_symlink() or os.readlink(path) != record.get("target"):
                 raise BuilderInputError(f"base runtime symlink differs from runtime-manifest.json: {name}")
-            resolved = path.resolve()
-            if base_runtime.resolve() not in resolved.parents and resolved != base_runtime.resolve():
-                raise BuilderInputError(f"base runtime symlink escapes qualified runtime: {name}")
         else:
             raise BuilderInputError(f"unsupported base runtime manifest file kind: {name}")
     actual_paths = {
