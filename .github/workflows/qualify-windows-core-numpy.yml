@@ -124,10 +124,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           $input = Join-Path $env:RUNNER_TEMP "numpy-wheel"
           New-Item -ItemType Directory -Force -Path $input | Out-Null
-          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
-          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
           $wheel = Join-Path $input "numpy-2.5.2-cp314-cp314-win_amd64.whl"
+          $wheelUrl = "https://files.pythonhosted.org/packages/15/5c/7bcbd5b11f94199073320410cddcbb80cee62415bfeb540874b265c2d922/numpy-2.5.2-cp314-cp314-win_amd64.whl"
+          Invoke-WebRequest -Uri $wheelUrl -OutFile $wheel
           if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned Windows NumPy wheel is missing" }
+          if ((Get-Item -LiteralPath $wheel).Length -ne 12597627) { throw "Pinned Windows NumPy wheel byte count mismatch" }
           $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($sha -ne "7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d") {
             throw "Pinned Windows NumPy wheel SHA-256 mismatch: $sha"
