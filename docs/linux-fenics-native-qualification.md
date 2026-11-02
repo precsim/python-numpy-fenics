@@ -37,6 +37,23 @@ contains **396** metadata-relocated files and drops **19** prefix-bound
 command scripts. Neither raw producer prefixes nor undeclared prefix
 substitutions are globally exempted. The final raw-prefix gate stays strict.
 
+A separate read-only ELF `DT_NEEDED` closure audit, rooted in rebuilt
+Basix/DOLFINx, PETSc, MPI, HDF5, three fresh FFCx modules and 19 NumPy
+native extensions, reached 113 ELF objects with no unresolved non-system
+dependencies. With DOLFINx actually configured `KAHIP=OFF` and `ADIOS2=OFF`,
+neither KaHIP nor ADIOS2 nor its downstream ZeroMQ provider was in that
+closure. Removing 610 package-owned KaHIP/ADIOS2/ZeroMQ files from a scratch
+probe preserved full Poisson correctness and loaded none of those providers.
+This is conditional omission evidence, **not** a general assertion that
+optional KaHIP partitioning or ADIOS2/HDF5 VOL functionality is supported.
+
+ICU cannot be treated the same way: `libicuuc` and `libicudata` remain live
+through HDF5 → curl → libpsl → ICU and MPI → hwloc → libxml2 → ICU. The stock
+ICU C++ symbols exceed the host ceilings, so its remaining consumers must
+be rebuilt/reconfigured or supplied a separately qualified native provider
+before ICU is removed. Generic PETSc/HDF5 plugin `dlopen` facilities mean
+ELF `DT_NEEDED` alone cannot qualify arbitrary opt-in plugins.
+
 ## Controlled C++20 runtime feasibility, not production evidence
 
 The initial rebuilt Basix/DOLFINx prototype used a versioned private static
