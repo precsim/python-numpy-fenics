@@ -45,7 +45,7 @@ class MacOSRuntimeAuditTests(unittest.TestCase):
 
             def fake_run(*args: str) -> str:
                 if args[0] == "file":
-                    return "Mach-O 64-bit object arm64" if Path(args[-1]).suffix == ".o" else "Mach-O 64-bit executable arm64"
+                    return "Mach-O 64-bit arm64" if Path(args[-1]).suffix == ".o" else "Mach-O 64-bit executable arm64"
                 if args[0] == "lipo":
                     return "arm64"
                 if args[0] == "otool":
