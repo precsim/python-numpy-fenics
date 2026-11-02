@@ -65,6 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
+          python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
       - name: Pull and verify pinned manylinux2014 image
         shell: bash
@@ -484,6 +485,20 @@ jobs:
             | tee "$prototype/source-fetch.log"
           echo "FENICS_REBUILD_SOURCE_DIR=$source_dir" >> "$GITHUB_ENV"
 
+      - name: Fetch and verify pinned public curl ICU-edge inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          input_dir="$RUNNER_TEMP/linux-fenics-icu-edge-inputs"
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          rm -rf "$input_dir"
+          python3 scripts/linux/probe_fenics_icu_edge.py fetch \
+            --contract locks/linux/linux-x86_64-fenics-icu-edge-probe.json \
+            --output-dir "$input_dir" \
+            --evidence "$prototype/icu-edge-public-inputs.json" \
+            | tee "$prototype/icu-edge-public-inputs.log"
+          echo "FENICS_ICU_EDGE_INPUT_DIR=$input_dir" >> "$GITHUB_ENV"
+
       - name: Replay and verify pinned 41-record native build-tool lock
         shell: bash
         run: |
@@ -534,6 +549,52 @@ jobs:
             "$prototype/cxx20-smoke.o" \
             "$FENICS_BUILD_TOOL_PREFIX/bin/x86_64-conda-linux-gnu-g++" \
             > "$prototype/cxx20-smoke.sha256"
+
+      - name: Probe HDF5 curl PSL ICU edge offline on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          scratch="$RUNNER_TEMP/linux-fenics-icu-edge-probe"
+          rm -rf "$scratch"
+          docker run --rm --network none \
+            --env "FENICS_ICU_EDGE_INPUT_DIR=$FENICS_ICU_EDGE_INPUT_DIR" \
+            --env "FENICS_LOCKED_PREFIX=$FENICS_LOCKED_PREFIX" \
+            --env "FENICS_BUILD_TOOL_PREFIX=$FENICS_BUILD_TOOL_PREFIX" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /opt/python/cp312-cp312/bin/python3 scripts/linux/probe_fenics_icu_edge.py probe \
+              --contract /workspace/locks/linux/linux-x86_64-fenics-icu-edge-probe.json \
+              --input-dir "$FENICS_ICU_EDGE_INPUT_DIR" \
+              --runtime-lock /workspace/locks/linux/linux-x86_64-fenics-package-lock.json \
+              --locked-prefix "$FENICS_LOCKED_PREFIX" \
+              --build-tool-prefix "$FENICS_BUILD_TOOL_PREFIX" \
+              --base-provenance /workspace/out/linux-x64/numpy/build-provenance-linux.json \
+              --scratch-root "$scratch" \
+              --evidence /workspace/build/linux-fenics-overlay/native-rebuild-prototype/icu-edge-probe.json \
+            2>&1 | tee "$prototype/icu-edge-probe.log"
+          python3 - "$prototype/icu-edge-probe.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert data["status"] == "pass-experimental-closure-only"
+          assert data["release_eligible"] is False
+          assert data["runtime_lock"]["record_count"] == 128
+          assert data["dt_needed_delta"]["added"] == []
+          assert data["dt_needed_delta"]["removed"] and all(
+              item.startswith("libpsl.so") for item in data["dt_needed_delta"]["removed"]
+          )
+          candidate_names = data["candidate_hdf5_closure"]["reached_names"]
+          control_names = data["mpich_icu_control"]["reached_names"]
+          assert not any(name.startswith(("libpsl.so", "libicu")) for name in candidate_names)
+          assert any(name.startswith("libicuuc.so") for name in control_names)
+          assert "disabled" in data["capability_impact"]["libcurl_public_suffix_list"]
+          print("hosted_icu_edge_probe_contract=pass")
+          PY
 
       - name: Validate hosted native rebuild public-input skeleton
         shell: bash
@@ -617,8 +678,10 @@ jobs:
           - reproducible pinned Python wheel-builder manifest
           - reproducible pinned libxml2 build-dependency manifest
           - reproducible private libfenics_cxxrt.so.1 provider manifest and bytes
-          - post-rebuild native-closure report proving KaHIP/ADIOS2/ZeroMQ omission and ICU resolution
           - hosted exercise of the native-rebuild handoff plus ICU/curl closure resolution
+          - integrate the pinned libcurl --without-libpsl ICU-edge result without treating its reduced PSL capability as general curl equivalence
+          - post-rebuild native-closure report proving KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
+          - package_fenics_overlay.py handoff for rebuilt native outputs and wheels
           - standalone glibc 2.17 relocation/JIT/PETSc/Poisson qualification
           EOF
           cat "$blocker" >&2

@@ -64,6 +64,17 @@ pinned curl/libcurl rebuild to a future handoff revision. The current schema
 rejects such an unknown replacement owner until its source and ownership
 evidence are defined explicitly.
 
+The next hosted experiment isolates the first ICU branch without rebuilding
+HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with the
+conda-forge recipe's `--with-libpsl` flag changed to `--without-libpsl`, then
+requires the HDF5-rooted closure to lose both libpsl and ICU while an
+independent MPICH-rooted control still reaches hwloc, libxml2 and ICU. The
+experiment keeps HDF5 ROS3 enabled, but it deliberately removes libcurl's
+Public Suffix List feature; cookie-domain PSL validation is therefore outside
+the capability of that candidate. This result is closure evidence only and
+cannot authorize ICU omission until the separately pinned libxml2 ICU-off
+rebuild also makes the final post-rebuild closure ICU-free.
+
 ## Controlled C++20 runtime feasibility, not production evidence
 
 The initial rebuilt Basix/DOLFINx prototype used a versioned private static
