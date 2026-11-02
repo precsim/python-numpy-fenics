@@ -79,6 +79,13 @@ overlay-relative locations; Poisson passed again. That scratch test still
 had an absolute fallback search path into the stock conda prefix, so it is
 **not** a standalone relocatable qualification.
 
+The same copied-overlay Poisson test also passed on the **qualified public
+consumer CPython 3.12.10 / NumPy 2.5.2 base**, with an explicit assertion
+that NumPy came from the public base and Basix/DOLFINx came from the copied
+private overlay. No external private-provider preload was used. The stock
+conda fallback search path and external PETSc/MPI dependencies still prevent
+calling this a complete portable producer payload.
+
 `scripts/linux/elf_gnu_unique.py` is a fail-closed, exact-hash ELF
 transformation/auditor with standalone tests. It explicitly labels its output
 as a *symbol-binding transformation*, **not** a source rebuild. The linked
