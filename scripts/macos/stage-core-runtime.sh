@@ -218,6 +218,21 @@ tk_src="$tcltk_src_root/tk8.6.18"
 
 common_cflags="-O2 -arch $target_arch -mmacosx-version-min=14.0"
 common_ldflags="-arch $target_arch -mmacosx-version-min=14.0"
+configure_runner=(/bin/bash)
+make_runner=(make)
+if [[ "$target_arch" == x86_64 ]]; then
+    # Tcl's Darwin configure logic derives its 64-bit architecture from
+    # `arch` and appends that value to CFLAGS. On an Apple Silicon runner an
+    # arm64 configure process therefore adds `-arch arm64` even when the
+    # caller supplied `-arch x86_64`. Run configure and make under Rosetta so
+    # Tcl/Tk's own architecture probe agrees with the requested thin target.
+    configure_runner=(/usr/bin/arch -x86_64 /bin/bash)
+    make_runner=(/usr/bin/arch -x86_64 make)
+    [[ "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" == x86_64 ]] || {
+        echo "Rosetta x86_64 execution is unavailable for Tcl/Tk build" >&2
+        exit 1
+    }
+fi
 (
     cd "$tcl_build"
     env \
@@ -225,7 +240,7 @@ common_ldflags="-arch $target_arch -mmacosx-version-min=14.0"
         CC=clang \
         CFLAGS="$common_cflags" \
         LDFLAGS="$common_ldflags" \
-        "$tcl_src/unix/configure" \
+        "${configure_runner[@]}" "$tcl_src/unix/configure" \
             --prefix="$tcltk_prefix" \
             --enable-shared \
             --enable-threads \
@@ -243,8 +258,8 @@ for line in text.splitlines(keepends=True):
     lines.append(line)
 path.write_text("".join(lines), encoding="utf-8")
 PY
-    make -j2
-    make install
+    "${make_runner[@]}" -j2
+    "${make_runner[@]}" install
 )
 (
     cd "$tk_build"
@@ -253,15 +268,15 @@ PY
         CC=clang \
         CFLAGS="$common_cflags" \
         LDFLAGS="$common_ldflags" \
-        "$tk_src/unix/configure" \
+        "${configure_runner[@]}" "$tk_src/unix/configure" \
             --prefix="$tcltk_prefix" \
             --with-tcl="$tcl_build" \
             --enable-shared \
             --enable-threads \
             --enable-64bit \
             --enable-aqua
-    make -j2
-    make install
+    "${make_runner[@]}" -j2
+    "${make_runner[@]}" install
 )
 
 built_tcl="$tcltk_prefix/lib/libtcl8.6.dylib"
