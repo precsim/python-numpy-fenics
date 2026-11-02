@@ -78,13 +78,16 @@ def main() -> int:
 
     workflow_root = ROOT / ".github" / "workflows"
     if workflow_root.is_dir():
-        for path in sorted(workflow_root.glob("*.yml")):
+        for path in sorted(
+            child for child in workflow_root.iterdir()
+            if child.is_file() and child.suffix.lower() in {".yml", ".yaml"}
+        ):
             text = path.read_text(encoding="utf-8")
             if "circleci" in text.lower():
                 errors.append(
                     f"workflow contains CircleCI reference: {path.relative_to(ROOT)}"
                 )
-            if "python-matlab-octave-bridge" in text:
+            if "python-matlab-octave-bridge" in text.lower():
                 errors.append(
                     f"workflow references a private consumer repository: {path.relative_to(ROOT)}"
                 )

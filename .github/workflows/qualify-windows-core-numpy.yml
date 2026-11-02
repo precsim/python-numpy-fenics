@@ -3,14 +3,6 @@ name: qualify-windows-core-numpy
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/qualify-windows-core-numpy.yml"
-      - "scripts/windows/stage-runtime.ps1"
-      - "scripts/windows/test-runtime.ps1"
-      - "scripts/common/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/02-core-numpy-profiles.md"
   push:
     branches:
       - main
@@ -32,6 +24,7 @@ concurrency:
 
 jobs:
   qualify:
+    name: qualify-windows-core-numpy
     runs-on: windows-2022
     timeout-minutes: 45
     steps:

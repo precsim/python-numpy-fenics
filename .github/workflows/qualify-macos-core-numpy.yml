@@ -3,15 +3,6 @@ name: qualify-macos-core-numpy
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/qualify-macos-core-numpy.yml"
-      - "scripts/macos/stage-core-runtime.sh"
-      - "scripts/macos/stage-numpy-runtime.sh"
-      - "scripts/macos/inspect-macos-runtime.sh"
-      - "scripts/common/**"
-      - "contracts/**"
-      - "config/runtime-matrix.json"
-      - "specs/02-core-numpy-profiles.md"
   push:
     branches:
       - main
@@ -34,6 +25,7 @@ concurrency:
 
 jobs:
   qualify:
+    name: qualify-macos-core-numpy-${{ matrix.target_arch }}
     runs-on: macos-15
     timeout-minutes: 75
     strategy:

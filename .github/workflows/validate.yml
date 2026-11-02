@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   python-and-shell:
+    name: validate-python-and-shell
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -58,6 +59,7 @@ jobs:
           --output /tmp/windows-x64-fenics-explicit.txt
 
   powershell:
+    name: validate-powershell
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
