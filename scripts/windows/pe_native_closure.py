@@ -303,6 +303,9 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
         paths.sort(key=str.casefold)
 
     system_names = {path.name.casefold() for path in system_dir.iterdir() if path.is_file()}
+    explicit_runtime_search_dirs = (
+        ["lib/site-packages/numpy.libs"] if profile == "numpy" else []
+    )
     unresolved: list[dict[str, object]] = []
     ambiguous: list[dict[str, object]] = []
     records: list[dict[str, object]] = []
@@ -319,31 +322,29 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
             local = parent_index.get((importer_parent, name))
             root_provider = parent_index.get((".", name)) or parent_index.get(("", name))
             candidates = provider_index.get(name, [])
+            search_provider = next(
+                (
+                    parent_index[(directory, name)]
+                    for directory in explicit_runtime_search_dirs
+                    if (directory, name) in parent_index
+                ),
+                None,
+            )
             if local is not None:
                 record.update({"provider_kind": "runtime", "provider_path": local, "provider_sha256": pe_sha[local]})
                 runtime_edges += 1
             elif root_provider is not None:
                 record.update({"provider_kind": "runtime", "provider_path": root_provider, "provider_sha256": pe_sha[root_provider]})
                 runtime_edges += 1
-            elif len(candidates) == 1:
-                provider = candidates[0]
-                record.update({"provider_kind": "runtime", "provider_path": provider, "provider_sha256": pe_sha[provider]})
+            elif search_provider is not None:
+                record.update(
+                    {
+                        "provider_kind": "runtime",
+                        "provider_path": search_provider,
+                        "provider_sha256": pe_sha[search_provider],
+                    }
+                )
                 runtime_edges += 1
-            elif len(candidates) > 1:
-                identities = {pe_sha[item] for item in candidates}
-                if len(identities) == 1:
-                    record.update(
-                        {
-                            "provider_kind": "runtime-equivalent",
-                            "provider_paths": candidates,
-                            "provider_sha256": next(iter(identities)),
-                        }
-                    )
-                    runtime_edges += 1
-                else:
-                    failure = {"importer": relative, "name": name, "delay": delayed, "candidates": candidates}
-                    ambiguous.append(failure)
-                    record.update({"provider_kind": "ambiguous", "provider_paths": candidates})
             elif name.startswith(WINDOWS_API_PREFIXES):
                 record["provider_kind"] = "windows-api-set"
                 system_edges += 1
@@ -352,8 +353,12 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
                 system_edges += 1
             else:
                 failure = {"importer": relative, "name": name, "delay": delayed}
+                if candidates:
+                    failure["unreachable_candidates"] = candidates
                 unresolved.append(failure)
                 record["provider_kind"] = "unresolved"
+                if candidates:
+                    record["unreachable_candidates"] = candidates
             imports.append(record)
         records.append(
             {
@@ -380,6 +385,7 @@ def census_runtime(runtime: Path, profile: str, system_directory: Path) -> dict[
         "import_edge_count": runtime_edges + system_edges + len(unresolved) + len(ambiguous),
         "runtime_provider_edge_count": runtime_edges,
         "system_provider_edge_count": system_edges,
+        "runtime_search_directories": explicit_runtime_search_dirs,
         "unresolved": unresolved,
         "ambiguous": ambiguous,
         "tkinter_tcl_tk": tkinter_binding,

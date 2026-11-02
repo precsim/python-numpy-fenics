@@ -147,7 +147,7 @@ class WindowsPENativeClosureTests(unittest.TestCase):
             self.assertEqual(left["unresolved"], [])
             self.assertEqual(left["ambiguous"], [])
 
-    def test_census_rejects_conflicting_runtime_providers(self) -> None:
+    def test_census_rejects_unreachable_runtime_providers(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             runtime = base / "runtime"
@@ -160,8 +160,51 @@ class WindowsPENativeClosureTests(unittest.TestCase):
             (runtime / "b/provider.dll").write_bytes(build_pe() + b"B")
             write_manifest(runtime, "core")
             payload = census_runtime(runtime, "core", system)
-            with self.assertRaisesRegex(PEClosureError, "ambiguous"):
+            with self.assertRaisesRegex(PEClosureError, "unresolved"):
                 ensure_closed(payload)
+
+    def test_census_rejects_unique_provider_outside_loader_search_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            runtime = base / "runtime"
+            system = base / "system32"
+            consumer_dir = runtime / "a"
+            hidden_dir = runtime / "unrelated"
+            consumer_dir.mkdir(parents=True)
+            hidden_dir.mkdir()
+            system.mkdir()
+            (consumer_dir / "consumer.pyd").write_bytes(build_pe(("hidden.dll",)))
+            (hidden_dir / "hidden.dll").write_bytes(build_pe())
+            write_manifest(runtime, "core")
+            payload = census_runtime(runtime, "core", system)
+            with self.assertRaisesRegex(PEClosureError, "unresolved"):
+                ensure_closed(payload)
+            self.assertEqual(
+                payload["unresolved"][0]["unreachable_candidates"],
+                ["unrelated/hidden.dll"],
+            )
+
+    def test_numpy_profile_allows_delvewheel_numpy_libs_search_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            runtime = base / "runtime"
+            system = base / "system32"
+            extension_dir = runtime / "Lib/site-packages/numpy/_core"
+            provider_dir = runtime / "Lib/site-packages/numpy.libs"
+            extension_dir.mkdir(parents=True)
+            provider_dir.mkdir(parents=True)
+            system.mkdir()
+            (extension_dir / "consumer.pyd").write_bytes(build_pe(("provider.dll",)))
+            (provider_dir / "provider.dll").write_bytes(build_pe())
+            write_manifest(runtime, "numpy")
+            payload = census_runtime(runtime, "numpy", system)
+            ensure_closed(payload)
+            consumer = next(item for item in payload["files"] if item["path"].endswith("consumer.pyd"))
+            self.assertEqual(
+                consumer["imports"][0]["provider_path"],
+                "Lib/site-packages/numpy.libs/provider.dll",
+            )
+            self.assertEqual(payload["runtime_search_directories"], ["lib/site-packages/numpy.libs"])
 
     def test_census_rejects_unresolved_import(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
