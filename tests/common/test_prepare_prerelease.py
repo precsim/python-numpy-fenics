@@ -379,6 +379,33 @@ class PreparePrereleaseTests(unittest.TestCase):
                         encoding="utf-8",
                     )
 
+            core_numpy_incoming = root / "incoming-core-numpy"
+            core_numpy_output = root / "release-assets-core-numpy"
+            core_numpy_incoming.mkdir()
+            for run_dir in incoming.glob("run-*"):
+                metadata = json.loads(
+                    (run_dir / "run-metadata.json").read_text(encoding="utf-8")
+                )
+                if metadata["workflowName"] in prerelease.CORE_NUMPY_WORKFLOWS:
+                    shutil.copytree(run_dir, core_numpy_incoming / run_dir.name)
+            default_argv = [
+                "prepare_prerelease.py",
+                "--input",
+                str(core_numpy_incoming),
+                "--output",
+                str(core_numpy_output),
+                "--tag",
+                "runtime-v0.1.0-rc1",
+            ]
+            with mock.patch("sys.argv", default_argv):
+                self.assertEqual(prerelease.main(), 0)
+            default_manifest = json.loads(
+                (core_numpy_output / "prerelease-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(default_manifest["profiles"], ["core", "numpy"])
+            self.assertEqual(default_manifest["base_runtime_bindings"], [])
+            self.assertEqual(len(default_manifest["qualifications"]), 8)
+
             argv = [
                 "prepare_prerelease.py",
                 "--input",
@@ -387,6 +414,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                 str(output),
                 "--tag",
                 "runtime-v0.1.0-rc1",
+                "--include-fenics",
             ]
             # An unrelated downloaded workflow may contain the same basename;
             # each qualification must resolve its own run's artifact.
@@ -400,10 +428,29 @@ class PreparePrereleaseTests(unittest.TestCase):
             release_manifest = json.loads(
                 (output / "prerelease-manifest.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(release_manifest["profiles"], ["core", "numpy", "fenics"])
             self.assertEqual(len(release_manifest["base_runtime_bindings"]), 4)
             self.assertEqual(len(release_manifest["qualifications"]), 12)
             for binding in release_manifest["base_runtime_bindings"]:
                 self.assertRegex(binding["numpy_artifact_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_default_prerelease_scope_excludes_fenics(self) -> None:
+        self.assertEqual(
+            prerelease.CORE_NUMPY_WORKFLOWS,
+            {
+                "qualify-windows-core-numpy",
+                "qualify-macos-core-numpy",
+                "qualify-linux-core-numpy",
+            },
+        )
+        self.assertEqual(
+            prerelease.FENICS_WORKFLOWS,
+            {
+                "qualify-windows-fenics",
+                "qualify-macos-fenics",
+                "qualify-linux-fenics",
+            },
+        )
 
 
 if __name__ == "__main__":
