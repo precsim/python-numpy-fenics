@@ -761,8 +761,7 @@ openssl_include="$openssl_prefix/include"
 mkdir -p "$zstd_prefix"
 make -C "$zstd_src/lib" -j"$jobs" \
     PREFIX="$zstd_prefix" \
-    CFLAGS="$common_cflags" \
-    LDFLAGS="$common_ldflags" \
+    MOREFLAGS="$common_cflags $common_ldflags" \
     install
 [[ -f "$zstd_prefix/lib/libzstd.so.1.5.7" ]] || die "zstd build did not produce libzstd.so.1.5.7"
 [[ -f "$zstd_prefix/lib/pkgconfig/libzstd.pc" ]] || die "zstd build did not install libzstd pkg-config metadata"
@@ -1824,6 +1823,7 @@ data = {
             "makefile": "zstd-1.5.7/lib/Makefile",
             "prefix": "<build>/zstd-prefix",
             "targets": ["install"],
+            "moreflags": f"{common_cflags} {common_ldflags}",
         },
         "openssl_perl_compat": {
             "scope": "OpenSSL Configure executable discovery and Unix Makefile release-date formatting only",

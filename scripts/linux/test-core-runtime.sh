@@ -604,6 +604,7 @@ if build.get("zstd_build") != {
     "makefile": "zstd-1.5.7/lib/Makefile",
     "prefix": "<build>/zstd-prefix",
     "targets": ["install"],
+    "moreflags": f"{build.get('cflags')} {build.get('ldflags')}",
 }:
     fail(f"provenance zstd build contract is invalid: {build.get('zstd_build')!r}")
 for key in ("cflags", "ldflags", "closed_input_policy"):
