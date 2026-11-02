@@ -91,12 +91,53 @@ transformation/auditor with standalone tests. It explicitly labels its output
 as a *symbol-binding transformation*, **not** a source rebuild. The linked
 provider alone does not qualify the surrounding Basix/DOLFINx binaries.
 
+`locks/linux/linux-x86_64-fenics-cxx-provider.json` and
+`scripts/linux/build_fenics_cxx_provider.py` turn that proof into a fail-closed
+public reproduction contract. The recipe binds the immutable 128-record
+runtime package lock, the companion 41-record build-tool lock, the public
+GCC/binutils/sysroot package archive identities, the exact GCC 16.2 driver and
+static `libstdc++.a` file hashes, the version script, link argv and environment,
+and both sides of the GNU-unique transform. The builder also requires the
+existing solver-free runtime-prefix verification evidence and rehashes the
+named public package archives before linking. It writes a
+`fenics-private-cxx-runtime` manifest only after the linked bytes equal
+`c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58`
+and the transformed bytes equal
+`39473bb7046bd62af7fbafda82c18d6f755de28a9e32ec65734985d72ff71cb4`.
+The manifest remains explicitly `unqualified-reproduction-only`.
+
 The immutable runtime lock supplies the GCC 16.2 C driver and the static
 libstdc++ archive, sufficient for the provider-link experiment, but does
 **not** contain a C++ frontend (`cc1plus`). A separately pinned GCC 14.4
 C++20 build-tool closure was replayed offline with zero package downloads
 and passed a C++20 compiler/CMake/Ninja smoke test. It still needs to be
 used in a deterministic, independently audited full native rebuild.
+
+### Hosted runner bootstrap for the provider
+
+The provider reproduction belongs after the existing exact 128-record runtime
+replay and 41-record build-tool replay. Run it inside the workflow's pinned
+glibc 2.17 manylinux container with networking disabled and with the workspace,
+runner temp directory and micromamba package cache mounted. The invocation is:
+
+```bash
+provider_dir="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/private-cxx-provider"
+rm -rf "$provider_dir"
+mkdir -p "$provider_dir"
+python3 scripts/linux/build_fenics_cxx_provider.py \
+  --runtime-prefix "$FENICS_LOCKED_PREFIX" \
+  --runtime-prefix-evidence "$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
+  --package-cache "$FENICS_PACKAGE_CACHE" \
+  --output-dir "$provider_dir" \
+  --manifest "$provider_dir/provider-manifest.json"
+```
+
+That hosted step should assert `getconf GNU_LIBC_VERSION` is exactly
+`glibc 2.17`, preserve the provider bytes and manifest as workflow evidence,
+and pass `provider-manifest.json` to `rebuild_fenics_native.py` through
+`--private-provider-manifest`. A successful reproduction proves only the
+provider identity. Release qualification still requires the rebuilt native
+closure plus standalone relocated fresh-FFCx/PETSc/Poisson on glibc 2.17.
 
 ## Remaining release blockers
 
