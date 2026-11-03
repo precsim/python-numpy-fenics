@@ -60,9 +60,9 @@ glibc_identity="$(getconf GNU_LIBC_VERSION)"
 }
 
 runtime="$(cd "$runtime" && pwd -P)"
-python="$runtime/bin/python3.12"
-libpython="$runtime/lib/libpython3.12.so.1.0"
-stdlib="$runtime/lib/python3.12"
+python="$runtime/bin/python3.14"
+libpython="$runtime/lib/libpython3.14.so.1.0"
+stdlib="$runtime/lib/python3.14"
 dynload="$stdlib/lib-dynload"
 site_packages="$stdlib/site-packages"
 tcl_root="$runtime/tcl/tcl8.6"
@@ -84,6 +84,7 @@ required=(
     "$runtime/LICENSES/Certifi.txt"
     "$runtime/LICENSES/Libxcrypt/LICENSING.txt"
     "$runtime/LICENSES/Libxcrypt/COPYING.LIB.txt"
+    "$runtime/LICENSES/Zstd.txt"
     "$provenance"
 )
 for path in "${required[@]}"; do
@@ -133,6 +134,18 @@ if find "$runtime" -mindepth 1 \( -name 'libX11.so*' -o -name 'libX11*.a' -o -na
     echo "controlled runtime must not bundle a competing X11/XCB provider" >&2
     exit 1
 fi
+mapfile -t zstd_extension_candidates < <(find "$dynload" -maxdepth 1 -type f -name '_zstd*.so' -print | sort)
+[[ ${#zstd_extension_candidates[@]} -eq 1 ]] || {
+    echo "expected exactly one staged _zstd extension; found ${#zstd_extension_candidates[@]}" >&2
+    exit 1
+}
+zstd_provider="$runtime/lib/libzstd.so.1"
+[[ -f "$zstd_provider" ]] || { echo "producer-owned zstd provider is missing: $zstd_provider" >&2; exit 1; }
+zstd_needed="$(readelf -dW "${zstd_extension_candidates[0]}" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')"
+grep -Fx 'libzstd.so.1' <<<"$zstd_needed" >/dev/null || {
+    echo "_zstd does not dynamically depend on producer libzstd.so.1" >&2
+    exit 1
+}
 
 poison="$(mktemp -d)"
 cleanup() {
@@ -179,21 +192,24 @@ PEP599_EXTERNAL = {
     "libgobject-2.0.so.0", "libgthread-2.0.so.0", "libglib-2.0.so.0",
 }
 SOURCE_PINS = (
-    ("Python-3.12.10.tar.xz",
-     "https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz",
-     "07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea"),
+    ("Python-3.14.10.tar.xz",
+     "https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz",
+     "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032"),
     ("openssl-3.5.9.tar.gz",
      "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
      "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"),
     ("libxcrypt-4.5.2.tar.xz",
      "https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz",
      "71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071"),
-    ("tcl8.6.12-src.tar.gz",
-     "https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz",
-     "26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6"),
-    ("tk8.6.12-src.tar.gz",
-     "https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz",
-     "12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630"),
+    ("zstd-1.5.7.tar.gz",
+     "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
+     "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"),
+    ("tcl8.6.18-src.tar.gz",
+     "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
+     "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e"),
+    ("tk8.6.18-src.tar.gz",
+     "https://prdownloads.sourceforge.net/tcl/tk8.6.18-src.tar.gz",
+     "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c"),
 )
 DEV_RPM_PINS = (
     ("bzip2-devel", "1.0.6-13.el7", "bzip2-libs", "1.0.6-13.el7", "bzip2-devel-1.0.6-13.el7.x86_64.rpm", "https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm", "28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700"),
@@ -264,9 +280,9 @@ def extract_rpm_member(archive_path, member):
     return member_extract.stdout
 
 def helper_dynamic_extension_baseline():
-    helper_python = pathlib.Path("/opt/python/cp312-cp312/bin/python")
+    helper_python = pathlib.Path("/opt/python/cp314-cp314/bin/python")
     if not helper_python.is_file():
-        fail(f"pinned-image helper CPython 3.12 is missing: {helper_python}")
+        fail(f"pinned-image helper CPython 3.14 is missing: {helper_python}")
     helper_code = r'''
 import importlib.machinery
 import json
@@ -274,13 +290,13 @@ import pathlib
 import sys
 import sysconfig
 
-if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
+if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 14):
     raise SystemExit(
-        f"expected pinned-image helper CPython 3.12, got "
+        f"expected pinned-image helper CPython 3.14, got "
         f"{sys.implementation.name} {sys.version_info.major}.{sys.version_info.minor}"
     )
 prefix = pathlib.Path(sys.prefix).resolve()
-expected_prefix = pathlib.Path("/opt/python/cp312-cp312").resolve()
+expected_prefix = pathlib.Path("/opt/python/cp314-cp314").resolve()
 if prefix != expected_prefix:
     raise SystemExit(f"unexpected pinned-image helper prefix: {prefix}")
 destshared = sysconfig.get_config_var("DESTSHARED")
@@ -289,7 +305,7 @@ dynload = (
     if destshared
     else pathlib.Path(sysconfig.get_path("stdlib")) / "lib-dynload"
 ).resolve()
-expected_dynload = expected_prefix / "lib/python3.12/lib-dynload"
+expected_dynload = expected_prefix / "lib/python3.14/lib-dynload"
 if dynload != expected_dynload or not dynload.is_dir():
     raise SystemExit(f"unexpected pinned-image helper lib-dynload: {dynload}")
 suffixes = sorted(set(importlib.machinery.EXTENSION_SUFFIXES), key=len, reverse=True)
@@ -391,8 +407,8 @@ def check_versions(path):
         if padded > ceiling:
             fail(f"{path.relative_to(runtime)} exceeds {prefix}_{'.'.join(map(str, ceiling))}: {token}")
 
-if sys.implementation.name != "cpython" or platform.python_version() != "3.12.10":
-    fail(f"staged interpreter is not CPython 3.12.10: {platform.python_version()}")
+if sys.implementation.name != "cpython" or platform.python_version() != "3.14.10":
+    fail(f"staged interpreter is not CPython 3.14.10: {platform.python_version()}")
 if platform.machine() != "x86_64":
     fail(f"staged interpreter architecture is not x86_64: {platform.machine()}")
 if not under(sys.executable, runtime) or not under(sys.base_prefix, runtime):
@@ -425,10 +441,10 @@ if baseline.get("symbol_ceilings") != {
 
 expected_sources = {
     "cpython": {
-        "version": "3.12.10",
-        "filename": "Python-3.12.10.tar.xz",
-        "url": "https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz",
-        "sha256": "07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea",
+        "version": "3.14.10",
+        "filename": "Python-3.14.10.tar.xz",
+        "url": "https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz",
+        "sha256": "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032",
     },
     "openssl": {
         "version": "3.5.9",
@@ -444,16 +460,16 @@ expected_sources = {
         "usage": "license-provenance-only",
     },
     "tcl": {
-        "version": "8.6.12",
-        "filename": "tcl8.6.12-src.tar.gz",
-        "url": "https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz",
-        "sha256": "26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6",
+        "version": "8.6.18",
+        "filename": "tcl8.6.18-src.tar.gz",
+        "url": "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
+        "sha256": "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e",
     },
     "tk": {
-        "version": "8.6.12",
-        "filename": "tk8.6.12-src.tar.gz",
-        "url": "https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz",
-        "sha256": "12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630",
+        "version": "8.6.18",
+        "filename": "tk8.6.18-src.tar.gz",
+        "url": "https://prdownloads.sourceforge.net/tcl/tk8.6.18-src.tar.gz",
+        "sha256": "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c",
     },
 }
 sources = data.get("sources", {})
@@ -572,7 +588,7 @@ expected_configure = {
         "no-afalgeng",
     },
     "tcl_configure": {"--enable-shared", "--enable-threads", "--enable-64bit"},
-    "tk_configure": {"--with-tcl=<source>/tcl8.6.12/unix", "--enable-shared", "--enable-threads", "--enable-64bit"},
+    "tk_configure": {"--with-tcl=<source>/tcl8.6.18/unix", "--enable-shared", "--enable-threads", "--enable-64bit"},
     "cpython_configure": {
         "--enable-shared",
         "--without-static-libpython",
@@ -584,11 +600,19 @@ expected_configure = {
 for key, expected in expected_configure.items():
     if set(build.get(key, [])) != expected:
         fail(f"provenance configure flags differ for {key}: {build.get(key)!r}")
+if build.get("zstd_build") != {
+    "makefile": "zstd-1.5.7/lib/Makefile",
+    "prefix": "<build>/zstd-prefix",
+    "targets": ["install"],
+    "moreflags": f"{build.get('cflags')} {build.get('ldflags')}",
+}:
+    fail(f"provenance zstd build contract is invalid: {build.get('zstd_build')!r}")
 for key in ("cflags", "ldflags", "closed_input_policy"):
     if not isinstance(build.get(key), str) or not build[key].strip():
         fail(f"provenance build metadata is missing {key}")
 if (
-    "one hash-verified libxcrypt license/provenance archive" not in build["closed_input_policy"]
+    "five build source archives" not in build["closed_input_policy"]
+    or "one hash-verified libxcrypt license/provenance archive" not in build["closed_input_policy"]
     or "seven hash-verified matching CentOS 7 development RPMs installed offline" not in build["closed_input_policy"]
     or "eight hash-verified CentOS 7 runtime RPMs used only for fallback license/provenance evidence" not in build["closed_input_policy"]
 ):
@@ -598,6 +622,7 @@ if build.get("development_header_overlay") != expected_dev_rpms:
 if build.get("cpython_pkg_config_path") != [
     "<build>/openssl-prefix/lib/pkgconfig",
     "<build>/openssl-prefix/lib64/pkgconfig",
+    "<build>/zstd-prefix/lib/pkgconfig",
     "<build>/tcltk-prefix/lib/pkgconfig",
     "/usr/local/lib/pkgconfig",
 ]:
@@ -665,24 +690,24 @@ if not str(openssl_preflight.get("crypto_needed_name", "")).startswith("libcrypt
     fail("OpenSSL preflight libcrypto DT_NEEDED identity is missing")
 
 python_meta = data.get("python", {})
-if python_meta.get("implementation") != "CPython" or python_meta.get("version") != "3.12.10":
+if python_meta.get("implementation") != "CPython" or python_meta.get("version") != "3.14.10":
     fail(f"provenance Python identity is invalid: {python_meta!r}")
-if python_meta.get("executable") != "bin/python3.12" or python_meta.get("libpython") != "lib/libpython3.12.so.1.0":
+if python_meta.get("executable") != "bin/python3.14" or python_meta.get("libpython") != "lib/libpython3.14.so.1.0":
     fail("provenance Python runtime paths are invalid")
-if python_meta.get("site_packages") != "lib/python3.12/site-packages" or python_meta.get("site_packages_empty") is not True:
+if python_meta.get("site_packages") != "lib/python3.14/site-packages" or python_meta.get("site_packages_empty") is not True:
     fail("provenance does not attest an empty controlled site-packages directory")
 if python_meta.get("numpy_bundled") is not False:
     fail("provenance unexpectedly marks NumPy as bundled")
-if python_meta.get("executable_sha256") != sha256(runtime / "bin/python3.12"):
+if python_meta.get("executable_sha256") != sha256(runtime / "bin/python3.14"):
     fail("staged Python executable differs from provenance")
-if python_meta.get("libpython_sha256") != sha256(runtime / "lib/libpython3.12.so.1.0"):
+if python_meta.get("libpython_sha256") != sha256(runtime / "lib/libpython3.14.so.1.0"):
     fail("staged libpython differs from provenance")
 helper_extension_baseline = helper_dynamic_extension_baseline()
 expected_dynamic_extensions = helper_extension_baseline["modules"]
 if python_meta.get("dynamic_extension_baseline") != expected_dynamic_extensions:
     fail(
         "provenance dynamic-extension baseline differs from the pinned-image "
-        f"helper CPython 3.12 lib-dynload inventory: "
+        f"helper CPython 3.14 lib-dynload inventory: "
         f"expected={expected_dynamic_extensions!r}, "
         f"recorded={python_meta.get('dynamic_extension_baseline')!r}"
     )
@@ -712,6 +737,7 @@ expected_retained = {
     "lzma", "_lzma", "zlib", "readline", "curses", "_curses", "curses.panel", "encodings",
     "_curses_panel", "multiprocessing", "zoneinfo", "hashlib", "decimal", "dbm",
     "_dbm", "_gdbm", "uuid", "_uuid", "pyexpat", "xml.parsers.expat", "tkinter", "_tkinter",
+    "compression.zstd", "_zstd",
 }
 if set(python_meta.get("retained_module_probe", [])) != expected_retained:
     fail("provenance retained-module surface differs from the phase-01 contract")
@@ -719,8 +745,10 @@ if set(python_meta.get("retained_module_probe", [])) != expected_retained:
 license_paths = set()
 tcl_tk = data.get("tcl_tk", {})
 if (
-    tcl_tk.get("tcl_version") != "8.6.12"
-    or tcl_tk.get("tk_version") != "8.6.12"
+    tcl_tk.get("version") != "8.6.18"
+    or tcl_tk.get("ownership") != "producer"
+    or tcl_tk.get("tcl_version") != "8.6.18"
+    or tcl_tk.get("tk_version") != "8.6.18"
     or tcl_tk.get("dynamic_provider_model") is not True
     or tcl_tk.get("native_loader_strategy") != "runtime-relative-dt-runpath"
 ):
@@ -781,10 +809,10 @@ if (
     fail(f"OpenSSL config staged provenance is invalid: {openssl_config!r}")
 
 python_ssl_patch = ssl_runtime.get("python_ssl_patch", {})
-ssl_py = (runtime / "lib/python3.12/ssl.py").resolve()
+ssl_py = (runtime / "lib/python3.14/ssl.py").resolve()
 if (
-    python_ssl_patch.get("source") != "Python-3.12.10/Lib/ssl.py"
-    or python_ssl_patch.get("staged_path") != "lib/python3.12/ssl.py"
+    python_ssl_patch.get("source") != "Python-3.14.10/Lib/ssl.py"
+    or python_ssl_patch.get("staged_path") != "lib/python3.14/ssl.py"
     or not ssl_py.is_file()
     or python_ssl_patch.get("staged_sha256") != sha256(ssl_py)
     or python_ssl_patch.get("patched_source_sha256") != python_ssl_patch.get("staged_sha256")
@@ -836,6 +864,7 @@ source_licenses = data.get("licenses", {}).get("source_components", {})
 for component, relative in {
     "cpython": "LICENSES/CPython.txt",
     "openssl": "LICENSES/OpenSSL.txt",
+    "zstd": "LICENSES/Zstd.txt",
     "tcl": "LICENSES/TclTk/Tcl.txt",
     "tk": "LICENSES/TclTk/Tk.txt",
 }.items():
@@ -972,9 +1001,10 @@ if observed_archive_package_keys != required_archive_package_keys:
 
 native_provider_meta = data.get("native_providers", {})
 expected_source_built = {
-    "lib/libpython3.12.so.1.0": "cpython",
+    "lib/libpython3.14.so.1.0": "cpython",
     "lib/libssl.so.3": "openssl",
     "lib/libcrypto.so.3": "openssl",
+    "lib/libzstd.so.1": "zstd",
     "lib/tcltk/libtcl8.6.so": "tcl",
     "lib/tcltk/libtk8.6.so": "tk",
 }
@@ -1139,7 +1169,7 @@ if (
     or glibc_loader_consumers != sorted(set(glibc_loader_consumers))
 ):
     fail(f"glibc loader consumer provenance is invalid: {glibc_loader_consumers!r}")
-program_headers = run("readelf", "-lW", str(runtime / "bin/python3.12"))
+program_headers = run("readelf", "-lW", str(runtime / "bin/python3.14"))
 interp_match = re.search(r"Requesting program interpreter: ([^\]]+)\]", program_headers)
 if interp_match is None or interp_match.group(1) != glibc_loader["interpreter_path"]:
     fail(f"staged Python PT_INTERP differs from provenance: {interp_match.group(1) if interp_match else None!r}")
@@ -1380,7 +1410,7 @@ import zoneinfo
 import zlib
 
 runtime = pathlib.Path(sys.argv[1]).resolve()
-stdlib = (runtime / "lib/python3.12").resolve()
+stdlib = (runtime / "lib/python3.14").resolve()
 dynload = (stdlib / "lib-dynload").resolve()
 native = (runtime / "lib/tcltk").resolve()
 tcl_scripts = (runtime / "tcl/tcl8.6").resolve()
@@ -1390,7 +1420,7 @@ def under(path, root):
     root = pathlib.Path(root).resolve()
     return path == root or root in path.parents
 
-if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.12").resolve():
+if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.14").resolve():
     raise SystemExit(f"unexpected staged executable: {sys.executable}")
 for entry in sys.path:
     if entry and not under(entry, runtime):
@@ -1445,7 +1475,7 @@ if encodings.__file__ is None or not under(encodings.__file__, stdlib):
 if str(_tkinter.TCL_VERSION) != "8.6" or str(_tkinter.TK_VERSION) != "8.6":
     raise SystemExit("unexpected _tkinter Tcl/Tk API version")
 interp = tkinter.Tcl()
-if interp.call("info", "patchlevel") != "8.6.12":
+if interp.call("info", "patchlevel") != "8.6.18":
     raise SystemExit(f"unexpected Tcl patchlevel: {interp.call('info', 'patchlevel')}")
 observed_tcl = pathlib.Path(interp.eval("info library")).resolve()
 if observed_tcl != tcl_scripts:
@@ -1490,7 +1520,7 @@ PYTHONUSERBASE="$poison/user" \
 LD_LIBRARY_PATH="$poison/native" \
 TCL_LIBRARY="$relocated/tcl/tcl8.6" \
 TK_LIBRARY="$relocated/tcl/tk8.6" \
-"$relocated/bin/python3.12" -I - "$relocated" <<'PY'
+"$relocated/bin/python3.14" -I - "$relocated" <<'PY'
 import hashlib
 import os
 import pathlib
@@ -1549,9 +1579,9 @@ try:
     root.withdraw()
     if root.tk.call("tk", "windowingsystem") != "x11":
         raise SystemExit(f"unexpected Tk windowing system: {root.tk.call('tk', 'windowingsystem')}")
-    if root.tk.call("info", "patchlevel") != "8.6.12":
+    if root.tk.call("info", "patchlevel") != "8.6.18":
         raise SystemExit(f"unexpected Tcl patchlevel: {root.tk.call('info', 'patchlevel')}")
-    if root.tk.call("set", "tk_patchLevel") != "8.6.12":
+    if root.tk.call("set", "tk_patchLevel") != "8.6.18":
         raise SystemExit(f"unexpected Tk patchlevel: {root.tk.call('set', 'tk_patchLevel')}")
     if pathlib.Path(root.tk.eval("info library")).resolve() != expected_tcl:
         raise SystemExit("Tcl script provider escaped controlled runtime")

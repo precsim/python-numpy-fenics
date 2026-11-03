@@ -66,18 +66,18 @@ numpy_wheel="$(cd "$(dirname "$numpy_wheel")" && pwd -P)/$(basename "$numpy_whee
 
 case "$target_arch" in
     arm64)
-        expected_wheel="numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl"
-        expected_numpy_url="https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl"
-        expected_numpy_size=5350202
-        expected_numpy_sha="6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb"
-        expected_tag="cp312-cp312-macosx_14_0_arm64"
+        expected_wheel="numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl"
+        expected_numpy_url="https://files.pythonhosted.org/packages/b9/ee/d08226fc858044355983a6e5b94f08ff6f3969e0a2b160a4a89f0ddb3445/numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl"
+        expected_numpy_size=5354922
+        expected_numpy_sha="9e9413326d726c2545bfa65d2c0876871e8d8386e77f992c1d426e180bbd4323"
+        expected_tag="cp314-cp314-macosx_14_0_arm64"
         ;;
     x86_64)
-        expected_wheel="numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl"
-        expected_numpy_url="https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl"
-        expected_numpy_size=6687736
-        expected_numpy_sha="65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414"
-        expected_tag="cp312-cp312-macosx_14_0_x86_64"
+        expected_wheel="numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl"
+        expected_numpy_url="https://files.pythonhosted.org/packages/94/f0/6d3d933056440ebbc5e6bad92065fc6c26a48a84a36b1208580e94eea76c/numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl"
+        expected_numpy_size=6679168
+        expected_numpy_sha="60e902ac295855348a5ca2ea4c89108989a9f5fddfad3dfc0a8f36b10358567e"
+        expected_tag="cp314-cp314-macosx_14_0_x86_64"
         ;;
 esac
 
@@ -107,8 +107,8 @@ actual_numpy_sha="$(shasum -a 256 "$numpy_wheel" | awk '{print $1}')"
 
 profile_file="$runtime/RUNTIME_PROFILE"
 provenance="$runtime/build-provenance-macos.json"
-site_packages="$runtime/Python.framework/Versions/3.12/lib/python3.12/site-packages"
-staged_python="$runtime/Python.framework/Versions/3.12/bin/python3.12"
+site_packages="$runtime/Python.framework/Versions/3.14/lib/python3.14/site-packages"
+staged_python="$runtime/Python.framework/Versions/3.14/bin/python3.14"
 [[ -f "$profile_file" && "$(tr -d '\r\n' < "$profile_file")" == core ]] || {
     echo "NumPy staging requires a prepared core runtime" >&2
     exit 1
@@ -150,8 +150,13 @@ target_arch = sys.argv[4]
 provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
 if provenance.get("runtime_profile") != "core" or provenance.get("numpy") != {"bundled": False}:
     raise SystemExit("prepared macOS provenance is not core-only")
-if provenance.get("python", {}).get("architecture") != target_arch:
+python = provenance.get("python", {})
+if python.get("architecture") != target_arch:
     raise SystemExit("prepared macOS provenance architecture mismatch")
+if python.get("version") != "3.14.10":
+    raise SystemExit("prepared macOS provenance CPython version mismatch")
+if provenance.get("tcl_tk", {}).get("version") != "8.6.18":
+    raise SystemExit("prepared macOS provenance Tcl/Tk version mismatch")
 
 excluded = {"RUNTIME_PROFILE", "build-provenance-macos.json"}
 entries = {}
@@ -487,7 +492,7 @@ for rel, expected in before.items():
         if actual != expected["sha256"]:
             raise SystemExit(f"NumPy staging changed prepared core file: {rel}")
 
-staged_site = runtime / "Python.framework/Versions/3.12/lib/python3.12/site-packages"
+staged_site = runtime / "Python.framework/Versions/3.14/lib/python3.14/site-packages"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 expected_paths = {entry["path"] for entry in manifest.get("files", [])}
 actual_paths = set()
@@ -579,7 +584,7 @@ env \
     PYTHONUSERBASE="$poison" \
     DYLD_LIBRARY_PATH="$poison" \
     DYLD_FALLBACK_LIBRARY_PATH="$poison" \
-    PYTHONHOME="$runtime/Python.framework/Versions/3.12" \
+    PYTHONHOME="$runtime/Python.framework/Versions/3.14" \
     PYTHONNOUSERSITE=1 \
     "${staged_python_cmd[@]}" -I -S -P -B - "$runtime" "$provenance" <<'PY'
 import ctypes
@@ -591,7 +596,7 @@ import sys
 
 runtime = pathlib.Path(sys.argv[1]).resolve()
 provenance_path = pathlib.Path(sys.argv[2]).resolve()
-site = runtime / "Python.framework/Versions/3.12/lib/python3.12/site-packages"
+site = runtime / "Python.framework/Versions/3.14/lib/python3.14/site-packages"
 sys.path.insert(0, str(site))
 
 lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")

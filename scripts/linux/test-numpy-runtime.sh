@@ -119,9 +119,9 @@ provenance="$(cd "$(dirname "$provenance")" && pwd -P)/$(basename "$provenance")
 
 core_provenance="$core_runtime/build-provenance-linux.json"
 copied_core_provenance="$runtime/build-provenance-linux.json"
-audit_python="$core_runtime/bin/python3.12"
-python="$runtime/bin/python3.12"
-site_packages="$runtime/lib/python3.12/site-packages"
+audit_python="$core_runtime/bin/python3.14"
+python="$runtime/bin/python3.14"
+site_packages="$runtime/lib/python3.14/site-packages"
 
 required_paths=("$core_provenance" "$copied_core_provenance" "$audit_python" "$python" "$site_packages")
 for required_path in "${required_paths[@]}"; do
@@ -166,6 +166,7 @@ import re
 import stat
 import subprocess
 import sys
+import zipfile
 
 runtime = pathlib.Path(sys.argv[1]).resolve()
 core = pathlib.Path(sys.argv[2]).resolve()
@@ -192,6 +193,7 @@ EXPECTED_CEILINGS = {
     "GCC": "4.8.0",
 }
 EXPECTED_PIN_HASHES = {
+    "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
     "d482d171c406ae88c5b19cad3b6a1c4c5209f886ab74bc44c2c865c23f52d860",
     "6761af1d9f5d353ab4f0b7497be2643313b36c8f31caec0144bfef198e71e6ab",
     "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd",
@@ -208,7 +210,7 @@ EXPECTED_PIN_HASHES = {
     "b42d3c7ff9f4da0f7fedd354051b002fe68dbb56dc59c713c61bdf92773b3d9c",
 }
 PRIVATE_SUFFIX = "bridge_np252_"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "b8c3d2a0d8b43f521cfddd0dd63bba199daa1d95dbf6ffd7b9c3a11f7a210759"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "81ebc2c98319683a8e523889db8275069bfeab9c8d0012e3fa3c01ca886bf687"
 
 
 def fail(message):
@@ -493,9 +495,9 @@ if sources_manifest.get("schema_version") != 1:
 target = sources_manifest.get("target", {})
 if target != {
     "architecture": "x86_64",
-    "python_version": "3.12.10",
-    "python_abi": "cp312",
-    "python_wheel_abi": "cp312-cp312",
+    "python_version": "3.14.10",
+    "python_abi": "cp314",
+    "python_wheel_abi": "cp314-cp314",
     "platform_policy": "manylinux2014_x86_64 / manylinux_2_17_x86_64",
     "glibc_floor": "2.17",
 }:
@@ -507,6 +509,53 @@ if (
     or build_image.get("ref") != expected_image
 ):
     fail(f"NumPy source manifest build-image pin is invalid: {build_image!r}")
+expected_binary_tags = [
+    "cp314-cp314-manylinux_2_27_x86_64",
+    "cp314-cp314-manylinux_2_28_x86_64",
+]
+expected_binary_policy = {
+    "reason": "declared-manylinux-glibc-floor-above-target",
+    "target_glibc_floor": "2.17",
+    "declared_glibc_floors": ["2.27", "2.28"],
+}
+binary_candidate = sources_manifest.get("binary_candidate", {})
+if binary_candidate != {
+    "name": "numpy",
+    "version": "2.5.2",
+    "filename": "numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c7/99/461bd36dbdfac6c1c53efa370bd55a83227542d0d118f1677dbf1a3dacd5/numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
+    "expected_wheel_tags": expected_binary_tags,
+    "rejection_policy": expected_binary_policy,
+}:
+    fail(f"NumPy binary candidate lock differs from the required cp314/glibc evidence: {binary_candidate!r}")
+candidate_path = input_root / binary_candidate["filename"]
+if not candidate_path.is_file() or candidate_path.is_symlink():
+    fail(f"NumPy binary candidate is missing or invalid: {candidate_path}")
+if sha256(candidate_path) != binary_candidate["sha256"]:
+    fail("NumPy binary candidate SHA-256 differs from the committed lock")
+with zipfile.ZipFile(candidate_path) as archive:
+    wheel_metadata = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+    if len(wheel_metadata) != 1:
+        fail(f"NumPy binary candidate has unexpected WHEEL metadata paths: {wheel_metadata!r}")
+    wheel_text = archive.read(wheel_metadata[0]).decode("utf-8")
+observed_binary_tags = sorted(
+    line.split(":", 1)[1].strip()
+    for line in wheel_text.splitlines()
+    if line.startswith("Tag:")
+)
+if observed_binary_tags != expected_binary_tags:
+    fail(f"NumPy binary candidate WHEEL tags differ from the committed lock: {observed_binary_tags!r}")
+observed_binary_floors = []
+for tag in observed_binary_tags:
+    match = re.search(r"manylinux_2_([0-9]+)_x86_64$", tag)
+    if match is None:
+        fail(f"NumPy binary candidate has unsupported platform tag: {tag}")
+    observed_binary_floors.append(f"2.{int(match.group(1))}")
+if observed_binary_floors != ["2.27", "2.28"] or any(
+    int(value.split(".", 1)[1]) <= 17 for value in observed_binary_floors
+):
+    fail(f"NumPy binary candidate no longer proves incompatibility with glibc 2.17: {observed_binary_floors!r}")
 if sources_manifest.get("build_policy") != {
     "network_disabled_after_input_verification": True,
     "pep517_build_isolation": False,
@@ -623,8 +672,35 @@ if build_record.get("installed_metadata_normalization") != {
     "reason": "exclude pip local-wheel path/hash metadata from deterministic runtime payload",
 }:
     fail("NumPy provenance does not record the required deterministic install-metadata normalization")
+binary_rejection = data.get("binary_candidate_rejection", {})
+if binary_rejection != {
+    "filename": binary_candidate["filename"],
+    "sha256": binary_candidate["sha256"],
+    "observed_wheel_tags": observed_binary_tags,
+    "target_glibc_floor": "2.17",
+    "declared_glibc_floors": observed_binary_floors,
+    "reason": "declared-manylinux-glibc-floor-above-target",
+    "qualification_host": {
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
+        "architecture": "x86_64",
+        "glibc": "2.17",
+    },
+    "decision": "reject-binary-and-authorize-source-rebuild",
+}:
+    fail(f"NumPy provenance does not bind binary-first rebuild authorization: {binary_rejection!r}")
+closed_candidate = data.get("closed_inputs", {}).get("binary_candidate", {})
+if (
+    closed_candidate.get("filename") != binary_candidate["filename"]
+    or closed_candidate.get("verified_sha256") != binary_candidate["sha256"]
+    or closed_candidate.get("observed_wheel_tags") != observed_binary_tags
+    or closed_candidate.get("rejection_policy") != expected_binary_policy
+    or closed_candidate.get("qualification_host") != binary_rejection["qualification_host"]
+    or closed_candidate.get("decision") != "reject-binary-and-authorize-source-rebuild"
+):
+    fail(f"NumPy closed inputs do not retain binary-candidate rejection evidence: {closed_candidate!r}")
 
-site_packages_root = runtime / "lib/python3.12/site-packages"
+site_packages_root = runtime / "lib/python3.14/site-packages"
 dist_info_matches = sorted(site_packages_root.glob("numpy-2.5.2.dist-info"))
 if len(dist_info_matches) != 1:
     fail(f"expected exactly one staged NumPy 2.5.2 dist-info directory: {dist_info_matches}")
@@ -661,8 +737,8 @@ for item in dicts(sources_manifest):
     if filename in download_inputs:
         fail(f"source manifest contains duplicate pinned input filename: {filename}")
     download_inputs[filename] = digest
-if len(download_inputs) != 14:
-    fail(f"expected exactly 14 closed downloadable inputs, found {len(download_inputs)}")
+if len(download_inputs) != 15:
+    fail(f"expected exactly 15 closed downloadable inputs, found {len(download_inputs)}")
 if set(download_inputs.values()) != EXPECTED_PIN_HASHES:
     fail("source manifest closed-input hashes differ from the settled phase-01 pins")
 for filename, expected_sha in sorted(download_inputs.items()):
@@ -972,7 +1048,7 @@ elif len(corename_symbols) == 1:
 else:
     fail(f"expected one usable openblas_get_corename symbol, found: {corename_symbols}")
 
-numpy_root = runtime / "lib/python3.12/site-packages/numpy"
+numpy_root = runtime / "lib/python3.14/site-packages/numpy"
 if not numpy_root.is_dir():
     fail("staged NumPy package directory is missing")
 numpy_elfs = [path for path in added_elfs if under(path, numpy_root)]
@@ -1219,7 +1295,7 @@ provider = pathlib.Path(sys.argv[2]).resolve()
 provider_soname = sys.argv[3]
 corename_symbol = sys.argv[4]
 mode = sys.argv[5]
-site_packages = (runtime / "lib/python3.12/site-packages").resolve()
+site_packages = (runtime / "lib/python3.14/site-packages").resolve()
 
 if "OPENBLAS_CORETYPE" in os.environ:
     raise SystemExit("qualification must not override OpenBLAS runtime core selection")
@@ -1231,7 +1307,7 @@ def under(path, root):
     return path == root or root in path.parents
 
 
-if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.12").resolve():
+if pathlib.Path(sys.executable).resolve() != (runtime / "bin/python3.14").resolve():
     raise SystemExit(f"unexpected staged Python executable: {sys.executable}")
 sys.path.insert(0, str(site_packages))
 for entry in sys.path:
@@ -1333,6 +1409,20 @@ run_numpy_probe native
 
 numpy_cpu_mask="X86_V2,X86_V3"
 run_numpy_probe masked NPY_DISABLE_CPU_FEATURES="$numpy_cpu_mask"
+
+relocated_runtime="$poison/relocated-numpy-runtime"
+cp -a "$runtime" "$relocated_runtime"
+original_runtime="$runtime"
+original_python="$python"
+original_provider="$provider"
+runtime="$relocated_runtime"
+python="$runtime/bin/python3.14"
+provider="$runtime/$provider_rel"
+run_numpy_probe native
+runtime="$original_runtime"
+python="$original_python"
+provider="$original_provider"
+echo "linux_glibc217_numpy_relocation=pass"
 
 printf 'linux_glibc217_numpy_image=%s\n' "$expected_image"
 printf 'linux_glibc217_numpy_glibc=%s\n' "$glibc_identity"

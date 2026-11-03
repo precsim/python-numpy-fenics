@@ -166,7 +166,7 @@ def audit(
     executable = (
         executable.resolve()
         if executable is not None
-        else root / "Python.framework/Versions/3.12/bin/python3.12"
+        else root / "Python.framework/Versions/3.14/bin/python3.14"
     )
     executable_dir = executable.parent
     if strict and executable is not None and not executable.is_file():

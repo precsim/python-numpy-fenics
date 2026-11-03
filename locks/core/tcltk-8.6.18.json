@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "component": "tcl-tk",
+  "version": "8.6.18",
+  "sources": {
+    "tcl": {
+      "filename": "tcl8.6.18-src.tar.gz",
+      "url": "https://prdownloads.sourceforge.net/tcl/tcl8.6.18-src.tar.gz",
+      "sha256": "14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e"
+    },
+    "tk": {
+      "filename": "tk8.6.18-src.tar.gz",
+      "url": "https://prdownloads.sourceforge.net/tcl/tk8.6.18-src.tar.gz",
+      "sha256": "95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c"
+    }
+  }
+}

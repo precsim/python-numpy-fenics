@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import unittest
+import copy
 from pathlib import Path
 import tempfile
 
-from scripts.common.validate_repo import private_source_directories, unpinned_actions
+from scripts.common.validate_repo import (
+    EXPECTED_WINDOWS_CPYTHON_LOCK,
+    private_source_directories,
+    unpinned_actions,
+    windows_cpython_lock_errors,
+)
 
 
 class WorkflowActionPinTests(unittest.TestCase):
@@ -36,6 +42,12 @@ class WorkflowActionPinTests(unittest.TestCase):
 
     def test_short_sha_is_rejected(self) -> None:
         self.assertEqual(unpinned_actions("uses: vendor/repo@deadbeef"), ["vendor/repo@deadbeef"])
+
+    def test_windows_cpython_binary_lock_is_exact(self) -> None:
+        self.assertEqual(windows_cpython_lock_errors(copy.deepcopy(EXPECTED_WINDOWS_CPYTHON_LOCK)), [])
+        changed = copy.deepcopy(EXPECTED_WINDOWS_CPYTHON_LOCK)
+        changed["upstream"]["archive_asset"]["sha256"] = "0" * 64
+        self.assertTrue(windows_cpython_lock_errors(changed))
 
 
 if __name__ == "__main__":

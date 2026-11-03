@@ -5,7 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 build="$root/build/linux-glibc217-numpy-runtime"
 default_manifest="$root/locks/linux/linux-glibc217-numpy-sources.json"
 default_output="$root/out/linux-x64/numpy"
-helper_python="/opt/python/cp312-cp312/bin/python"
+helper_python="/opt/python/cp314-cp314/bin/python"
 image_repository="quay.io/pypa/manylinux2014_x86_64"
 image_digest="sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851"
 image_ref="$image_repository@$image_digest"
@@ -104,7 +104,7 @@ case "$output_runtime/" in "$core_runtime/"*) die "NumPy output must not be nest
 case "$core_runtime/" in "$output_runtime/"*) die "core runtime must not be nested inside NumPy output" ;; esac
 
 core_provenance="$core_runtime/build-provenance-linux.json"
-core_python="$core_runtime/bin/python3.12"
+core_python="$core_runtime/bin/python3.14"
 [[ -f "$core_provenance" ]] || die "core provenance is missing: $core_provenance"
 [[ -x "$core_python" ]] || die "core CPython is missing: $core_python"
 
@@ -145,14 +145,14 @@ allowlist = baseline.get("pep599_external_allowlist")
 if not isinstance(allowlist, list) or not allowlist or allowlist != sorted(set(allowlist)):
     fail("qualified core PEP 599 allowlist is invalid")
 python = data.get("python", {})
-if python.get("implementation") != "CPython" or python.get("version") != "3.12.10" or \
-   python.get("site_packages") != "lib/python3.12/site-packages" or \
+if python.get("implementation") != "CPython" or python.get("version") != "3.14.10" or \
+   python.get("site_packages") != "lib/python3.14/site-packages" or \
    python.get("site_packages_empty") is not True or python.get("numpy_bundled") is not False:
     fail("qualified core Python provenance is not the NumPy-free baseline")
-for rel, field in (("bin/python3.12", "executable_sha256"), ("lib/libpython3.12.so.1.0", "libpython_sha256")):
+for rel, field in (("bin/python3.14", "executable_sha256"), ("lib/libpython3.14.so.1.0", "libpython_sha256")):
     path = runtime / rel
     if not path.is_file() or sha(path) != python.get(field): fail(f"core byte identity differs: {rel}")
-site = runtime / "lib/python3.12/site-packages"
+site = runtime / "lib/python3.14/site-packages"
 if not site.is_dir() or any(site.iterdir()): fail("qualified core site-packages is not empty")
 
 toolchain = data.get("toolchain", {})
@@ -197,9 +197,9 @@ identity_path.write_text(json.dumps(identity, indent=2, sort_keys=True)+"\n", en
 print(f"core_tree_sha256={identity['sha256']}")
 PY
 
-"$helper_python" - "$sources_manifest" "$verified_inputs" "$image_ref" \
+"$core_python" -I -S - "$sources_manifest" "$verified_inputs" "$image_ref" \
     "$input_dir" "$numpy_source" "$openblas_source" "$wheelhouse" "$devtoolset_rpm_dir" <<'PY'
-import hashlib, json, pathlib, re, sys
+import hashlib, json, pathlib, platform, re, subprocess, sys, zipfile
 manifest_path = pathlib.Path(sys.argv[1]).resolve()
 output_path = pathlib.Path(sys.argv[2])
 image_ref, input_dir_arg, numpy_arg, openblas_arg = sys.argv[3:7]
@@ -211,13 +211,18 @@ def sha(path):
     with pathlib.Path(path).open("rb") as s:
         for b in iter(lambda:s.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
-EXPECTED_MANIFEST_SHA = "b8c3d2a0d8b43f521cfddd0dd63bba199daa1d95dbf6ffd7b9c3a11f7a210759"
+EXPECTED_MANIFEST_SHA = "81ebc2c98319683a8e523889db8275069bfeab9c8d0012e3fa3c01ca886bf687"
 if sha(manifest_path) != EXPECTED_MANIFEST_SHA:
     fail("supplied NumPy source manifest differs from the committed phase-01 manifest")
 SOURCE_PINS = [
  ("numpy","2.5.2","d482d171c406ae88c5b19cad3b6a1c4c5209f886ab74bc44c2c865c23f52d860"),
  ("openblas","0.3.33","6761af1d9f5d353ab4f0b7497be2643313b36c8f31caec0144bfef198e71e6ab"),
 ]
+BINARY_CANDIDATE = (
+ "numpy","2.5.2",
+ "numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+ "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
+)
 WHEEL_PINS = [
  ("pip","25.3","9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"),
  ("meson-python","0.18.0","3b0fe051551cc238f5febb873247c0949cd60ded556efa130aa57021804868e2"),
@@ -250,7 +255,7 @@ def strings(value):
     elif isinstance(value,str): yield value
 records, all_text = list(dicts(manifest)), set(strings(manifest))
 if image_ref not in all_text: fail("source manifest does not bind the pinned image digest")
-if "x86_64" not in all_text or not ({"cp312","3.12"} & all_text): fail("source manifest lacks x86_64/cp312 identity")
+if "x86_64" not in all_text or not ({"cp314","3.14"} & all_text): fail("source manifest lacks x86_64/cp314 identity")
 for required in ("bridge_np252_","OPTERON","X86_V2","X86_V3"):
     if not any(required == v or required in v for v in all_text): fail(f"source manifest lacks policy: {required}")
 def record(label,digest):
@@ -273,6 +278,52 @@ for label,ver,digest in SOURCE_PINS:
     if path is None or path.name!=r["filename"] or not path.is_file(): fail(f"missing pinned {label} source: {path}")
     if sha(path)!=digest: fail(f"{label} source hash mismatch")
     r.update({"verified_path":str(path),"verified_sha256":digest}); sources[label]=r
+candidate_name,candidate_version,candidate_filename,candidate_digest=BINARY_CANDIDATE
+binary_candidate=record("NumPy binary candidate",candidate_digest)
+if version(binary_candidate)!=candidate_version or binary_candidate.get("name")!=candidate_name or binary_candidate.get("filename")!=candidate_filename:
+    fail("NumPy binary candidate identity differs from the locked cp314 wheel")
+candidate_path=wheelhouse/candidate_filename
+if not candidate_path.is_file() or sha(candidate_path)!=candidate_digest:
+    fail(f"NumPy binary candidate missing or hash mismatch: {candidate_path}")
+with zipfile.ZipFile(candidate_path) as archive:
+    wheel_metadata=[name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
+    if len(wheel_metadata)!=1: fail(f"NumPy binary candidate has unexpected WHEEL metadata paths: {wheel_metadata!r}")
+    wheel_text=archive.read(wheel_metadata[0]).decode("utf-8")
+observed_tags=sorted(line.split(":",1)[1].strip() for line in wheel_text.splitlines() if line.startswith("Tag:"))
+expected_tags=["cp314-cp314-manylinux_2_27_x86_64","cp314-cp314-manylinux_2_28_x86_64"]
+if observed_tags!=expected_tags or binary_candidate.get("expected_wheel_tags")!=expected_tags:
+    fail(f"NumPy binary candidate wheel tags differ from the locked ABI evidence: {observed_tags!r}")
+policy=binary_candidate.get("rejection_policy")
+expected_policy={
+    "reason":"declared-manylinux-glibc-floor-above-target",
+    "target_glibc_floor":"2.17",
+    "declared_glibc_floors":["2.27","2.28"],
+}
+if policy!=expected_policy:
+    fail(f"NumPy binary candidate rejection policy differs from the glibc-2.17 contract: {policy!r}")
+declared_floors=[]
+for tag in observed_tags:
+    match=re.search(r"manylinux_2_([0-9]+)_x86_64$",tag)
+    if match is None: fail(f"NumPy binary candidate has unsupported platform tag: {tag}")
+    declared_floors.append(f"2.{int(match.group(1))}")
+if declared_floors!=policy["declared_glibc_floors"] or any(int(value.split(".",1)[1])<=17 for value in declared_floors):
+    fail(f"NumPy binary candidate does not prove a glibc floor above 2.17: {declared_floors!r}")
+glibc=subprocess.run(["getconf","GNU_LIBC_VERSION"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)
+host={
+    "python_version":platform.python_version(),
+    "python_abi":f"cp{sys.version_info.major}{sys.version_info.minor}",
+    "architecture":platform.machine(),
+    "glibc":glibc.stdout.strip().removeprefix("glibc ") if glibc.returncode==0 else "",
+}
+if host!={"python_version":"3.14.10","python_abi":"cp314","architecture":"x86_64","glibc":"2.17"}:
+    fail(f"NumPy binary candidate qualification host differs from target runtime: {host!r}")
+binary_candidate.update({
+    "verified_path":str(candidate_path),
+    "verified_sha256":candidate_digest,
+    "observed_wheel_tags":observed_tags,
+    "qualification_host":host,
+    "decision":"reject-binary-and-authorize-source-rebuild",
+})
 wheels=[]
 for name,ver,digest in WHEEL_PINS:
     r=record(f"{name} wheel",digest)
@@ -295,6 +346,7 @@ if not manifest_copy.is_file() or manifest_copy.is_symlink() or sha(manifest_cop
 expected_files = {
     manifest_copy.name,
     *(record["filename"] for record in sources.values()),
+    binary_candidate["filename"],
     *(record["filename"] for record in wheels),
     *(record["filename"] for record in rpms),
 }
@@ -312,7 +364,8 @@ if any(path.is_symlink() for path in input_root.rglob("*")):
     fail("verified input root must not contain symlinks")
 result={
  "format_version":1, "manifest":{"path":str(manifest_path),"sha256":sha(manifest_path)},
- "build_image":image_ref, "sources":sources, "pep517_wheels":wheels, "devtoolset_rpms":rpms,
+ "build_image":image_ref, "binary_candidate":binary_candidate,
+ "sources":sources, "pep517_wheels":wheels, "devtoolset_rpms":rpms,
 }
 output_path.write_text(json.dumps(result,indent=2,sort_keys=True)+"\n",encoding="utf-8")
 print("closed_input_verification=pass")
@@ -351,8 +404,8 @@ import json, pathlib, sys
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 image_ref = sys.argv[2]
 expected_target = {
-    "architecture": "x86_64", "python_version": "3.12.10", "python_abi": "cp312",
-    "python_wheel_abi": "cp312-cp312",
+    "architecture": "x86_64", "python_version": "3.14.10", "python_abi": "cp314",
+    "python_wheel_abi": "cp314-cp314",
     "platform_policy": "manylinux2014_x86_64 / manylinux_2_17_x86_64", "glibc_floor": "2.17",
 }
 expected_numpy_args = [
@@ -720,7 +773,7 @@ if observed != expected:
 print("numpy_temporary_console_scripts_excluded=pass")
 PY
 
-site_packages="$output_runtime/lib/python3.12/site-packages"
+site_packages="$output_runtime/lib/python3.14/site-packages"
 [[ -d "$site_packages" && -z "$(find "$site_packages" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "core site-packages is not empty"
 cp -a "$numpy_install/numpy" "$site_packages/numpy"
 numpy_dist_info="$(find "$numpy_install" -mindepth 1 -maxdepth 1 -type d -name 'numpy-2.5.2.dist-info' -print -quit)"
@@ -784,7 +837,7 @@ PY
 
 mkdir -p "$build/isolated-home"
 env -i HOME="$build/isolated-home" PATH="/usr/bin:/bin" PYTHONDONTWRITEBYTECODE=1 \
-    "$output_runtime/bin/python3.12" -I - "$output_runtime" "$staged_provider" <<'PY'
+    "$output_runtime/bin/python3.14" -I - "$output_runtime" "$staged_provider" <<'PY'
 import pathlib,sys
 root=pathlib.Path(sys.argv[1]).resolve(); provider=pathlib.Path(sys.argv[2]).resolve()
 import numpy as np
@@ -1205,7 +1258,7 @@ elif len(corenames) == 1:
 else:
     fail(f"private OpenBLAS has no unique verification symbol: {corenames}")
 
-numpy_root = runtime / "lib/python3.12/site-packages/numpy"
+numpy_root = runtime / "lib/python3.14/site-packages/numpy"
 numpy_undefined_blas = set()
 blas_symbol_roots = ("dgemm", "sgemm", "dgesv", "sgesv", "dgetrf", "dgetrs", "cblas_", "lapacke_")
 for record in census:
@@ -1245,6 +1298,16 @@ data = {
         "contract": sources_manifest,
     },
     "closed_inputs": verified_inputs,
+    "binary_candidate_rejection": {
+        "filename": verified_inputs["binary_candidate"]["filename"],
+        "sha256": verified_inputs["binary_candidate"]["verified_sha256"],
+        "observed_wheel_tags": verified_inputs["binary_candidate"]["observed_wheel_tags"],
+        "target_glibc_floor": verified_inputs["binary_candidate"]["rejection_policy"]["target_glibc_floor"],
+        "declared_glibc_floors": verified_inputs["binary_candidate"]["rejection_policy"]["declared_glibc_floors"],
+        "reason": verified_inputs["binary_candidate"]["rejection_policy"]["reason"],
+        "qualification_host": verified_inputs["binary_candidate"]["qualification_host"],
+        "decision": verified_inputs["binary_candidate"]["decision"],
+    },
     "core": {
         "provenance_path": "build-provenance-linux.json",
         "provenance_sha256": sha256(core_provenance_path),

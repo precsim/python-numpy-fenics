@@ -33,7 +33,8 @@ It does not own any downstream MATLAB/Octave bridge implementation.
 
 ## Runtime policy
 
-- CPython ABI baseline: CPython 3.12, cp312.
+- CPython ABI baseline: CPython 3.14, cp314 (exact patch baseline 3.14.10).
+- Tcl/Tk 8.6.18 is an explicit producer-owned core dependency on every target.
 - NumPy baseline: 2.5.2 unless a spec explicitly changes it.
 - FEniCS is cumulative on the matching NumPy profile.
 - Existing locked binary packages are always tried first.

@@ -32,10 +32,39 @@
       "type": "string"
     },
     "python_abi": {
-      "const": "cp312"
+      "enum": ["cp312", "cp314"]
     },
     "profile": {
       "enum": ["core", "numpy", "fenics"]
+    },
+    "tcl_tk": {
+      "type": "object",
+      "required": ["version", "ownership"],
+      "properties": {
+        "version": {
+          "const": "8.6.18"
+        },
+        "ownership": {
+          "const": "producer"
+        },
+        "provenance_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "anyOf": [
+        {
+          "required": ["provenance_path", "provenance_sha256"]
+        },
+        {
+          "required": ["sources", "providers"]
+        }
+      ],
+      "additionalProperties": true
     },
     "producer": {
       "type": "object",
@@ -80,5 +109,20 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "python_abi": {
+            "const": "cp314"
+          }
+        },
+        "required": ["python_abi"]
+      },
+      "then": {
+        "required": ["tcl_tk"]
+      }
+    }
+  ],
   "additionalProperties": true
 }

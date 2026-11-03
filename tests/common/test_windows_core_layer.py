@@ -47,10 +47,10 @@ class WindowsCoreLayerTests(unittest.TestCase):
         (numpy / "Lib/site-packages/numpy/__init__.py").write_bytes(b"numpy")
         manifest = {
             "format_version": 1,
-            "artifact": "python-runtime-win-x64-cp312-core",
+            "artifact": "python-runtime-win-x64-cp314-core",
             "version": "0.1.0",
             "platform": "win-x64",
-            "python_abi": "cp312",
+            "python_abi": "cp314",
             "profile": "core",
             "producer": {"repository": "precsim/python-numpy-fenics", "revision": "a" * 40},
             "files": entries,

@@ -16,6 +16,7 @@ on:
       - ".github/workflows/qualify-linux-core-numpy.yml"
       - "scripts/linux/**"
       - "scripts/common/**"
+      - "locks/core/**"
       - "locks/linux/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
@@ -75,14 +76,17 @@ jobs:
           mkdir -p "$input_dir"
 
           curl --fail --location --retry 3 --retry-all-errors \
-            --output "$input_dir/Python-3.12.10.tar.xz" \
-            https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz
+            --output "$input_dir/Python-3.14.10.tar.xz" \
+            https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz
           curl --fail --location --retry 3 --retry-all-errors \
             --output "$input_dir/openssl-3.5.9.tar.gz" \
             https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
           curl --fail --location --retry 3 --retry-all-errors \
             --output "$input_dir/libxcrypt-4.5.2.tar.xz" \
             https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$input_dir/zstd-1.5.7.tar.gz" \
+            https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
           curl --fail --location --retry 3 --retry-all-errors \
             --output "$input_dir/bzip2-devel-1.0.6-13.el7.x86_64.rpm" \
             https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm
@@ -128,19 +132,15 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors \
             --output "$input_dir/zlib-1.2.7-21.el7_9.x86_64.rpm" \
             https://vault.centos.org/7.9.2009/updates/x86_64/Packages/zlib-1.2.7-21.el7_9.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors \
-            --output "$input_dir/tcl8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz
-          curl --fail --location --retry 3 --retry-all-errors \
-            --output "$input_dir/tk8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz
+          python3 scripts/common/fetch_tcltk_sources.py --output-dir "$input_dir"
 
           (
             cd "$input_dir"
             cat <<'EOF' | sha256sum -c -
-          07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea  Python-3.12.10.tar.xz
+          de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032  Python-3.14.10.tar.xz
           603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz
           71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071  libxcrypt-4.5.2.tar.xz
+          eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz
           28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700  bzip2-devel-1.0.6-13.el7.x86_64.rpm
           1fd32866a2a82f5abc19142b59dce8fd961bc1d32e3bedfa0de7a950066fdaa5  bzip2-libs-1.0.6-13.el7.x86_64.rpm
           fc02a803f89c0d68de96bcc7a46d7cdf8768e62577b27aed9c531e6fb2818c30  gdbm-devel-1.10-8.el7.x86_64.rpm
@@ -156,10 +156,8 @@ jobs:
           8c62263350421e7c3081b4a531f8e15ef5bfb5e410a34687ca4a799ff23362ef  xz-devel-5.2.2-2.el7_9.x86_64.rpm
           4b698de5fd7e0a64306106f3018e9d00dedc1f7a46d354339f012c97d004bd0c  xz-libs-5.2.2-2.el7_9.x86_64.rpm
           2bee86d12902723756eafa82ba6cc322136c4a67a78e0104ac988e14eb7fb5a1  zlib-1.2.7-21.el7_9.x86_64.rpm
-          26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6  tcl8.6.12-src.tar.gz
-          12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630  tk8.6.12-src.tar.gz
           EOF
-            sha256sum Python-3.12.10.tar.xz openssl-3.5.9.tar.gz libxcrypt-4.5.2.tar.xz *.rpm tcl8.6.12-src.tar.gz tk8.6.12-src.tar.gz
+            sha256sum Python-3.14.10.tar.xz openssl-3.5.9.tar.gz libxcrypt-4.5.2.tar.xz zstd-1.5.7.tar.gz *.rpm tcl8.6.18-src.tar.gz tk8.6.18-src.tar.gz
           ) | tee ci-artifact/source-inputs.sha256
 
       - name: Build controlled runtime in pinned glibc 2.17 container
@@ -180,12 +178,13 @@ jobs:
               echo "container_arch=$(uname -m)"
               echo "container_glibc=$(getconf GNU_LIBC_VERSION)"
               exec bash scripts/linux/build-core-runtime.sh \
-                --python-source /inputs/Python-3.12.10.tar.xz \
+                --python-source /inputs/Python-3.14.10.tar.xz \
                 --openssl-source /inputs/openssl-3.5.9.tar.gz \
                 --libxcrypt-source /inputs/libxcrypt-4.5.2.tar.xz \
+                --zstd-source /inputs/zstd-1.5.7.tar.gz \
                 --dev-rpm-dir /inputs \
-                --tcl-source /inputs/tcl8.6.12-src.tar.gz \
-                --tk-source /inputs/tk8.6.12-src.tar.gz
+                --tcl-source /inputs/tcl8.6.18-src.tar.gz \
+                --tk-source /inputs/tk8.6.18-src.tar.gz
             ' 2>&1 | tee ci-artifact/linux-glibc217-build.log
 
       - name: Provision host Xvfb
@@ -237,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -x out/linux-x64/core/bin/python3.12
+          test -x out/linux-x64/core/bin/python3.14
           test -f out/linux-x64/core/build-provenance-linux.json
           core_provenance_sha="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
           {
@@ -353,7 +352,7 @@ jobs:
 
           core_provenance_after_build="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
           test "$core_provenance_after_build" = "$core_provenance_before"
-          test -x out/linux-x64/numpy/bin/python3.12
+          test -x out/linux-x64/numpy/bin/python3.14
 
       - name: Independently validate controlled glibc 2.17 NumPy runtime offline
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
@@ -465,12 +464,13 @@ jobs:
           package_runtime() {
             local profile="$1"
             local runtime_root="out/linux-x64/$profile"
-            local archive="dist/python-runtime-v0.1.0-linux-x64-cp312-$profile.tar.gz"
-            test -x "$runtime_root/bin/python3.12"
+            local archive="dist/python-runtime-v0.1.0-linux-x64-cp314-$profile.tar.gz"
+            test -x "$runtime_root/bin/python3.14"
             python3 scripts/common/write_runtime_manifest.py \
               --root "$runtime_root" \
               --platform linux-x64 \
-              --profile "$profile"
+              --profile "$profile" \
+              --component-provenance "$runtime_root/build-provenance-linux.json"
             tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
               -cf - -C "$runtime_root" . | gzip -n -9 > "$archive"
             archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
@@ -482,13 +482,15 @@ jobs:
           python3 scripts/common/write_qualification.py \
             --platform linux-x64 \
             --profile core \
-            --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz \
+            --artifact dist/python-runtime-v0.1.0-linux-x64-cp314-core.tar.gz \
             --output dist/qualification-linux-x64-core.json \
             --check pinned_manylinux=pass \
             --check glibc_floor=pass \
             --check isolated_cpython=pass \
             --check native_closure=pass \
+            --check tcl_tk_8_6_18=pass \
             --check numpy_absent=pass \
+            --check relocation=pass \
             --check private_consumer_checkout=not-applicable
 
           if [[ "$QUALIFY_NUMPY" == "true" ]]; then
@@ -496,7 +498,7 @@ jobs:
             python3 scripts/common/write_qualification.py \
               --platform linux-x64 \
               --profile numpy \
-              --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+              --artifact dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz \
               --output dist/qualification-linux-x64-numpy.json \
               --check pinned_manylinux=pass \
               --check glibc_floor=pass \
@@ -505,16 +507,17 @@ jobs:
               --check private_openblas=pass \
               --check blas_lapack_functional=pass \
               --check native_closure=pass \
+              --check relocation=pass \
               --check private_consumer_checkout=not-applicable
           fi
 
       - name: Upload qualified Linux core producer runtime
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: python-runtime-linux-x64-cp312-core
+          name: python-runtime-linux-x64-cp314-core
           path: |
-            dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz
-            dist/python-runtime-v0.1.0-linux-x64-cp312-core.tar.gz.sha256
+            dist/python-runtime-v0.1.0-linux-x64-cp314-core.tar.gz
+            dist/python-runtime-v0.1.0-linux-x64-cp314-core.tar.gz.sha256
             dist/qualification-linux-x64-core.json
             out/linux-x64/core/build-provenance-linux.json
             out/linux-x64/core/runtime-manifest.json
@@ -525,10 +528,10 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: python-runtime-linux-x64-cp312-numpy
+          name: python-runtime-linux-x64-cp314-numpy
           path: |
-            dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz
-            dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz.sha256
+            dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz
+            dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz.sha256
             dist/qualification-linux-x64-numpy.json
             out/linux-x64/numpy/build-provenance-linux.json
             out/linux-x64/numpy/build-provenance-linux-numpy.json

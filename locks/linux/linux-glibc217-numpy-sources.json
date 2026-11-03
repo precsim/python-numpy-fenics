@@ -2,9 +2,9 @@
   "schema_version": 1,
   "target": {
     "architecture": "x86_64",
-    "python_version": "3.12.10",
-    "python_abi": "cp312",
-    "python_wheel_abi": "cp312-cp312",
+    "python_version": "3.14.10",
+    "python_abi": "cp314",
+    "python_wheel_abi": "cp314-cp314",
     "platform_policy": "manylinux2014_x86_64 / manylinux_2_17_x86_64",
     "glibc_floor": "2.17"
   },
@@ -12,6 +12,22 @@
     "repository": "quay.io/pypa/manylinux2014_x86_64",
     "digest": "sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851",
     "ref": "quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851"
+  },
+  "binary_candidate": {
+    "name": "numpy",
+    "version": "2.5.2",
+    "filename": "numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c7/99/461bd36dbdfac6c1c53efa370bd55a83227542d0d118f1677dbf1a3dacd5/numpy-2.5.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "sha256": "318b9a4c845dbea06708a29c84ee429cc3065048db34cdb799047643492050ee",
+    "expected_wheel_tags": [
+      "cp314-cp314-manylinux_2_27_x86_64",
+      "cp314-cp314-manylinux_2_28_x86_64"
+    ],
+    "rejection_policy": {
+      "reason": "declared-manylinux-glibc-floor-above-target",
+      "target_glibc_floor": "2.17",
+      "declared_glibc_floors": ["2.27", "2.28"]
+    }
   },
   "sources": {
     "numpy": {

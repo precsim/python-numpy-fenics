@@ -1,6 +1,6 @@
 # python-numpy-fenics
 
-Public producer and qualification repository for relocatable CPython 3.12
+Public producer and qualification repository for relocatable CPython 3.14.10 / cp314
 runtime profiles containing NumPy and optional FEniCSx/DOLFINx/PETSc support.
 
 This repository is deliberately independent of downstream application source.
@@ -13,6 +13,7 @@ without giving public CI access to its repository.
 This repository owns:
 
 - controlled CPython runtime production;
+- producer-owned Tcl/Tk 8.6.18 acquisition, staging and qualification;
 - NumPy runtime production and BLAS/LAPACK provider qualification;
 - FEniCS/DOLFINx/PETSc/MPI package locking and overlay construction;
 - package-reuse-first qualification and narrowly scoped rebuild exceptions;
@@ -78,7 +79,7 @@ The Linux workflow also exercises a hosted selective-rebuild prototype after
 capturing the required stock ABI failure. The prototype binds that immutable
 preflight evidence, fetches the pinned public Basix/DOLFINx dependency sources
 by SHA-256, prepares the Python wheel builder from a fixed seven-wheel public
-closure on the already qualified NumPy CPython 3.12 runtime, replays the separate
+closure on the already qualified NumPy CPython 3.14 runtime, replays the separate
 41-record build-only toolchain lock, prepares the libxml2 zlib/liblzma build-only
 inputs from a two-record `@EXPLICIT` development-header transaction plus the
 already verified runtime `libzlib`/`liblzma` packages, compiles a C++20 probe

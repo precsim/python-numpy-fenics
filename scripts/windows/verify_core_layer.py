@@ -43,7 +43,7 @@ def _load_core_manifest(core_root: Path) -> tuple[Path, dict[str, object]]:
         payload.get("format_version") != 1
         or payload.get("platform") != "win-x64"
         or payload.get("profile") != "core"
-        or payload.get("python_abi") != "cp312"
+        or payload.get("python_abi") != "cp314"
     ):
         raise CoreLayerError("core runtime manifest identity is invalid")
     return manifest_path, payload
