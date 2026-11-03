@@ -195,7 +195,7 @@ staged_python="$runtime/bin/python3.14"
 export PYTHONDONTWRITEBYTECODE=1
 
 hash_numpy() {
-    "$staged_python" -I -S - "$site_packages" "$1" <<'PY'
+    "$staged_python" -B -I -S - "$site_packages" "$1" <<'PY'
 import hashlib
 import json
 import os
@@ -676,8 +676,8 @@ if not numpy_blas or not fenics_blas:
 print(f"fenics_import_order_{mode}=pass")
 PY
 
-"$staged_python" -S -P "$probe" "$runtime" numpy-first
-"$staged_python" -S -P "$probe" "$runtime" petsc-first
+"$staged_python" -B -S -P "$probe" "$runtime" numpy-first
+"$staged_python" -B -S -P "$probe" "$runtime" petsc-first
 
 poisson_runner="$work/poisson-runner.py"
 cat > "$poisson_runner" <<'PY'
@@ -699,7 +699,7 @@ code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 PY
 rm -rf "$cache"/*
-"$staged_python" -S -P "$poisson_runner" "$runtime" "$repo_root/tests/fenics/test_poisson.py"
+"$staged_python" -B -S -P "$poisson_runner" "$runtime" "$repo_root/tests/fenics/test_poisson.py"
 
 mapfile -t jit_modules < <(find "$cache" -type f -name '*.so' -print | LC_ALL=C sort)
 if ((${#jit_modules[@]} == 0)); then
@@ -771,7 +771,7 @@ if nonnumeric:
     print("fresh_ffcx_jit_allowed_nonnumeric_versions=" + ",".join(sorted(nonnumeric)))
 PY
 
-"$staged_python" -I -S - "$runtime" "$overlay_manifest" <<'PY'
+"$staged_python" -B -I -S - "$runtime" "$overlay_manifest" <<'PY'
 import json
 from pathlib import Path
 import re
