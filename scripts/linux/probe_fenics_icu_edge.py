@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -734,11 +735,42 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
     configure_result = run(configure, cwd=source_root, env=env)
     run([str(tools["make"]), "-j2"], cwd=source_root, env=env)
     run([str(tools["make"]), "install"], cwd=source_root, env=env)
+    # Conda's compiler wrapper adds a link-time search path into its own
+    # build-only prefix.  The experiment must be able to relocate the curl
+    # candidate without keeping that temporary toolchain on the ELF path.
+    relocation = relocate_curl_probe(install_prefix, build_tool_prefix)
     return install_prefix, {
         "configure": configure,
         "configure_output_sha256": hashlib.sha256(configure_result.stdout.encode("utf-8")).hexdigest(),
         "configuration_provenance": contract["probe"]["configuration_provenance"],
+        "relocation": relocation,
     }
+
+
+def relocate_curl_probe(install_prefix: Path, build_tool_prefix: Path) -> list[dict]:
+    patchelf = shutil.which("patchelf")
+    readelf = build_tool_prefix / "bin" / "x86_64-conda-linux-gnu-readelf"
+    if not patchelf:
+        raise ProbeError("ICU-edge relocation requires patchelf in the pinned manylinux container")
+    records = []
+    paths = [*sorted((install_prefix / "lib").glob("libcurl.so*")), install_prefix / "bin" / "curl"]
+    for path in paths:
+        if path.is_symlink() or not is_elf(path):
+            continue
+        before = read_elf(path, readelf)
+        # Reject unexpected absolute paths even during this build-only probe.
+        build_lib = str(build_tool_prefix / "lib")
+        for packed in before["rpath"]:
+            for entry in packed.split(":"):
+                if entry and not entry.startswith("$ORIGIN") and entry != build_lib:
+                    raise ProbeError(f"unexpected curl probe build RPATH: {path}: {entry}")
+        if before["rpath"]:
+            run([patchelf, "--set-rpath", "$ORIGIN", str(path)])
+        after = read_elf(path, readelf, strict_abi=True)
+        records.append({"path": str(path), "before_rpath": before["rpath"], "after_rpath": after["rpath"], "sha256": after["sha256"]})
+    if not any(Path(record["path"]).name.startswith("libcurl.so") for record in records):
+        raise ProbeError("curl relocation found no rebuilt libcurl ELF")
+    return records
 
 
 def external_allowlist(base_provenance_path: Path) -> set[str]:

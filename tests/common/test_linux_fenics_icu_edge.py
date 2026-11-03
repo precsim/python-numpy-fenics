@@ -173,6 +173,44 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProbeError, "absolute/non-relative RPATH"):
             mod.audit_rpaths(["/tmp/build/lib:$ORIGIN"], strict=True)
 
+    def test_curl_probe_relocation_removes_only_known_build_tool_rpath(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            install = root / "install"
+            (install / "lib").mkdir(parents=True)
+            (install / "bin").mkdir()
+            library = install / "lib" / "libcurl.so.4.8.0"
+            binary = install / "bin" / "curl"
+            for path in (library, binary):
+                path.write_bytes(b"\x7fELFtest")
+            # Use a drive-free path so the POSIX RPATH separator is not
+            # confused with a Windows drive letter during local tests.
+            tools = Path("build-tools")
+            bad_path = str(tools / "lib")
+            calls = []
+
+            def fake_read_elf(path, _readelf, strict_abi=False):
+                return {
+                    "path": str(path), "rpath": ["$ORIGIN"] if strict_abi else [f"{bad_path}:$ORIGIN"],
+                    "sha256": mod.sha256_file(path),
+                }
+
+            with mock.patch.object(mod.shutil, "which", return_value="/usr/bin/patchelf"), \
+                 mock.patch.object(mod, "read_elf", side_effect=fake_read_elf), \
+                 mock.patch.object(mod, "run", side_effect=lambda argv: calls.append(argv)):
+                records = mod.relocate_curl_probe(install, tools)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(argv[1:3] == ["--set-rpath", "$ORIGIN"] for argv in calls))
+
+            def unexpected_read_elf(path, _readelf, strict_abi=False):
+                return {"rpath": ["/unexpected/lib"]}
+
+            with mock.patch.object(mod.shutil, "which", return_value="/usr/bin/patchelf"), \
+                 mock.patch.object(mod, "read_elf", side_effect=unexpected_read_elf):
+                with self.assertRaisesRegex(mod.ProbeError, "unexpected curl probe build RPATH"):
+                    mod.relocate_curl_probe(install, tools)
+
     def test_curl_edge_and_independent_mpich_icu_control_are_both_required(self) -> None:
         contract = mod.load_contract(CONTRACT)
         stock_curl = closure_names(
