@@ -21,11 +21,18 @@ if (-not (Test-Path -LiteralPath $baseManifestPath -PathType Leaf)) {
 $baseManifest = Get-Content -LiteralPath $baseManifestPath -Raw | ConvertFrom-Json
 $baseManifestHash = (Get-FileHash -LiteralPath $baseManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($baseManifest.format_version -ne 1 -or
+    $baseManifest.artifact -ne "python-runtime-win-x64-cp314-numpy" -or
     $baseManifest.platform -ne "win-x64" -or
-    $baseManifest.python_abi -ne "cp312" -or
+    $baseManifest.python_abi -ne "cp314" -or
     $baseManifest.profile -ne "numpy" -or
+    $baseManifest.python.implementation -ne "CPython" -or
+    $baseManifest.python.version -ne "3.14.10" -or
+    $baseManifest.tcl_tk.version -ne "8.6.18" -or
+    $baseManifest.tcl_tk.ownership -ne "producer" -or
+    $baseManifest.numpy.version -ne "2.5.2" -or
+    -not $baseManifest.base_core -or
     $baseManifest.producer.repository -ne "precsim/python-numpy-fenics") {
-    throw "FEniCS overlay requires a qualified public win-x64 cp312 NumPy base runtime"
+    throw "FEniCS overlay requires the qualified public win-x64 cp314 NumPy base runtime with producer Tcl/Tk 8.6.18"
 }
 
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("fenics embedded runtime test " + [guid]::NewGuid().ToString("N"))
@@ -83,16 +90,29 @@ try {
         throw "Embedded-runtime manifest is missing after extraction"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ($manifest.format_version -ne 1 -or $manifest.platform -ne "win-x64" -or $manifest.python_abi -ne "cp312") {
+    if ($manifest.format_version -ne 1 -or
+        $manifest.artifact -ne "fenics-embed-runtime-win-x64-cp314" -or
+        $manifest.platform -ne "win-x64" -or
+        $manifest.python_abi -ne "cp314" -or
+        $manifest.python.version -ne "3.14.10") {
         throw "Embedded-runtime manifest identity is invalid"
     }
     if ($manifest.numpy.version -ne "2.5.2" -or
         $manifest.numpy.base_manifest_sha256 -ne $baseManifestHash -or
         $manifest.numpy.base_tree_sha256 -ne $baseTreeHash -or
         $manifest.numpy.base_entry_count -ne $numpyBefore.Count -or
+        $manifest.tcl_tk.version -ne "8.6.18" -or
+        $manifest.tcl_tk.ownership -ne "producer" -or
+        $manifest.tcl_tk.providers.tcl.path -ne $baseManifest.tcl_tk.providers.tcl.path -or
+        $manifest.tcl_tk.providers.tcl.sha256 -ne $baseManifest.tcl_tk.providers.tcl.sha256 -or
+        $manifest.tcl_tk.providers.tk.path -ne $baseManifest.tcl_tk.providers.tk.path -or
+        $manifest.tcl_tk.providers.tk.sha256 -ne $baseManifest.tcl_tk.providers.tk.sha256 -or
+        $manifest.tcl_tk.tkinter_rebuild.path -ne $baseManifest.tcl_tk.tkinter_rebuild.path -or
+        $manifest.tcl_tk.tkinter_rebuild.sha256 -ne $baseManifest.tcl_tk.tkinter_rebuild.sha256 -or
         $manifest.layering.base_profile -ne "numpy" -or
         $manifest.layering.producer_python_included -ne $false -or
         $manifest.layering.producer_numpy_included -ne $false -or
+        $manifest.layering.producer_tcl_tk_included -ne $false -or
         $manifest.jit.backend -ne "micro-clang" -or
         $manifest.jit.backend_version -ne "20260826") {
         throw "Embedded-runtime manifest does not describe the qualified NumPy/micro-Clang runtime"
@@ -101,6 +121,9 @@ try {
     foreach ($entry in @($manifest.files)) {
         if ([string]$entry.path -match '^(?i)Lib/site-packages/(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)') {
             throw "FEnICS overlay manifest illegally targets the base NumPy distribution: $($entry.path)"
+        }
+        if (@($entry.owners) -contains "tcl" -or @($entry.owners) -contains "tk") {
+            throw "FEniCS overlay manifest illegally includes source-prefix Tcl/Tk ownership: $($entry.path)"
         }
         $path = Join-Path $runtimeRoot ([string]$entry.path -replace '/', '\')
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -172,10 +195,14 @@ root = Path(sys.argv[1]).resolve()
 assert Path(sys.prefix).resolve() == root, (sys.prefix, root)
 import fenics_embed_runtime
 assert fenics_embed_runtime.activate() == root
+import _tkinter, tkinter
 import numpy, dolfinx, petsc4py
 from mpi4py import MPI
 from dolfinx import mesh
 assert numpy.__version__ == "2.5.2"
+assert str(_tkinter.TCL_VERSION) == "8.6"
+assert str(_tkinter.TK_VERSION) == "8.6"
+assert tkinter.Tcl().eval("info patchlevel") == "8.6.18"
 assert Path(numpy.__file__).resolve().is_relative_to(root / "Lib" / "site-packages")
 assert Path(dolfinx.__file__).resolve().is_relative_to(root / "Lib" / "site-packages")
 assert Path(petsc4py.__file__).resolve().is_relative_to(root / "Lib" / "site-packages")

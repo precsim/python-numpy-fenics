@@ -43,7 +43,7 @@ base_manifest="$base_runtime/runtime-manifest.json"
 base_core_provenance="$base_runtime/build-provenance-linux.json"
 base_provenance="$base_runtime/build-provenance-linux-numpy.json"
 base_numpy_payload="$base_runtime/numpy-payload-manifest-linux.json"
-for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.12"; do
+for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.14"; do
     [[ -e "$required" ]] || { echo "qualified NumPy base input is missing: $required" >&2; exit 1; }
 done
 verify_inherited_base_tree() {
@@ -113,6 +113,7 @@ print("inherited_base_manifest_identity=pass")
 PY
 }
 python3 - "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_qualification" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
@@ -125,10 +126,25 @@ if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != "linux-x64"
     or manifest.get("profile") != "numpy"
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
     or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
 ):
     raise SystemExit(f"invalid public NumPy base manifest: {manifest!r}")
+tcl_tk = manifest.get("tcl_tk")
+if (
+    not isinstance(tcl_tk, dict)
+    or tcl_tk.get("version") != "8.6.18"
+    or tcl_tk.get("ownership") != "producer"
+    or not isinstance(tcl_tk.get("provenance_path"), str)
+):
+    raise SystemExit(f"invalid public NumPy Tcl/Tk contract: {tcl_tk!r}")
+tcl_tk_path = pathlib.Path(sys.argv[1]).parent.joinpath(*pathlib.PurePosixPath(tcl_tk["provenance_path"]).parts)
+if (
+    not tcl_tk_path.is_file()
+    or tcl_tk_path.is_symlink()
+    or hashlib.sha256(tcl_tk_path.read_bytes()).hexdigest() != tcl_tk.get("provenance_sha256")
+):
+    raise SystemExit("public NumPy Tcl/Tk provenance identity mismatch")
 baseline = provenance.get("baseline", {})
 if baseline.get("architecture") != "x86_64" or str(baseline.get("glibc")) != "2.17":
     raise SystemExit(f"invalid public NumPy base ABI baseline: {baseline!r}")
@@ -154,8 +170,8 @@ if (
     raise SystemExit(f"invalid public NumPy qualification: {qualification!r}")
 if provenance.get("numpy", {}).get("version") != "2.5.2":
     raise SystemExit("public NumPy base provenance does not identify NumPy 2.5.2")
-if core_provenance.get("python", {}).get("version") != "3.12.10":
-    raise SystemExit("public NumPy base provenance does not identify CPython 3.12.10")
+if core_provenance.get("python", {}).get("version") != "3.14.10":
+    raise SystemExit("public NumPy base provenance does not identify CPython 3.14.10")
 PY
 
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/fenics linux overlay test.XXXXXX")"
@@ -167,8 +183,8 @@ trap 'rm -rf "$work"' EXIT
 cp -a "$base_runtime"/. "$runtime"/
 verify_inherited_base_tree "$runtime" no
 
-site_packages="$runtime/lib/python3.12/site-packages"
-staged_python="$runtime/bin/python3.12"
+site_packages="$runtime/lib/python3.14/site-packages"
+staged_python="$runtime/bin/python3.14"
 [[ -x "$staged_python" && -d "$site_packages/numpy" ]] || {
     echo "public NumPy base runtime is incomplete" >&2
     exit 1
@@ -224,6 +240,7 @@ base_core_provenance = pathlib.Path(sys.argv[5])
 base_provenance = pathlib.Path(sys.argv[6])
 base_numpy_payload = pathlib.Path(sys.argv[7])
 base_qualification = pathlib.Path(sys.argv[8])
+base_manifest_data = json.loads(base_manifest.read_text(encoding="utf-8"))
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -247,7 +264,10 @@ if (
     or manifest.get("platform") != "linux-x64"
     or manifest.get("profile") != "fenics"
     or manifest.get("architecture") != "x86_64"
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
+    or manifest.get("consumer_python") != "3.14.10"
+    or manifest.get("stock_package_python_abi") != "cp312"
+    or manifest.get("tcl_tk") != base_manifest_data.get("tcl_tk")
     or producer.get("repository") != "precsim/python-numpy-fenics"
     or manifest.get("numpy", {}).get("version") != "2.5.2"
     or manifest.get("numpy", {}).get("producer_payload_excluded") is not True
@@ -404,8 +424,8 @@ if candidate is not None:
 required_relocations = {
     "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
-    "fenics-runtime/conda/lib/python3.12/site-packages/dolfinx/cpp.abi3.so": ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@"),
-    "fenics-runtime/conda/lib/python3.12/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
+    "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/cpp.abi3.so": ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@"),
+    "fenics-runtime/conda/lib/python3.14/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
 }
 for relative, expected in required_relocations.items():
     if relative in replacement_paths:
@@ -509,7 +529,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 mode = sys.argv[2]
-bootstrap = root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
+bootstrap = root / "lib" / "python3.14" / "site-packages" / "fenics_embed_runtime.py"
 spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
 if spec is None or spec.loader is None:
     raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
@@ -521,8 +541,8 @@ if activated != root:
     raise SystemExit(f"unexpected activated runtime root: {activated} != {root}")
 
 private = root / "fenics-runtime" / "conda"
-public_site = root / "lib" / "python3.12" / "site-packages"
-private_site = private / "lib" / "python3.12" / "site-packages"
+public_site = root / "lib" / "python3.14" / "site-packages"
+private_site = private / "lib" / "python3.14" / "site-packages"
 if [Path(p).resolve() for p in sys.path[:2]] != [private_site.resolve(), public_site.resolve()]:
     raise SystemExit(f"authoritative Python sites are not first: {sys.path[:4]}")
 
@@ -663,7 +683,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 script = Path(sys.argv[2]).resolve()
-bootstrap = root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
+bootstrap = root / "lib" / "python3.14" / "site-packages" / "fenics_embed_runtime.py"
 spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
 if spec is None or spec.loader is None:
     raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")

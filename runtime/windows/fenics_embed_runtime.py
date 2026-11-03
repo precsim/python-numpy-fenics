@@ -26,9 +26,10 @@ def activate() -> Path:
 
     if os.name != "nt":
         raise RuntimeError("fenics_embed_runtime is Windows-only")
-    if sys.version_info[:2] != (3, 12):
+    if sys.version_info[:3] != (3, 14, 10):
         raise RuntimeError(
-            f"FEniCS embedded runtime requires CPython 3.12, got {sys.version_info.major}.{sys.version_info.minor}"
+            "FEniCS embedded runtime requires CPython 3.14.10, "
+            f"got {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
 
     root = Path(sys.prefix).resolve()

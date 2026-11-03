@@ -59,8 +59,8 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                 "kind": "fenics-python-wheel-builder",
                 "target": {
                     "architecture": "x86_64",
-                    "python_version": "3.12.10",
-                    "python_abi": "cp312",
+                    "python_version": "3.14.10",
+                    "python_abi": "cp314",
                     "glibc_floor": "2.17",
                 },
                 "policy": {
@@ -136,7 +136,7 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                     "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
                     "wheels": [
                         {
-                            "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                            "path": "wheels/fenics_basix-0.11.0-cp314-cp314-linux_x86_64.whl",
                             "sha256": "2" * 64,
                             "bytes": 456,
                         }
@@ -207,7 +207,7 @@ class FenicsNativeRebuildTests(unittest.TestCase):
             "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
             "wheels": [
                 {
-                    "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                    "path": "wheels/fenics_basix-0.11.0-cp314-cp314-linux_x86_64.whl",
                     "sha256": "2" * 64,
                     "bytes": 456,
                 }

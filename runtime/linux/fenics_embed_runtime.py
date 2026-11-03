@@ -19,11 +19,11 @@ _GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
 
 def _runtime_root() -> Path:
     here = Path(__file__).resolve()
-    # <runtime>/lib/python3.12/site-packages/fenics_embed_runtime.py
+    # <runtime>/lib/python3.14/site-packages/fenics_embed_runtime.py
     if len(here.parents) < 4 or here.parents[2].name != "lib":
         raise RuntimeError(f"cannot derive embedded runtime root from bootstrap location: {here}")
     root = here.parents[3]
-    if not (root / "bin" / "python3.12").exists():
+    if not (root / "bin" / "python3.14").exists():
         raise RuntimeError(f"derived runtime root has no CPython executable: {root}")
     return root.resolve()
 
@@ -120,7 +120,7 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
     private_prefix = runtime_root / "fenics-runtime" / "conda"
     compiler = _private_compiler(private_prefix)
     sysroot = private_prefix / "x86_64-conda-linux-gnu" / "sysroot"
-    python_include = runtime_root / "include" / "python3.12"
+    python_include = runtime_root / "include" / "python3.14"
     private_include = private_prefix / "include"
     for required, label in (
         (sysroot, "bundled glibc-2.17 sysroot"),
@@ -191,9 +191,10 @@ def activate() -> Path:
     global _ACTIVATED_ROOT
     if not sys.platform.startswith("linux"):
         raise RuntimeError("fenics_embed_runtime Linux overlay requires Linux")
-    if sys.version_info[:2] != (3, 12):
+    if sys.version_info[:3] != (3, 14, 10):
         raise RuntimeError(
-            f"FEnICS embedded runtime requires CPython 3.12, got {sys.version_info.major}.{sys.version_info.minor}"
+            "FEnICS embedded runtime requires CPython 3.14.10, "
+            f"got {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
 
     root = _runtime_root()
@@ -205,8 +206,8 @@ def activate() -> Path:
         return root
 
     private_prefix = root / "fenics-runtime" / "conda"
-    private_site = private_prefix / "lib" / "python3.12" / "site-packages"
-    public_site = root / "lib" / "python3.12" / "site-packages"
+    private_site = private_prefix / "lib" / "python3.14" / "site-packages"
+    public_site = root / "lib" / "python3.14" / "site-packages"
     gcc_specs_template = (
         private_prefix / "lib" / "gcc" / "x86_64-conda-linux-gnu" / "16.2.0" / "conda.specs"
     )

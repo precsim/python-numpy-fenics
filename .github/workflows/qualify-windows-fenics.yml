@@ -18,18 +18,63 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install reference CPython 3.12.10
+      - name: Install reference CPython 3.14.10
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12.10"
+          python-version: "3.14.10"
           architecture: x64
 
-      - name: Capture non-conda Python
+      - name: Install pinned producer CPython binary asset
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $python = (Get-Command python.exe -ErrorAction Stop).Source
-          "REFERENCE_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          python -c "import platform,sys; print(sys.executable); print(platform.python_version())"
+          $ErrorActionPreference = "Stop"
+          $lockPath = (Resolve-Path .\locks\core\cpython-3.14.10-win-x64.json).Path
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $asset = $lock.upstream.archive_asset
+          $installerRecord = $lock.upstream.installer
+          $headers = @{ Accept = "application/vnd.github+json"; Authorization = "Bearer $env:GH_TOKEN"; "X-GitHub-Api-Version" = "2022-11-28" }
+          $metadata = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/actions/python-versions/releases/assets/$($asset.id)"
+          if ($metadata.id -ne $asset.id -or $metadata.name -ne $asset.filename -or $metadata.size -ne $asset.bytes -or $metadata.digest -ne "sha256:$($asset.sha256)") {
+            throw "Pinned actions/python-versions asset identity mismatch"
+          }
+          if ($metadata.browser_download_url -ne $asset.url) {
+            throw "Pinned actions/python-versions asset release URL mismatch"
+          }
+          $archive = Join-Path $env:RUNNER_TEMP $asset.filename
+          Invoke-WebRequest -Uri $metadata.browser_download_url -OutFile $archive
+          if ((Get-Item -LiteralPath $archive).Length -ne $asset.bytes) { throw "Pinned CPython binary asset byte count mismatch" }
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $asset.sha256) { throw "Pinned CPython binary asset SHA-256 mismatch: $sha" }
+          $setup = Join-Path $env:RUNNER_TEMP "producer-python-setup"
+          Remove-Item -LiteralPath $setup -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $archive -DestinationPath $setup
+          $installer = Join-Path $setup $installerRecord.filename
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Pinned CPython installer is missing" }
+          if ((Get-Item -LiteralPath $installer).Length -ne $installerRecord.bytes) { throw "Pinned CPython installer byte count mismatch" }
+          $installerSha = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($installerSha -ne $installerRecord.sha256) { throw "Pinned CPython installer SHA-256 mismatch: $installerSha" }
+          $installRoot = Join-Path $env:RUNNER_TEMP "producer-python-3.14.10-x64"
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          $installerArgs = @(
+            "/quiet",
+            "InstallAllUsers=0",
+            "TargetDir=$installRoot",
+            "Include_pip=0",
+            "Include_launcher=0",
+            "InstallLauncherAllUsers=0",
+            "PrependPath=0",
+            "Shortcuts=0"
+          )
+          $process = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Pinned CPython installer failed with exit code $($process.ExitCode)" }
+          $python = Join-Path $installRoot "python.exe"
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Pinned producer CPython is missing: $python" }
+          "PRODUCER_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CPYTHON_BINARY_ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CPYTHON_BINARY_LOCK=$lockPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $python -I -S -c "import platform,struct; assert platform.python_version() == '3.14.10'; assert 8*struct.calcsize('P') == 64"
 
       - name: Install and verify pinned micromamba
         shell: pwsh
@@ -64,24 +109,58 @@ jobs:
             }
           }
 
-      - name: Fetch and verify public NumPy base wheel
+      - name: Fetch verified Tcl/Tk 8.6.18 sources
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $input = Join-Path $env:RUNNER_TEMP "tcltk-8.6.18-sources"
+          python scripts/common/fetch_tcltk_sources.py --lock locks/core/tcltk-8.6.18.json --output-dir $input
+          if ($LASTEXITCODE -ne 0) { throw "Tcl/Tk source fetch failed" }
+          "TCL_SOURCE=$(Join-Path $input 'tcl8.6.18-src.tar.gz')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TK_SOURCE=$(Join-Path $input 'tk8.6.18-src.tar.gz')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Fetch verified CPython 3.14.10 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $input = Join-Path $env:RUNNER_TEMP "cpython-3.14.10-source"
+          New-Item -ItemType Directory -Force -Path $input | Out-Null
+          $archive = Join-Path $input "Python-3.14.10.tgz"
+          & curl.exe --fail --location --retry 3 --retry-all-errors -o $archive https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz
+          if ($LASTEXITCODE -ne 0) { throw "CPython source download failed" }
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne "9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192") {
+            throw "CPython source SHA-256 mismatch: $sha"
+          }
+          "CPYTHON_SOURCE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Fetch and verify pinned NumPy base wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
           $input = Join-Path $env:RUNNER_TEMP "numpy-wheel"
           New-Item -ItemType Directory -Force -Path $input | Out-Null
-          & $env:REFERENCE_PYTHON -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
-          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
-          $wheel = Join-Path $input "numpy-2.5.2-cp312-cp312-win_amd64.whl"
-          if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned public NumPy wheel is missing" }
+          $wheel = Join-Path $input "numpy-2.5.2-cp314-cp314-win_amd64.whl"
+          $wheelUrl = "https://files.pythonhosted.org/packages/15/5c/7bcbd5b11f94199073320410cddcbb80cee62415bfeb540874b265c2d922/numpy-2.5.2-cp314-cp314-win_amd64.whl"
+          Invoke-WebRequest -Uri $wheelUrl -OutFile $wheel
+          if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned Windows NumPy wheel is missing" }
+          if ((Get-Item -LiteralPath $wheel).Length -ne 12597627) { throw "Pinned Windows NumPy wheel byte count mismatch" }
           $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($sha -ne "28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4") { throw "Pinned public NumPy wheel SHA-256 mismatch: $sha" }
+          if ($sha -ne "7587f53dfbd5edc0f7b87c6217b4c6d2d1f2ef9c3da70bc1315e7db5f8d7ec9d") {
+            throw "Pinned Windows NumPy wheel SHA-256 mismatch: $sha"
+          }
           "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Stage and qualify public NumPy base runtime
+      - name: Stage and qualify exact public core and NumPy base runtimes
         shell: pwsh
         run: |
-          .\scripts\windows\stage-runtime.ps1 -Python $env:REFERENCE_PYTHON -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy
-          .\scripts\windows\test-runtime.ps1 -Runtime .\out\win-x64\numpy -RuntimeProfile numpy
+          New-Item -ItemType Directory -Force -Path .\build\windows-fenics-qualification | Out-Null
+          .\scripts\windows\stage-runtime.ps1 -Python $env:PRODUCER_PYTHON -RuntimeProfile core -CpythonBinaryLock $env:CPYTHON_BINARY_LOCK -CpythonBinaryAsset $env:CPYTHON_BINARY_ASSET -CpythonSource $env:CPYTHON_SOURCE -TclSource $env:TCL_SOURCE -TkSource $env:TK_SOURCE -TclTkLock .\locks\core\tcltk-8.6.18.json -Output .\out\win-x64\core
+          python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\core --profile core --output .\out\win-x64\core\provenance\pe-native-closure-core.json --seal-manifest
+          .\scripts\windows\stage-runtime.ps1 -CoreRuntime .\out\win-x64\core -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy -LayerEvidence .\build\windows-fenics-qualification\numpy-core-layer-staged.json
+          python .\scripts\windows\pe_native_closure.py --runtime .\out\win-x64\numpy --profile numpy --output .\out\win-x64\numpy\provenance\pe-native-closure-numpy.json --seal-manifest
+          .\scripts\windows\test-runtime.ps1 -Runtime .\out\win-x64\core -RuntimeProfile core -NativeClosureOutput .\build\windows-fenics-qualification\pe-native-closure-core.json
+          .\scripts\windows\test-runtime.ps1 -Runtime .\out\win-x64\numpy -RuntimeProfile numpy -CoreRuntime .\out\win-x64\core -LayerEvidence .\build\windows-fenics-qualification\numpy-core-layer-qualified.json -NativeClosureOutput .\build\windows-fenics-qualification\pe-native-closure-numpy.json
 
       - name: Replay exact locked FEniCS source prefix
         shell: pwsh
@@ -106,29 +185,32 @@ jobs:
         shell: pwsh
         run: |
           .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -BaseRuntime .\out\win-x64\numpy -Output .\dist -Version 0.1.0
-          $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
+          $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp314.zip"
           $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$zip.sha256" -Value "$sha  $([IO.Path]::GetFileName($zip))" -Encoding utf8NoBOM
 
       - name: Qualify exact overlay against public NumPy base runtime
         shell: pwsh
         run: |
-          $zip = Resolve-Path ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
+          $zip = Resolve-Path ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp314.zip"
           .\scripts\windows\test-fenics-overlay.ps1 -Zip $zip -BaseRuntime .\out\win-x64\numpy
 
       - name: Write producer qualification evidence
         shell: pwsh
-        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check package_hash_verification=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
+        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check package_hash_verification=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified overlay
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: fenics-embed-runtime-win-x64-cp312
+          name: fenics-embed-runtime-win-x64-cp314
           path: |
-            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip
-            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip.sha256
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip.sha256
             dist/SHA256SUMS-embedded-runtime.txt
             dist/qualification-win-x64-fenics.json
+            build/windows-fenics-qualification/
+            out/win-x64/core/runtime-manifest.json
+            out/win-x64/numpy/runtime-manifest.json
             locks/windows/windows-x64-fenics-explicit.txt
             locks/windows/windows-x64-fenics-package-lock.json
             fenics-package-lock-evidence.json

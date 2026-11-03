@@ -31,6 +31,12 @@ REQUIRED_FIELDS = (
     "md5",
 )
 EXPECTED_RECORD_COUNT = 128
+STOCK_PYTHON_VERSION = "3.12"
+TARGET_PYTHON_VERSION = "3.14"
+TARGET_PYTHON_PATCH = "3.14.10"
+TARGET_PYTHON_ABI = "cp314"
+STOCK_PYTHON_SITE = PurePosixPath(f"lib/python{STOCK_PYTHON_VERSION}/site-packages")
+TARGET_PYTHON_SITE = PurePosixPath(f"lib/python{TARGET_PYTHON_VERSION}/site-packages")
 ALWAYS_EXCLUDED_PACKAGES = {
     "_python_abi3_support",
     "cpython",
@@ -53,8 +59,10 @@ FORBIDDEN_PROVIDER_PACKAGES = {
     "rocm-smi",
 }
 NUMPY_PREFIXES = (
-    "lib/python3.12/site-packages/numpy/",
-    "lib/python3.12/site-packages/numpy.libs/",
+    f"{STOCK_PYTHON_SITE.as_posix()}/numpy/",
+    f"{STOCK_PYTHON_SITE.as_posix()}/numpy.libs/",
+    f"{TARGET_PYTHON_SITE.as_posix()}/numpy/",
+    f"{TARGET_PYTHON_SITE.as_posix()}/numpy.libs/",
 )
 GCC_SPECS_RELATIVE = PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs")
 GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
@@ -92,6 +100,10 @@ NATIVE_HANDOFF_REPLACEMENT_OWNERS = {
     "fenics-libdolfinx",
     "fenics-dolfinx",
     NATIVE_HANDOFF_PROVIDER_OWNER,
+}
+NATIVE_HANDOFF_WHEEL_ROOTS = {
+    "fenics-basix": ("basix", "fenics_basix-0.11.0.dist-info"),
+    "fenics-dolfinx": ("dolfinx", "fenics_dolfinx-0.11.0.dist-info"),
 }
 NATIVE_HANDOFF_SOURCE_COMPONENTS = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
 NATIVE_HANDOFF_SOURCE_MANIFEST = "locks/linux/linux-x86_64-fenics-rebuild-sources.json"
@@ -173,15 +185,62 @@ def handoff_forbidden_destination(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
     if numpy_owned_path(relative):
         return True
-    if text.startswith("lib/python3.12/") and not text.startswith("lib/python3.12/site-packages/"):
+    if re.match(r"^bin/(?:python|pip)(?:3(?:\.(?:12|14))?)?(?:$|[.-])", text):
         return True
-    if text.startswith(("include/python3.12", "conda-meta/")):
-        return True
-    if re.match(r"^bin/(?:python|pip)(?:3(?:\.12)?)?(?:$|\.)", text):
-        return True
-    if re.match(r"^lib/libpython3\.12(?:\..*)?$", text):
+    for version in (STOCK_PYTHON_VERSION, TARGET_PYTHON_VERSION):
+        site = f"lib/python{version}/site-packages/"
+        if text.startswith(f"lib/python{version}/") and not text.startswith(site):
+            return True
+        if text.startswith(f"include/python{version}"):
+            return True
+        escaped = re.escape(version)
+        if re.match(rf"^lib/libpython{escaped}(?:\..*)?$", text):
+            return True
+    if text.startswith("conda-meta/"):
         return True
     return False
+
+
+def staged_runtime_relative(relative: PurePosixPath) -> PurePosixPath:
+    """Map immutable cp312 package paths into the cp314 overlay layout."""
+
+    try:
+        tail = relative.relative_to(STOCK_PYTHON_SITE)
+    except ValueError:
+        return relative
+    return TARGET_PYTHON_SITE / tail
+
+
+def staged_locked_package_relative(
+    relative: PurePosixPath,
+    lock_record: dict[str, Any],
+    *,
+    native_rebuild_active: bool,
+) -> PurePosixPath:
+    """Translate only target-independent Python payload into the cp314 layout."""
+
+    translated = staged_runtime_relative(relative)
+    if translated == relative or str(lock_record.get("subdir")) == "noarch":
+        return translated
+    if native_rebuild_active:
+        raise SystemExit(
+            "cp314 overlay cannot relabel target-specific cp312 Python payload without an "
+            f"explicit cp314 replacement: {lock_record.get('name')}: {relative}"
+        )
+    # Stock-preflight staging preserves the historical path. If its ABI audit
+    # unexpectedly passes, main() still rejects the stage before archiving.
+    return relative
+
+
+def target_wheel_owned_path(owner: str, relative: PurePosixPath) -> bool:
+    roots = NATIVE_HANDOFF_WHEEL_ROOTS.get(owner)
+    if roots is None:
+        return False
+    try:
+        tail = relative.relative_to(TARGET_PYTHON_SITE)
+    except ValueError:
+        return False
+    return bool(tail.parts) and tail.parts[0] in roots
 
 
 def reject_handoff_symlink_components(root: Path, relative: PurePosixPath) -> Path:
@@ -374,7 +433,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         core_provenance_path,
         provenance_path,
         numpy_payload,
-        base / "bin" / "python3.12",
+        base / "bin" / f"python{TARGET_PYTHON_VERSION}",
     ):
         if not required.exists():
             raise SystemExit(f"qualified public NumPy base input is missing: {required}")
@@ -383,10 +442,27 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         manifest.get("format_version") != 1
         or manifest.get("platform") != "linux-x64"
         or manifest.get("profile") != "numpy"
-        or manifest.get("python_abi") != "cp312"
+        or manifest.get("python_abi") != TARGET_PYTHON_ABI
         or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
     ):
         raise SystemExit(f"invalid public NumPy base runtime manifest: {manifest_path}")
+    tcl_tk = manifest.get("tcl_tk")
+    if (
+        not isinstance(tcl_tk, dict)
+        or tcl_tk.get("version") != "8.6.18"
+        or tcl_tk.get("ownership") != "producer"
+        or not isinstance(tcl_tk.get("provenance_path"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(tcl_tk.get("provenance_sha256", "")))
+    ):
+        raise SystemExit("qualified NumPy base does not prove producer-owned Tcl/Tk 8.6.18")
+    tcl_tk_provenance_relative = safe_relative(str(tcl_tk["provenance_path"]))
+    tcl_tk_provenance = base / Path(*tcl_tk_provenance_relative.parts)
+    if (
+        not tcl_tk_provenance.is_file()
+        or tcl_tk_provenance.is_symlink()
+        or sha256_file(tcl_tk_provenance) != tcl_tk["provenance_sha256"]
+    ):
+        raise SystemExit("qualified NumPy base Tcl/Tk provenance identity does not match the runtime tree")
     validate_runtime_manifest_tree(base, manifest_path, manifest)
     qualification = read_json(qualification_path)
     checks = qualification.get("checks")
@@ -416,9 +492,9 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         raise SystemExit("public NumPy base does not carry the qualified Linux glibc-2.17 baseline")
     if base_provenance.get("numpy", {}).get("version") != "2.5.2":
         raise SystemExit("public NumPy base provenance does not identify NumPy 2.5.2")
-    if core_provenance.get("python", {}).get("version") != "3.12.10":
-        raise SystemExit("public NumPy base provenance does not identify CPython 3.12.10")
-    site = base / "lib" / "python3.12" / "site-packages"
+    if core_provenance.get("python", {}).get("version") != TARGET_PYTHON_PATCH:
+        raise SystemExit(f"public NumPy base provenance does not identify CPython {TARGET_PYTHON_PATCH}")
+    site = base.joinpath(*TARGET_PYTHON_SITE.parts)
     if not (site / "numpy").is_dir():
         raise SystemExit("public NumPy base is missing NumPy")
     return {
@@ -431,6 +507,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         "numpy_payload_path": numpy_payload,
         "qualification": qualification,
         "qualification_path": qualification_path,
+        "tcl_tk": tcl_tk,
     }
 
 
@@ -463,7 +540,11 @@ def package_owned_paths(record: dict[str, Any]) -> list[dict[str, Any]]:
 def numpy_owned_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
     return text.startswith(NUMPY_PREFIXES) or bool(
-        re.match(r"^lib/python3\.12/site-packages/numpy-[^/]+\.dist-info(?:/|$)", text)
+        re.match(
+            rf"^lib/python(?:{re.escape(STOCK_PYTHON_VERSION)}|{re.escape(TARGET_PYTHON_VERSION)})/"
+            r"site-packages/numpy-[^/]+\.dist-info(?:/|$)",
+            text,
+        )
     )
 
 
@@ -473,7 +554,10 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "generated-python-bytecode"
     if text.startswith("etc/conda/test-files/"):
         return "conda-package-test-fixture"
-    if text == "lib/python3.12/site-packages/petsc4py/lib/petsc.cfg":
+    if text in {
+        f"{STOCK_PYTHON_SITE.as_posix()}/petsc4py/lib/petsc.cfg",
+        f"{TARGET_PYTHON_SITE.as_posix()}/petsc4py/lib/petsc.cfg",
+    }:
         return "runtime-derived-petsc4py-config"
     if text.startswith(("lib/pkgconfig/", "lib/cmake/", "share/cmake/", "share/pkgconfig/")):
         return "developer-metadata"
@@ -764,16 +848,27 @@ def load_native_rebuild_handoff(
                 raise SystemExit(f"native rebuild handoff cannot assign replacement ownership to {owner}")
             if owner not in owned_cache:
                 owned_cache[owner] = {entry["relative"].as_posix() for entry in package_owned_paths(records[owner])}
-            if destination_text not in owned_cache[owner]:
+            if destination_text in owned_cache[owner]:
+                stock = prefix / Path(*destination_relative.parts)
+                if not stock.is_file() or stock.is_symlink():
+                    raise SystemExit(f"native rebuild replacement stock destination is not a regular file: {owner}: {destination_text}")
+                replaces_sha = require_sha256(
+                    item.get("replaces_sha256"), f"handoff replacement {destination_text} stock sha256"
+                )
+                if sha256_file(stock) != replaces_sha:
+                    raise SystemExit(f"native rebuild replacement stock identity mismatch: {owner}: {destination_text}")
+            elif target_wheel_owned_path(str(owner), destination_relative):
+                if item.get("replaces_sha256") is not None:
+                    raise SystemExit(
+                        f"cp314 wheel replacement must not claim an exact cp312 stock-file hash: {destination_text}"
+                    )
+                if not any(
+                    target_wheel_owned_path(str(owner), staged_runtime_relative(PurePosixPath(stock_path)))
+                    for stock_path in owned_cache[owner]
+                ):
+                    raise SystemExit(f"cp314 wheel replacement owner has no bound cp312 stock payload: {owner}")
+            else:
                 raise SystemExit(f"native rebuild replacement is not stock-owned by {owner}: {destination_text}")
-            stock = prefix / Path(*destination_relative.parts)
-            if not stock.is_file() or stock.is_symlink():
-                raise SystemExit(f"native rebuild replacement stock destination is not a regular file: {owner}: {destination_text}")
-            replaces_sha = require_sha256(
-                item.get("replaces_sha256"), f"handoff replacement {destination_text} stock sha256"
-            )
-            if sha256_file(stock) != replaces_sha:
-                raise SystemExit(f"native rebuild replacement stock identity mismatch: {owner}: {destination_text}")
         destinations.append(destination_text)
         replacements.append(dict(item) | {"source": source, "relative": destination_relative})
 
@@ -902,7 +997,7 @@ def cache_path_to_installed_path(cache_relative: PurePosixPath, link_metadata: d
         return cache_relative
     text = cache_relative.as_posix()
     if text.startswith("site-packages/"):
-        return safe_relative("lib/python3.12/site-packages/" + text.removeprefix("site-packages/"))
+        return safe_relative(f"{STOCK_PYTHON_SITE.as_posix()}/" + text.removeprefix("site-packages/"))
     if text.startswith("python-scripts/"):
         return safe_relative("bin/" + text.removeprefix("python-scripts/"))
     return cache_relative
@@ -1053,6 +1148,7 @@ def relocate_verified_prefix_file(
     source_prefix: Path,
     metadata: dict[str, Any],
     replacement_token: str,
+    staged_relative: PurePosixPath | None = None,
 ) -> dict[str, Any]:
     name = str(metadata["package"])
     installed_relative: PurePosixPath = metadata["installed_relative"]
@@ -1095,7 +1191,8 @@ def relocate_verified_prefix_file(
             f"{reproduced_sha} != {metadata['installed_sha256_in_prefix']}"
         )
 
-    destination = private_prefix / Path(*installed_relative.parts)
+    staged_relative = staged_relative or staged_runtime_relative(installed_relative)
+    destination = private_prefix / Path(*staged_relative.parts)
     if not destination.is_file() or destination.is_symlink():
         raise SystemExit(f"staged prefix-rewritten payload is missing or not regular: {name}: {destination}")
     staged_before_sha = sha256_file(destination)
@@ -1136,17 +1233,34 @@ def relocate_metadata_prefixes(
     retained_packages: list[str],
     owners: dict[str, list[str]],
     replacement_destinations: set[str] | None = None,
+    preserved_stock_python_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     replacement_destinations = replacement_destinations or set()
+    preserved_stock_python_paths = preserved_stock_python_paths or set()
     for name in retained_packages:
         for metadata in package_cache_prefix_entries(package_cache, records[name]):
             installed_relative: PurePosixPath = metadata["installed_relative"]
-            if installed_relative.as_posix() in replacement_destinations:
+            translated_relative = staged_runtime_relative(installed_relative)
+            staged_relative = (
+                installed_relative
+                if installed_relative.as_posix() in preserved_stock_python_paths
+                else translated_relative
+            )
+            if translated_relative.as_posix() in replacement_destinations:
+                continue
+            if (
+                name in NATIVE_HANDOFF_WHEEL_ROOTS
+                and translated_relative != installed_relative
+                and any(
+                    target_wheel_owned_path(name, PurePosixPath(destination))
+                    for destination in replacement_destinations
+                )
+            ):
                 continue
             if installed_relative == GCC_SPECS_RELATIVE and name == "conda-gcc-specs":
                 continue
-            staged = private_prefix / Path(*installed_relative.parts)
+            staged = private_prefix / Path(*staged_relative.parts)
             staged_rel = staged.relative_to(stage_root).as_posix()
             if name not in owners.get(staged_rel, []):
                 if path_exclusion_reason(installed_relative) is not None:
@@ -1164,6 +1278,7 @@ def relocate_metadata_prefixes(
                     source_prefix,
                     metadata,
                     RUNTIME_PREFIX_TOKEN,
+                    staged_relative,
                 )
             )
     return evidence
@@ -1750,7 +1865,7 @@ def reject_absolute_prefix_references(stage_root: Path, prefixes: list[Path]) ->
 
 
 def numpy_tree_identity(base: Path) -> dict[str, Any]:
-    site = base / "lib" / "python3.12" / "site-packages"
+    site = base.joinpath(*TARGET_PYTHON_SITE.parts)
     roots = [site / "numpy", site / "numpy.libs"] + sorted(site.glob("numpy-*.dist-info"))
     entries: dict[str, dict[str, Any]] = {}
     aggregate = hashlib.sha256()
@@ -1851,7 +1966,7 @@ def main() -> int:
     records = installed_records(prefix)
     prefix_evidence = verify_external_prefix_evidence(lock, lock_path, evidence_path, records)
     base_info = validate_base_runtime(base, base_qualification)
-    base_site = base / "lib" / "python3.12" / "site-packages"
+    base_site = base.joinpath(*TARGET_PYTHON_SITE.parts)
     numpy_identity = numpy_tree_identity(base)
     native_rebuild_handoff: dict[str, Any] | None = None
     if native_rebuild_handoff_path is not None:
@@ -1886,6 +2001,16 @@ def main() -> int:
         if native_rebuild_handoff is not None
         else {}
     )
+    replacement_owners = {
+        str(item["owner"])
+        for item in (native_rebuild_handoff["replacements"] if native_rebuild_handoff is not None else [])
+    }
+    wheel_rebuild_owners = {
+        str(item["owner"])
+        for item in (native_rebuild_handoff["replacements"] if native_rebuild_handoff is not None else [])
+        if target_wheel_owned_path(str(item["owner"]), item["relative"])
+    }
+    preserved_stock_python_paths: set[str] = set()
     staged_native_replacements: list[dict[str, Any]] = []
 
     try:
@@ -1898,7 +2023,7 @@ def main() -> int:
                 excluded_packages.append(name)
                 continue
             record = records[name]
-            contributed = False
+            contributed = name in replacement_owners
             for owned in package_owned_paths(record):
                 relative: PurePosixPath = owned["relative"]
                 if numpy_owned_path(relative):
@@ -1909,12 +2034,29 @@ def main() -> int:
                         {"package": name, "path": relative.as_posix(), "reason": reason}
                     )
                     continue
-                replacement = replacement_by_destination.get(relative.as_posix())
+                translated_relative = staged_runtime_relative(relative)
+                if name in wheel_rebuild_owners and translated_relative != relative:
+                    excluded_owned_paths.append(
+                        {
+                            "package": name,
+                            "path": relative.as_posix(),
+                            "reason": "replaced-by-cp314-source-built-wheel",
+                        }
+                    )
+                    continue
+                staged_relative = staged_locked_package_relative(
+                    relative,
+                    lock_record,
+                    native_rebuild_active=native_rebuild_handoff is not None,
+                )
+                if translated_relative != relative and staged_relative == relative:
+                    preserved_stock_python_paths.add(relative.as_posix())
+                replacement = replacement_by_destination.get(staged_relative.as_posix())
                 if replacement is not None:
                     if replacement["owner"] != name:
                         raise SystemExit(
                             f"native rebuild replacement owner differs from locked stock owner: "
-                            f"{relative}: {replacement['owner']} != {name}"
+                            f"{staged_relative}: {replacement['owner']} != {name}"
                         )
                     contributed = True
                     continue
@@ -1929,7 +2071,7 @@ def main() -> int:
                             f"installed package-owned file hash mismatch: {name}: {relative}: "
                             f"{actual_prefix_sha} != {expected_prefix_sha}"
                         )
-                destination = private_prefix / Path(*relative.parts)
+                destination = private_prefix / Path(*staged_relative.parts)
                 copy_path(source, destination, prefix, private_prefix)
                 rel = destination.relative_to(stage_root).as_posix()
                 if name not in owners[rel]:
@@ -1950,7 +2092,7 @@ def main() -> int:
                 if owner != NATIVE_HANDOFF_PROVIDER_OWNER and owner not in retained_set:
                     raise SystemExit(f"native rebuild replacement owner was not retained from the lock: {owner}")
 
-        bootstrap = stage_root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
+        bootstrap = stage_root.joinpath(*TARGET_PYTHON_SITE.parts, "fenics_embed_runtime.py")
         bootstrap.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bootstrap_source, bootstrap)
         owners[bootstrap.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
@@ -1990,6 +2132,7 @@ def main() -> int:
             retained_packages,
             owners,
             replacement_destinations,
+            preserved_stock_python_paths,
         )
         gcc_specs = relocate_conda_gcc_specs(
             private_prefix,
@@ -2020,6 +2163,11 @@ def main() -> int:
             sha256_file(lock_path),
             sha256_file(evidence_path),
         )
+        if preserved_stock_python_paths:
+            raise SystemExit(
+                "stock ABI preflight unexpectedly passed while target-specific cp312 Python payload remained; "
+                "refusing to archive a cp314 overlay"
+            )
         provenance_root = stage_root / "fenics-runtime" / "provenance"
         provenance_root.mkdir(parents=True, exist_ok=True)
         lock_copy = provenance_root / lock_path.name
@@ -2157,7 +2305,7 @@ def main() -> int:
         reject_absolute_prefix_references(stage_root, [prefix, stage_root])
         manifest_path = stage_root / "fenics-embed-manifest.json"
         files = file_manifest(stage_root, owners, omit={manifest_path})
-        asset_name = f"fenics-embed-runtime-v{args.version}-linux-x64-cp312.tar.gz"
+        asset_name = f"fenics-embed-runtime-v{args.version}-linux-x64-{TARGET_PYTHON_ABI}.tar.gz"
         manifest = {
             "format_version": 1,
             "artifact": asset_name.removesuffix(".tar.gz"),
@@ -2165,9 +2313,11 @@ def main() -> int:
             "platform": "linux-x64",
             "profile": "fenics",
             "architecture": "x86_64",
-            "python_abi": "cp312",
-            "consumer_python": "3.12.10",
+            "python_abi": TARGET_PYTHON_ABI,
+            "consumer_python": TARGET_PYTHON_PATCH,
             "producer_python": records["python"].get("version"),
+            "stock_package_python_abi": "cp312",
+            "tcl_tk": base_info["tcl_tk"],
             "numpy": {
                 "version": "2.5.2",
                 "ownership": "consumer-numpy-profile",
@@ -2190,10 +2340,15 @@ def main() -> int:
             },
             "layout": {
                 "private_prefix": "fenics-runtime/conda",
-                "private_site_packages": "fenics-runtime/conda/lib/python3.12/site-packages",
-                "bootstrap": "lib/python3.12/site-packages/fenics_embed_runtime.py",
+                "private_site_packages": f"fenics-runtime/conda/{TARGET_PYTHON_SITE.as_posix()}",
+                "bootstrap": f"{TARGET_PYTHON_SITE.as_posix()}/fenics_embed_runtime.py",
                 "gcc": "fenics-runtime/conda/bin/x86_64-conda-linux-gnu-gcc",
                 "sysroot": "fenics-runtime/conda/x86_64-conda-linux-gnu/sysroot",
+            },
+            "python_path_translation": {
+                "stock_prefix_site_packages": STOCK_PYTHON_SITE.as_posix(),
+                "overlay_site_packages": TARGET_PYTHON_SITE.as_posix(),
+                "target_specific_stock_payload_policy": "requires-explicit-cp314-replacement",
             },
             "jit_toolchain": {
                 "packages": {

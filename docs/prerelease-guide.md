@@ -37,8 +37,9 @@ manual qualification runs also always execute. Documentation-only merges do
 not automatically create promotable runtime artifacts; publication still
 requires successful qualifications for the exact `main` SHA selected above.
 
-When FEniCS work resumes, first migrate and qualify the retained cp312
-workflows against the corresponding cp314 NumPy base. Only then opt in with
+Before FEniCS can be published, refresh the retained cp312 FEniCS package locks
+for the cp314 ABI, then qualify the migrated workflows against the matching
+cp314 NumPy base. Only then opt in with
 `include_fenics` and provide the three FEniCS workflow run IDs as well. That
 mode requires the full additional FEniCS target matrix from the same `main`
 revision and matching NumPy base identities.

@@ -395,6 +395,22 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
         or runtime_manifest.get("python_abi") != "cp314"
     ):
         raise BuilderInputError("base runtime manifest is not the qualified Linux x64 NumPy cp314 profile")
+    tcl_tk = runtime_manifest.get("tcl_tk")
+    if (
+        not isinstance(tcl_tk, dict)
+        or tcl_tk.get("version") != "8.6.18"
+        or tcl_tk.get("ownership") != "producer"
+        or not isinstance(tcl_tk.get("provenance_path"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(tcl_tk.get("provenance_sha256", "")))
+    ):
+        raise BuilderInputError("base runtime manifest does not bind producer-owned Tcl/Tk 8.6.18")
+    tcl_tk_relative = PurePosixPath(tcl_tk["provenance_path"])
+    if (
+        tcl_tk_relative.is_absolute()
+        or ".." in tcl_tk_relative.parts
+        or tcl_tk_relative.as_posix() != tcl_tk["provenance_path"]
+    ):
+        raise BuilderInputError("base runtime Tcl/Tk provenance path is unsafe")
     python_records = [
         record for record in runtime_manifest.get("files", [])
         if isinstance(record, dict) and record.get("path") == "bin/python3.14"
@@ -448,6 +464,14 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
     actual_paths.discard("runtime-manifest.json")
     if actual_paths != expected_paths:
         raise BuilderInputError("staged base runtime file inventory differs from runtime-manifest.json")
+
+    tcl_tk_provenance = base_runtime.joinpath(*tcl_tk_relative.parts)
+    if (
+        not tcl_tk_provenance.is_file()
+        or tcl_tk_provenance.is_symlink()
+        or sha256_file(tcl_tk_provenance) != tcl_tk["provenance_sha256"]
+    ):
+        raise BuilderInputError("base runtime Tcl/Tk provenance identity mismatch")
 
     base_python = base_runtime / "bin" / "python3.14"
     if not base_python.is_file() or base_python.is_symlink():
@@ -508,6 +532,7 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
         "runtime_manifest_sha256": sha256_file(runtime_manifest_path),
         "qualified_archive_sha256": qualification["artifact_sha256"],
         "python_sha256": python_sha,
+        "tcl_tk": dict(tcl_tk),
     }, base_python
 
 

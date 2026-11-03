@@ -13,7 +13,7 @@ concurrency:
 env:
   MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
   MANYLINUX_DIGEST: sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
-  OVERLAY_ASSET: fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz
+  OVERLAY_ASSET: fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz
 
 jobs:
   qualify-overlay:
@@ -78,12 +78,14 @@ jobs:
           input_dir="$RUNNER_TEMP/linux-glibc217-inputs"
           mkdir -p "$input_dir"
 
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/Python-3.12.10.tar.xz" \
-            https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/Python-3.14.10.tar.xz" \
+            https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz
           curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/openssl-3.5.9.tar.gz" \
             https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
           curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libxcrypt-4.5.2.tar.xz" \
             https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/zstd-1.5.7.tar.gz" \
+            https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
           curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/bzip2-devel-1.0.6-13.el7.x86_64.rpm" \
             https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm
           curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/bzip2-libs-1.0.6-13.el7.x86_64.rpm" \
@@ -114,17 +116,15 @@ jobs:
             https://vault.centos.org/7.9.2009/updates/x86_64/Packages/xz-libs-5.2.2-2.el7_9.x86_64.rpm
           curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/zlib-1.2.7-21.el7_9.x86_64.rpm" \
             https://vault.centos.org/7.9.2009/updates/x86_64/Packages/zlib-1.2.7-21.el7_9.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/tcl8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/tk8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz
+          python3 scripts/common/fetch_tcltk_sources.py --output-dir "$input_dir"
 
           (
             cd "$input_dir"
             cat <<'EOF' | sha256sum -c -
-          07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea  Python-3.12.10.tar.xz
+          de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032  Python-3.14.10.tar.xz
           603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz
           71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071  libxcrypt-4.5.2.tar.xz
+          eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3  zstd-1.5.7.tar.gz
           28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700  bzip2-devel-1.0.6-13.el7.x86_64.rpm
           1fd32866a2a82f5abc19142b59dce8fd961bc1d32e3bedfa0de7a950066fdaa5  bzip2-libs-1.0.6-13.el7.x86_64.rpm
           fc02a803f89c0d68de96bcc7a46d7cdf8768e62577b27aed9c531e6fb2818c30  gdbm-devel-1.10-8.el7.x86_64.rpm
@@ -140,9 +140,8 @@ jobs:
           8c62263350421e7c3081b4a531f8e15ef5bfb5e410a34687ca4a799ff23362ef  xz-devel-5.2.2-2.el7_9.x86_64.rpm
           4b698de5fd7e0a64306106f3018e9d00dedc1f7a46d354339f012c97d004bd0c  xz-libs-5.2.2-2.el7_9.x86_64.rpm
           2bee86d12902723756eafa82ba6cc322136c4a67a78e0104ac988e14eb7fb5a1  zlib-1.2.7-21.el7_9.x86_64.rpm
-          26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6  tcl8.6.12-src.tar.gz
-          12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630  tk8.6.12-src.tar.gz
           EOF
+            sha256sum tcl8.6.18-src.tar.gz tk8.6.18-src.tar.gz
           ) | tee ci-artifact/core-source-inputs.sha256
 
       - name: Build controlled core runtime in pinned glibc 2.17 container
@@ -160,12 +159,13 @@ jobs:
               test "$(uname -m)" = x86_64
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
               exec bash scripts/linux/build-core-runtime.sh \
-                --python-source /inputs/Python-3.12.10.tar.xz \
+                --python-source /inputs/Python-3.14.10.tar.xz \
                 --openssl-source /inputs/openssl-3.5.9.tar.gz \
                 --libxcrypt-source /inputs/libxcrypt-4.5.2.tar.xz \
+                --zstd-source /inputs/zstd-1.5.7.tar.gz \
                 --dev-rpm-dir /inputs \
-                --tcl-source /inputs/tcl8.6.12-src.tar.gz \
-                --tk-source /inputs/tk8.6.12-src.tar.gz
+                --tcl-source /inputs/tcl8.6.18-src.tar.gz \
+                --tk-source /inputs/tk8.6.18-src.tar.gz
             ' 2>&1 | tee ci-artifact/linux-glibc217-core-build.log
 
       - name: Start host Xvfb for inherited core qualification
@@ -304,17 +304,18 @@ jobs:
           python3 scripts/common/write_runtime_manifest.py \
             --root out/linux-x64/numpy \
             --platform linux-x64 \
-            --profile numpy
+            --profile numpy \
+            --component-provenance out/linux-x64/numpy/build-provenance-linux.json
           python3 scripts/common/archive_runtime.py \
             --root out/linux-x64/numpy \
-            --output dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+            --output dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz \
             --format tar.gz
-          sha256sum dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
-            > dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz.sha256
+          sha256sum dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz \
+            > dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz.sha256
           python3 scripts/common/write_qualification.py \
             --platform linux-x64 \
             --profile numpy \
-            --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+            --artifact dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz \
             --output dist/qualification-linux-x64-numpy-base.json \
             --check pinned_manylinux=pass \
             --check glibc_floor=pass \
@@ -503,13 +504,13 @@ jobs:
             --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
             --workdir /workspace \
             "$MANYLINUX_IMAGE" \
-            /opt/python/cp312-cp312/bin/python \
+            /opt/python/cp314-cp314/bin/python \
               scripts/linux/prepare_fenics_python_builder.py prepare \
               --lock locks/linux/linux-x86_64-fenics-python-builder-wheels.json \
               --numpy-source-manifest locks/linux/linux-glibc217-numpy-sources.json \
               --fenics-package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
               --base-runtime out/linux-x64/numpy \
-              --base-archive dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+              --base-archive dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz \
               --base-qualification dist/qualification-linux-x64-numpy-base.json \
               --wheel-dir "$FENICS_PYTHON_BUILDER_WHEELS" \
               --output-dir "$builder" \
@@ -637,7 +638,7 @@ jobs:
             --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
             --workdir /workspace \
             "$MANYLINUX_IMAGE" \
-            /opt/python/cp312-cp312/bin/python3 scripts/linux/probe_fenics_icu_edge.py probe \
+            /opt/python/cp314-cp314/bin/python3 scripts/linux/probe_fenics_icu_edge.py probe \
               --contract /workspace/locks/linux/linux-x86_64-fenics-icu-edge-probe.json \
               --input-dir "$FENICS_ICU_EDGE_INPUT_DIR" \
               --runtime-lock /workspace/locks/linux/linux-x86_64-fenics-package-lock.json \
@@ -730,7 +731,7 @@ jobs:
             /bin/bash -c '
               set -euo pipefail
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              /workspace/out/linux-x64/numpy/bin/python3.12 \
+              /workspace/out/linux-x64/numpy/bin/python3.14 \
                 scripts/linux/build_fenics_cxx_provider.py \
                 --runtime-prefix "$1" \
                 --runtime-prefix-evidence "$2" \
@@ -764,7 +765,7 @@ jobs:
               set -euo pipefail
               test "$(uname -m)" = x86_64
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              exec /opt/python/cp312-cp312/bin/python scripts/linux/rebuild_fenics_native.py \
+              exec /opt/python/cp314-cp314/bin/python scripts/linux/rebuild_fenics_native.py \
                 --source-manifest locks/linux/linux-x86_64-fenics-rebuild-sources.json \
                 --source-dir "$1" \
                 --package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
@@ -815,6 +816,72 @@ jobs:
           sha256sum "$handoff" > "$scratch/evidence/native-build-handoff.sha256"
           echo "FENICS_NATIVE_BUILD_HANDOFF=$handoff" >> "$GITHUB_ENV"
 
+      - name: Record cp314 stock-Python ABI boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          python3 - \
+            "$FENICS_LOCKED_PREFIX" \
+            "$FENICS_NATIVE_BUILD_HANDOFF" \
+            "$FENICS_LOCK_FILE" \
+            "$prototype/cp314-stock-python-boundary.json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          prefix = pathlib.Path(sys.argv[1])
+          handoff_path = pathlib.Path(sys.argv[2])
+          lock_path = pathlib.Path(sys.argv[3])
+          output = pathlib.Path(sys.argv[4])
+          handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+          replacement_owners = {
+              str(item["owner"])
+              for item in handoff["candidate_output_binding"]["replacements"]
+              if item.get("owner") != "fenics-private-cxx-runtime"
+          }
+          excluded = {
+              "_python_abi3_support", "libpython-static", "numpy", "pip", "python",
+              "python-gil", "python_abi", "setuptools", "wheel",
+          }
+          unresolved = []
+          for metadata_path in sorted((prefix / "conda-meta").glob("*.json")):
+              record = json.loads(metadata_path.read_text(encoding="utf-8"))
+              name = str(record.get("name", ""))
+              if not name or name in excluded or name in replacement_owners:
+                  continue
+              paths = record.get("paths_data", {}).get("paths")
+              if isinstance(paths, list) and paths:
+                  owned = [str(item.get("_path", "")) for item in paths if isinstance(item, dict)]
+              else:
+                  owned = [str(item) for item in record.get("files", [])]
+              legacy_python_paths = sorted(
+                  path for path in owned if path.startswith("lib/python3.12/site-packages/")
+              )
+              if not legacy_python_paths or record.get("subdir") == "noarch":
+                  continue
+              unresolved.append({
+                  "name": name,
+                  "version": record.get("version"),
+                  "build": record.get("build"),
+                  "legacy_python_path_count": len(legacy_python_paths),
+              })
+
+          payload = {
+              "format_version": 1,
+              "target": {"python_version": "3.14.10", "python_abi": "cp314"},
+              "stock_prefix_python_abi": "cp312",
+              "stock_lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+              "candidate_handoff_sha256": hashlib.sha256(handoff_path.read_bytes()).hexdigest(),
+              "candidate_replacement_owners": sorted(replacement_owners),
+              "unresolved_target_specific_stock_python_packages": unresolved,
+              "release_eligible": False,
+          }
+          output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
       - name: Keep Linux FEniCS release gate closed pending independent candidate qualification
         shell: bash
         run: |
@@ -823,6 +890,7 @@ jobs:
           cat > "$blocker" <<'EOF'
           Linux FEniCS selective native rebuild remains unqualified.
           Required before the release path can proceed:
+          - resolve every target-specific cp312 Python package recorded in cp314-stock-python-boundary.json with explicit cp314 compatibility or replacement evidence; path relabeling is forbidden
           - independently audit the exact native-build-handoff candidate and bind its candidate_output_binding_sha256 to a post-rebuild native-closure report
           - prove KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
           - finalize the candidate into the strict package_fenics_overlay.py native-rebuild handoff only after that closure proof passes
@@ -837,7 +905,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --network none \
-            --env PATH=/opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin \
+            --env PATH=/opt/python/cp314-cp314/bin:/usr/local/bin:/usr/bin:/bin \
             --env "OVERLAY_ASSET=$OVERLAY_ASSET" \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
@@ -963,11 +1031,11 @@ jobs:
       - name: Upload qualified Linux FEniCS overlay
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: fenics-embed-runtime-linux-x64-cp312
+          name: fenics-embed-runtime-linux-x64-cp314
           path: |
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz.json
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz.sha256
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz.json
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz.sha256
             build/linux-fenics-overlay/
           if-no-files-found: error
           retention-days: 30

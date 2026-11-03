@@ -226,7 +226,7 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             ("traversal", lambda data: data["replacements"][0].update(destination="../escape"), "canonical POSIX"),
             (
                 "numpy",
-                lambda data: data["replacements"][0].update(destination="lib/python3.12/site-packages/numpy/core.so"),
+                lambda data: data["replacements"][0].update(destination="lib/python3.14/site-packages/numpy/core.so"),
                 "CPython/NumPy ownership",
             ),
             ("unsorted", lambda data: data["replacements"].reverse(), "uniquely sorted"),

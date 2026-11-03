@@ -155,6 +155,13 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             stdlib = runtime / "lib" / "python3.14" / "site.py"
             stdlib.parent.mkdir(parents=True)
             stdlib.write_bytes(b"qualified-stdlib-fixture")
+            tcl_tk_provenance = runtime / "build-provenance-linux.json"
+            tcl_tk_provenance.write_text(
+                json.dumps({
+                    "tcl_tk": {"version": "8.6.18", "ownership": "producer"},
+                }, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             revision = "1" * 40
             manifest = {
                 "format_version": 1,
@@ -162,6 +169,12 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                 "profile": "numpy",
                 "python_abi": "cp314",
                 "producer": {"repository": "precsim/python-numpy-fenics", "revision": revision},
+                "tcl_tk": {
+                    "version": "8.6.18",
+                    "ownership": "producer",
+                    "provenance_path": "build-provenance-linux.json",
+                    "provenance_sha256": hashlib.sha256(tcl_tk_provenance.read_bytes()).hexdigest(),
+                },
                 "files": [{
                     "path": "bin/python3.14",
                     "kind": "file",
@@ -173,6 +186,12 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                     "kind": "file",
                     "bytes": stdlib.stat().st_size,
                     "sha256": hashlib.sha256(stdlib.read_bytes()).hexdigest(),
+                    "owners": ["python-numpy-fenics"],
+                }, {
+                    "path": "build-provenance-linux.json",
+                    "kind": "file",
+                    "bytes": tcl_tk_provenance.stat().st_size,
+                    "sha256": hashlib.sha256(tcl_tk_provenance.read_bytes()).hexdigest(),
                     "owners": ["python-numpy-fenics"],
                 }],
             }
@@ -230,6 +249,13 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
             python = runtime / "bin" / "python3.14"
             python.parent.mkdir(parents=True)
             python.write_bytes(b"qualified-cpython-fixture")
+            tcl_tk_provenance = runtime / "build-provenance-linux.json"
+            tcl_tk_provenance.write_text(
+                json.dumps({
+                    "tcl_tk": {"version": "8.6.18", "ownership": "producer"},
+                }, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             revision = "2" * 40
             manifest = {
                 "format_version": 1,
@@ -237,11 +263,23 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                 "profile": "numpy",
                 "python_abi": "cp314",
                 "producer": {"repository": "precsim/python-numpy-fenics", "revision": revision},
+                "tcl_tk": {
+                    "version": "8.6.18",
+                    "ownership": "producer",
+                    "provenance_path": "build-provenance-linux.json",
+                    "provenance_sha256": hashlib.sha256(tcl_tk_provenance.read_bytes()).hexdigest(),
+                },
                 "files": [{
                     "path": "bin/python3.14",
                     "kind": "file",
                     "bytes": python.stat().st_size,
                     "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+                    "owners": ["python-numpy-fenics"],
+                }, {
+                    "path": "build-provenance-linux.json",
+                    "kind": "file",
+                    "bytes": tcl_tk_provenance.stat().st_size,
+                    "sha256": hashlib.sha256(tcl_tk_provenance.read_bytes()).hexdigest(),
                     "owners": ["python-numpy-fenics"],
                 }],
             }

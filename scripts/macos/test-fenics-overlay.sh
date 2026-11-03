@@ -49,8 +49,10 @@ expected_platform = "macos-arm64" if arch == "arm64" else "macos-x64"
 if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != expected_platform
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
     or manifest.get("profile") != "numpy"
+    or manifest.get("tcl_tk", {}).get("version") != "8.6.18"
+    or manifest.get("tcl_tk", {}).get("ownership") != "producer"
     or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
 ):
     raise SystemExit(f"invalid public NumPy base manifest: {manifest!r}")
@@ -64,8 +66,8 @@ mkdir -p "$runtime" "$cache" "$poison"
 trap 'rm -rf "$work"' EXIT
 ditto "$base_runtime" "$runtime"
 
-site_packages="$runtime/Python.framework/Versions/3.12/lib/python3.12/site-packages"
-staged_python="$runtime/Python.framework/Versions/3.12/bin/python3.12"
+site_packages="$runtime/Python.framework/Versions/3.14/lib/python3.14/site-packages"
+staged_python="$runtime/Python.framework/Versions/3.14/bin/python3.14"
 [[ -x "$staged_python" && -d "$site_packages/numpy" ]] || {
     echo "public NumPy base runtime is incomplete" >&2
     exit 1
@@ -129,11 +131,13 @@ for relative, identity in sorted(numpy_before.items()):
         record = f"F\0{relative}\0{identity}\n"
     tree.update(record.encode("utf-8"))
 numpy_identity = manifest.get("numpy", {})
+base_tcl_tk = json.loads(base_manifest.read_text(encoding="utf-8"))["tcl_tk"]
 if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != expected_platform
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
     or manifest.get("profile") != "fenics"
+    or manifest.get("tcl_tk") != base_tcl_tk
     or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
     or numpy_identity.get("version") != "2.5.2"
     or not numpy_identity.get("producer_payload_excluded")
@@ -145,7 +149,7 @@ if (
 for entry in manifest.get("files", []):
     path = str(entry.get("path", ""))
     if re.match(
-        r"^fenics-runtime/conda/lib/python3\.12/site-packages/"
+        r"^fenics-runtime/conda/lib/python3\.14/site-packages/"
         r"(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)",
         path,
     ):
@@ -175,9 +179,15 @@ unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
 export PYTHONPATH="$poison"
 export PYTHONUSERBASE="$poison"
 export PYTHONNOUSERSITE=1
-export PYTHONHOME="$runtime/Python.framework/Versions/3.12"
+export PYTHONHOME="$runtime/Python.framework/Versions/3.14"
 export XDG_CACHE_HOME="$cache"
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export TCL_LIBRARY="$runtime/tcl/tcl8.6"
+export TK_LIBRARY="$runtime/tcl/tk8.6"
+[[ -f "$TCL_LIBRARY/init.tcl" && -f "$TK_LIBRARY/tk.tcl" ]] || {
+    echo "qualified public Tcl/Tk 8.6.18 script providers are missing after composition" >&2
+    exit 1
+}
 
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
@@ -189,15 +199,15 @@ from pathlib import Path
 import sys
 
 root = Path(sys.argv[1]).resolve()
-if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.12":
+if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.14":
     raise SystemExit(f"unexpected relocated prefix: {sys.prefix}")
 bootstrap = (
     root
     / "Python.framework"
     / "Versions"
-    / "3.12"
+    / "3.14"
     / "lib"
-    / "python3.12"
+    / "python3.14"
     / "site-packages"
     / "fenics_embed_runtime.py"
 )
@@ -210,6 +220,17 @@ spec.loader.exec_module(fenics_embed_runtime)
 activated = Path(fenics_embed_runtime.activate()).resolve()
 if activated != root:
     raise SystemExit(f"unexpected activated root: {activated} != {root}")
+import _tkinter
+import tkinter
+
+if _tkinter.TCL_VERSION != "8.6" or _tkinter.TK_VERSION != "8.6":
+    raise SystemExit("FEniCS overlay changed inherited Tcl/Tk API versions")
+tcl = tkinter.Tcl()
+if tcl.eval("info patchlevel") != "8.6.18":
+    raise SystemExit("FEniCS overlay changed the inherited Tcl runtime version")
+tcl_library = Path(tcl.eval("info library")).resolve()
+if root not in tcl_library.parents:
+    raise SystemExit(f"FEniCS overlay Tcl scripts escaped the public runtime: {tcl_library}")
 for variable in ("FENICS_JIT_CLANG", "FENICS_JIT_LINKER"):
     value = Path(os.environ.get(variable, "")).resolve()
     if root not in value.parents:
@@ -241,9 +262,9 @@ bootstrap = (
     root
     / "Python.framework"
     / "Versions"
-    / "3.12"
+    / "3.14"
     / "lib"
-    / "python3.12"
+    / "python3.14"
     / "site-packages"
     / "fenics_embed_runtime.py"
 )

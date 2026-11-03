@@ -25,20 +25,20 @@ esac
 
 [[ -x "$clang_exe" ]] || { echo "locked Clang executable is missing: $clang_exe" >&2; exit 1; }
 [[ -x "$linker_exe" ]] || { echo "locked cctools linker is missing: $linker_exe" >&2; exit 1; }
-[[ -x "$prefix/bin/python3.12" ]] || { echo "CPython 3.12 is missing: $prefix/bin/python3.12" >&2; exit 1; }
+[[ -x "$prefix/bin/python3.14" ]] || { echo "CPython 3.14 is missing: $prefix/bin/python3.14" >&2; exit 1; }
 
 resolved_linker="$("$clang_exe" -B"$prefix/bin" -print-prog-name=ld)"
 if [[ "$resolved_linker" != /* ]]; then
     resolved_linker="$prefix/bin/$resolved_linker"
 fi
-resolved_linker="$("$prefix/bin/python3.12" - "$resolved_linker" <<'PY'
+resolved_linker="$("$prefix/bin/python3.14" - "$resolved_linker" <<'PY'
 from pathlib import Path
 import sys
 
 print(Path(sys.argv[1]).resolve())
 PY
 )"
-expected_linker="$("$prefix/bin/python3.12" - "$linker_exe" <<'PY'
+expected_linker="$("$prefix/bin/python3.14" - "$linker_exe" <<'PY'
 from pathlib import Path
 import sys
 
@@ -94,9 +94,9 @@ EOF
     chmod +x "$work/poison/$name"
 done
 
-python_cmd=("$prefix/bin/python3.12")
+python_cmd=("$prefix/bin/python3.14")
 if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
-    python_cmd=(/usr/bin/arch -x86_64 "$prefix/bin/python3.12")
+    python_cmd=(/usr/bin/arch -x86_64 "$prefix/bin/python3.14")
 fi
 
 "${python_cmd[@]}" -I - "$target_arch" <<'PY'
@@ -109,8 +109,8 @@ if actual != expected:
     raise SystemExit(f"target Python architecture mismatch: {actual} != {expected}")
 print(f"python_architecture={actual}")
 print(f"python_version={platform.python_version()}")
-if sys.version_info[:2] != (3, 12):
-    raise SystemExit(f"prototype requires CPython 3.12, got {platform.python_version()}")
+if sys.version_info[:3] != (3, 14, 10):
+    raise SystemExit(f"prototype requires CPython 3.14.10, got {platform.python_version()}")
 PY
 
 export PATH="$work/poison:$prefix/bin:/usr/bin:/bin"

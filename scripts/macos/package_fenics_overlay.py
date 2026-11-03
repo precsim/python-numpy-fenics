@@ -34,8 +34,8 @@ MACHO_MAGICS = {
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
-    "lib/python3.12/site-packages/numpy/",
-    "lib/python3.12/site-packages/numpy.libs/",
+    "lib/python3.14/site-packages/numpy/",
+    "lib/python3.14/site-packages/numpy.libs/",
 )
 
 EXCLUDED_PACKAGE_NAMES = {
@@ -117,7 +117,7 @@ def numpy_base_identity(
         or manifest.get("format_version") != 1
         or manifest.get("platform") != expected_platform
         or manifest.get("profile") != "numpy"
-        or manifest.get("python_abi") != "cp312"
+        or manifest.get("python_abi") != "cp314"
         or manifest.get("version") != expected_version
         or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
         or manifest.get("producer", {}).get("revision") != expected_revision
@@ -126,8 +126,45 @@ def numpy_base_identity(
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SystemExit(f"qualified NumPy base runtime manifest has no file inventory: {manifest_path}")
+    tcl_tk = manifest.get("tcl_tk")
+    if (
+        not isinstance(tcl_tk, dict)
+        or tcl_tk.get("version") != "8.6.18"
+        or tcl_tk.get("ownership") != "producer"
+        or not isinstance(tcl_tk.get("provenance_path"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(tcl_tk.get("provenance_sha256", "")))
+    ):
+        raise SystemExit("qualified NumPy base does not prove producer-owned Tcl/Tk 8.6.18")
+    provenance_relative = PurePosixPath(tcl_tk["provenance_path"])
+    if (
+        provenance_relative.is_absolute()
+        or ".." in provenance_relative.parts
+        or not provenance_relative.parts
+    ):
+        raise SystemExit("qualified NumPy base Tcl/Tk provenance path is unsafe")
+    provenance_path = base_runtime.joinpath(*provenance_relative.parts)
+    if (
+        not provenance_path.is_file()
+        or provenance_path.is_symlink()
+        or sha256_file(provenance_path) != tcl_tk["provenance_sha256"]
+    ):
+        raise SystemExit("qualified NumPy base Tcl/Tk provenance hash mismatch")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8-sig"))
+    recorded_tcl_tk = provenance.get("tcl_tk", {})
+    if (
+        provenance.get("runtime_profile") != "numpy"
+        or provenance.get("python", {}).get("version") != "3.14.10"
+        or provenance.get("python", {}).get("architecture") != ("arm64" if expected_platform == "macos-arm64" else "x86_64")
+        or recorded_tcl_tk.get("ownership") != "producer"
+        or recorded_tcl_tk.get("tcl_runtime_version") != "8.6.18"
+        or recorded_tcl_tk.get("tk_runtime_version") != "8.6.18"
+    ):
+        raise SystemExit("qualified NumPy base component provenance is incompatible with CPython 3.14.10 / Tcl/Tk 8.6.18")
+    profile_marker = base_runtime / "RUNTIME_PROFILE"
+    if not profile_marker.is_file() or profile_marker.read_text(encoding="utf-8").strip() != "numpy":
+        raise SystemExit("qualified NumPy base is missing its NumPy profile marker")
 
-    prefix = "Python.framework/Versions/3.12/lib/python3.12/site-packages/"
+    prefix = "Python.framework/Versions/3.14/lib/python3.14/site-packages/"
     entries: dict[str, tuple[str, str]] = {}
     for entry in files:
         if not isinstance(entry, dict):
@@ -172,6 +209,7 @@ def numpy_base_identity(
         "manifest_sha256": sha256_file(manifest_path),
         "tree_sha256": aggregate.hexdigest(),
         "entry_count": len(entries),
+        "tcl_tk": tcl_tk,
     }
 
 
@@ -198,7 +236,7 @@ def numpy_owned_path(relative: PurePosixPath) -> bool:
     if text.startswith(PYTHON_NUMPY_PREFIXES):
         return True
     return bool(
-        re.match(r"^lib/python3\.12/site-packages/numpy-[^/]+\.dist-info(?:/|$)", text)
+        re.match(r"^lib/python3\.14/site-packages/numpy-[^/]+\.dist-info(?:/|$)", text)
     )
 
 
@@ -208,7 +246,7 @@ def overlay_path_exclusion_reason(relative: PurePosixPath, *, retain_static_arch
         return "generated-python-bytecode"
     if text.startswith("etc/conda/test-files/"):
         return "conda-package-test-fixture"
-    if text == "lib/python3.12/site-packages/petsc4py/lib/petsc.cfg":
+    if text == "lib/python3.14/site-packages/petsc4py/lib/petsc.cfg":
         return "runtime-derived-petsc4py-config"
     if text.startswith(("lib/pkgconfig/", "lib/cmake/", "share/cmake/", "share/pkgconfig/")):
         return "developer-metadata"
@@ -936,6 +974,22 @@ base_identity = numpy_base_identity(
 )
 
 lock = load_lock(lock_path, args.arch)
+locked_by_name = {str(record["name"]): record for record in lock["packages"]}
+python_record = locked_by_name.get("python", {})
+abi_record = locked_by_name.get("python_abi", {})
+if (
+    python_record.get("version") != "3.14.10"
+    or abi_record.get("version") != "3.14"
+    or "cp314" not in str(abi_record.get("build", ""))
+):
+    raise SystemExit("FEniCS package lock is not compatible with the CPython 3.14.10 / cp314 base")
+for name in ("cpython", "libpython", "python-gil"):
+    record = locked_by_name.get(name)
+    if record is not None and record.get("version") != "3.14.10":
+        raise SystemExit(f"FEniCS package lock contains incompatible {name}: {record['version']}")
+for record in lock["packages"]:
+    if any(token in str(record.get(field, "")) for field in ("build", "url") for token in ("cp312", "py312")):
+        raise SystemExit(f"FEniCS package lock contains legacy CPython ABI package: {record['name']}")
 records = installed_records(prefix)
 verify_locked_prefix(lock, records)
 
@@ -949,7 +1003,7 @@ required_versions = {
     "fenics-ffcx": "0.11.0",
     "fenics-ufl": "2026.1.0",
     "numpy": "2.5.2",
-    "python": "3.12.16",
+    "python": "3.14.10",
     "cctools": "1030.6.3",
     "clang": "23.1.4",
     "clang-23": "23.1.4",
@@ -1053,14 +1107,21 @@ try:
     ]
     if staged_numpy:
         raise SystemExit(f"overlay contains forbidden producer NumPy paths: {staged_numpy[:20]!r}")
+    private_site = private_prefix / "lib" / "python3.14" / "site-packages"
+    for package in ("basix", "dolfinx", "ffcx", "ufl", "petsc4py", "mpi4py"):
+        if not (private_site / package / "__init__.py").is_file():
+            raise SystemExit(f"cp314 FEniCS overlay has no compatible {package} package: {private_site}")
+    legacy_site = private_prefix / "lib" / "python3.12" / "site-packages"
+    if legacy_site.exists():
+        raise SystemExit(f"cp312 package payload leaked into cp314 FEniCS overlay: {legacy_site}")
 
     bootstrap_destination = (
         stage_root
         / "Python.framework"
         / "Versions"
-        / "3.12"
+        / "3.14"
         / "lib"
-        / "python3.12"
+        / "python3.14"
         / "site-packages"
         / "fenics_embed_runtime.py"
     )
@@ -1129,7 +1190,7 @@ try:
             | {"overlay_ownership": ownership}
         )
 
-    asset_name = f"fenics-embed-runtime-v{args.version}-macos-{asset_arch}-cp312.zip"
+    asset_name = f"fenics-embed-runtime-v{args.version}-macos-{asset_arch}-cp314.zip"
     manifest = {
         "format_version": 1,
         "artifact": asset_name.removesuffix(".zip"),
@@ -1137,9 +1198,10 @@ try:
         "platform": f"macos-{asset_arch}",
         "profile": "fenics",
         "architecture": args.arch,
-        "python_abi": "cp312",
-        "consumer_python": "3.12.10",
-        "producer_python": "3.12.16",
+        "python_abi": "cp314",
+        "consumer_python": "3.14.10",
+        "producer_python": "3.14.10",
+        "tcl_tk": base_identity["tcl_tk"],
         "numpy": {
             "version": "2.5.2",
             "ownership": "consumer-numpy-profile",
@@ -1179,9 +1241,9 @@ try:
         },
         "layout": {
             "private_prefix": "fenics-runtime/conda",
-            "private_site_packages": "fenics-runtime/conda/lib/python3.12/site-packages",
+            "private_site_packages": "fenics-runtime/conda/lib/python3.14/site-packages",
             "jit_toolchain_root": "fenics-runtime/conda",
-            "bootstrap": "Python.framework/Versions/3.12/lib/python3.12/site-packages/fenics_embed_runtime.py",
+            "bootstrap": "Python.framework/Versions/3.14/lib/python3.14/site-packages/fenics_embed_runtime.py",
         },
         "native": {
             "census": census_path.relative_to(stage_root).as_posix(),

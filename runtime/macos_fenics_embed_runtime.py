@@ -78,7 +78,7 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
     root = _wrapper_root(runtime_root)
     root.mkdir(parents=True, exist_ok=True)
     wrapper = root / "fenics-clang-cc"
-    python_include = runtime_root / "Python.framework" / "Versions" / "3.12" / "include" / "python3.12"
+    python_include = runtime_root / "Python.framework" / "Versions" / "3.14" / "include" / "python3.14"
     private_include = private_prefix / "include"
     if not python_include.is_dir():
         raise RuntimeError(f"staged CPython headers are missing: {python_include}")
@@ -107,14 +107,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -I)
-            if [[ "${{2:-}}" == */include/python3.12 && "${{2:-}}" != "$runtime_root"/* ]]; then
+            if [[ "${{2:-}}" == */include/python3.14 && "${{2:-}}" != "$runtime_root"/* ]]; then
                 shift 2
             else
                 args+=("$1" "${{2:-}}")
                 shift 2
             fi
             ;;
-        -I*/include/python3.12)
+        -I*/include/python3.14)
             if [[ "$1" == -I"$runtime_root"/* ]]; then
                 args+=("$1")
             fi
@@ -167,9 +167,9 @@ def activate() -> Path:
 
     if sys.platform != "darwin":
         raise RuntimeError("fenics_embed_runtime macOS overlay requires Darwin")
-    if sys.version_info[:2] != (3, 12):
+    if sys.version_info[:3] != (3, 14, 10):
         raise RuntimeError(
-            f"FEniCS embedded runtime requires CPython 3.12, got {sys.version_info.major}.{sys.version_info.minor}"
+            f"FEniCS embedded runtime requires CPython 3.14.10, got {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
 
     root = _runtime_root()
@@ -181,14 +181,14 @@ def activate() -> Path:
         return root
 
     private_prefix = root / "fenics-runtime" / "conda"
-    private_site = private_prefix / "lib" / "python3.12" / "site-packages"
+    private_site = private_prefix / "lib" / "python3.14" / "site-packages"
     public_site = (
         root
         / "Python.framework"
         / "Versions"
-        / "3.12"
+        / "3.14"
         / "lib"
-        / "python3.12"
+        / "python3.14"
         / "site-packages"
     )
     for required, label in (

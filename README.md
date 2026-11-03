@@ -58,8 +58,11 @@ The active producer pre-release scope is `core` + `numpy`. FEniCS qualification
 workflows and packaging code are retained for future use but are not required to
 publish a producer pre-release. The manual pre-release workflow can explicitly
 opt into the complete FEniCS matrix when that work resumes.
-The retained FEniCS workflows and Linux experiment notes still contain legacy
-cp312 inputs and are not qualified for the new cp314 baseline.
+The retained FEniCS workflows now target the qualified cp314 / Tcl/Tk 8.6.18
+core and NumPy inputs. Their retained FEniCS package transactions still contain
+legacy cp312 native/Python packages, so these workflows remain manual and
+unqualified. Native package locks must be refreshed and independently qualified
+before FEniCS can join a pre-release.
 
 ## Producer artifact contract
 

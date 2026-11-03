@@ -107,6 +107,12 @@ WHEEL_OWNERS = {
     "fenics_basix": "fenics-basix",
     "fenics_dolfinx": "fenics-dolfinx",
 }
+STOCK_PYTHON_SITE = PurePosixPath("lib/python3.12/site-packages")
+TARGET_PYTHON_SITE = PurePosixPath("lib/python3.14/site-packages")
+WHEEL_MEMBER_ROOTS = {
+    "fenics-basix": ("basix", "fenics_basix-0.11.0.dist-info"),
+    "fenics-dolfinx": ("dolfinx", "fenics_dolfinx-0.11.0.dist-info"),
+}
 
 
 class InputError(RuntimeError):
@@ -405,8 +411,8 @@ def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
         raise InputError("unsupported Python wheel-builder manifest identity")
     if manifest.get("target") != {
         "architecture": "x86_64",
-        "python_version": "3.12.10",
-        "python_abi": "cp312",
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
         "glibc_floor": "2.17",
     }:
         raise InputError("Python wheel-builder target differs from the frozen Linux CPython contract")
@@ -451,12 +457,17 @@ def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
             raise InputError(f"Python wheel-builder wheel version differs for {name!r}")
         require_sha(record.get("sha256"), f"Python wheel-builder wheel {name} sha256")
     base_runtime = manifest.get("base_runtime")
+    base_tcl_tk = base_runtime.get("tcl_tk") if isinstance(base_runtime, dict) else None
     if (
         not isinstance(base_runtime, dict)
         or base_runtime.get("profile") != "numpy"
-        or base_runtime.get("python_version") != "3.12.10"
-        or base_runtime.get("python_abi") != "cp312"
+        or base_runtime.get("python_version") != "3.14.10"
+        or base_runtime.get("python_abi") != "cp314"
         or base_runtime.get("python_sha256") != python_record.get("sha256")
+        or not isinstance(base_tcl_tk, dict)
+        or base_tcl_tk.get("version") != "8.6.18"
+        or base_tcl_tk.get("ownership") != "producer"
+        or not re.fullmatch(r"[0-9a-f]{64}", str(base_tcl_tk.get("provenance_sha256", "")))
     ):
         raise InputError("Python wheel-builder base-runtime identity is incomplete or inconsistent")
     for key in ("runtime_manifest_sha256", "qualified_archive_sha256"):
@@ -990,7 +1001,7 @@ def build_candidate(
     wheel_env["PYTHONPATH"] = os.pathsep.join([
         str(python_builder_site),
         str(basix_audit),
-        str(stock / "lib" / "python3.12" / "site-packages"),
+        str(stock.joinpath(*STOCK_PYTHON_SITE.parts)),
     ])
     wheel_env["CMAKE_ARGS"] = (
         f"-DCMAKE_C_COMPILER={tools['cc']} "
@@ -1210,13 +1221,39 @@ def collect_candidate_replacements(
     install_owners = collect_install_owners(roots)
     replacements: dict[str, dict] = {}
 
-    def add_candidate(destination_relative: PurePosixPath, owner: str, data: bytes, mode: int) -> None:
+    def add_candidate(
+        destination_relative: PurePosixPath,
+        owner: str,
+        data: bytes,
+        mode: int,
+        *,
+        cp314_wheel_payload: bool = False,
+    ) -> None:
         text = destination_relative.as_posix()
         if text in replacements:
             raise InputError(f"native rebuild handoff has duplicate replacement destination: {text}")
         if owner == HANDOFF_PROVIDER_OWNER:
             if text != "lib/libfenics_cxxrt.so.1":
                 raise InputError(f"private provider has unexpected handoff destination: {text}")
+            replaces_sha = None
+        elif cp314_wheel_payload:
+            roots_for_owner = WHEEL_MEMBER_ROOTS.get(owner)
+            if roots_for_owner is None:
+                raise InputError(f"cp314 wheel payload has no fixed owner roots: {owner}")
+            try:
+                target_member = destination_relative.relative_to(TARGET_PYTHON_SITE)
+            except ValueError as exc:
+                raise InputError(f"cp314 wheel payload is outside the cp314 site-packages root: {text}") from exc
+            if not target_member.parts or target_member.parts[0] not in roots_for_owner:
+                raise InputError(f"cp314 wheel payload escapes the fixed package roots for {owner}: {text}")
+            stock_paths = owned_by_package.get(owner, set())
+            if not any(
+                PurePosixPath(stock_path).is_relative_to(STOCK_PYTHON_SITE)
+                and PurePosixPath(stock_path).relative_to(STOCK_PYTHON_SITE).parts
+                and PurePosixPath(stock_path).relative_to(STOCK_PYTHON_SITE).parts[0] in roots_for_owner
+                for stock_path in stock_paths
+            ):
+                raise InputError(f"cp314 wheel payload owner has no bound cp312 stock Python payload: {owner}")
             replaces_sha = None
         else:
             if owner not in owned_by_package or text not in owned_by_package[owner]:
@@ -1263,9 +1300,15 @@ def collect_candidate_replacements(
                 zip_mode = (info.external_attr >> 16) & 0o177777
                 if stat.S_ISLNK(zip_mode):
                     raise InputError(f"candidate wheel contains a symlink: {wheel.name}: {member}")
-                destination_relative = PurePosixPath("lib/python3.12/site-packages") / member
+                destination_relative = TARGET_PYTHON_SITE / member
                 mode = zip_mode & 0o777 or 0o644
-                add_candidate(destination_relative, wheel_owner, bundle.read(info), mode)
+                add_candidate(
+                    destination_relative,
+                    wheel_owner,
+                    bundle.read(info),
+                    mode,
+                    cp314_wheel_payload=True,
+                )
 
     if not replacements:
         raise InputError("native rebuild produced no package handoff replacements")

@@ -1,4 +1,4 @@
-# Package a relocatable FEniCS Windows runtime overlay for an embedded CPython 3.12 host.
+# Package a relocatable FEniCS Windows runtime overlay for an embedded CPython 3.14 host.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -40,10 +40,17 @@ function Get-NumpyBaseIdentity {
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.format_version -ne 1 -or
+        $manifest.artifact -ne "python-runtime-win-x64-cp314-numpy" -or
         $manifest.platform -ne "win-x64" -or
         $manifest.profile -ne "numpy" -or
-        $manifest.python_abi -ne "cp312" -or
+        $manifest.python_abi -ne "cp314" -or
         $manifest.version -ne $ExpectedVersion -or
+        $manifest.python.implementation -ne "CPython" -or
+        $manifest.python.version -ne "3.14.10" -or
+        $manifest.tcl_tk.version -ne "8.6.18" -or
+        $manifest.tcl_tk.ownership -ne "producer" -or
+        $manifest.numpy.version -ne "2.5.2" -or
+        -not $manifest.base_core -or
         $manifest.producer.repository -ne "precsim/python-numpy-fenics" -or
         $manifest.producer.revision -ne $ExpectedRevision) {
         throw "FEniCS overlay NumPy base runtime identity is invalid"
@@ -108,6 +115,7 @@ function Get-NumpyBaseIdentity {
         manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
         tree_sha256 = $treeHash
         entry_count = $entries.Count
+        tcl_tk = $manifest.tcl_tk
     }
 }
 
@@ -157,6 +165,7 @@ foreach ($record in $records) {
 
 foreach ($required in @(
     "python",
+    "python_abi",
     "numpy",
     "fenics-dolfinx",
     "fenics-libdolfinx",
@@ -182,8 +191,11 @@ foreach ($forbidden in @("fenics-jit-llvm-mingw", "fenics-jit-tinycc", "vs2022_w
         throw "FEniCS embedded runtime unexpectedly contains forbidden package: $forbidden"
     }
 }
-if ($recordByName["python"].version -ne "3.12.10") {
-    throw "FEniCS embedded runtime requires CPython 3.12.10, got $($recordByName["python"].version)"
+if ($recordByName["python"].version -ne "3.14.10") {
+    throw "FEniCS embedded runtime requires CPython 3.14.10, got $($recordByName["python"].version)"
+}
+if ($recordByName["python_abi"].version -ne "3.14" -or $recordByName["python_abi"].build -notmatch '(^|_)cp314($|_)') {
+    throw "FEniCS embedded runtime requires the cp314 Python ABI package"
 }
 if ($recordByName["numpy"].version -ne "2.5.2") {
     throw "FEniCS embedded runtime is pinned to NumPy 2.5.2, got $($recordByName["numpy"].version)"
@@ -224,8 +236,8 @@ finally {
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }
 $probe = ($probeText | Select-Object -Last 1) | ConvertFrom-Json
-if ($probe.implementation -ne "CPython" -or $probe.pointer_bits -ne 64 -or $probe.python -ne "3.12.10") {
-    throw "FEniCS prefix does not provide 64-bit CPython 3.12.10: $($probeText -join [Environment]::NewLine)"
+if ($probe.implementation -ne "CPython" -or $probe.pointer_bits -ne 64 -or $probe.python -ne "3.14.10") {
+    throw "FEniCS prefix does not provide 64-bit CPython 3.14.10: $($probeText -join [Environment]::NewLine)"
 }
 if ($probe.numpy -ne "2.5.2") {
     throw "Imported NumPy version differs from package pin: $($probe.numpy)"
@@ -255,7 +267,7 @@ $allowedPrefixes = @(
 $owners = @{}
 try {
     foreach ($record in $records) {
-        if ($record.name -in @("python", "numpy")) {
+        if ($record.name -in @("python", "numpy", "tcl", "tk")) {
             continue
         }
         foreach ($rawRelative in @($record.files)) {
@@ -345,7 +357,9 @@ try {
             Where-Object {
                 $_.path -match '^(?i)Lib/site-packages/(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)' -or
                 $_.owners -contains "python" -or
-                $_.owners -contains "numpy"
+                $_.owners -contains "numpy" -or
+                $_.owners -contains "tcl" -or
+                $_.owners -contains "tk"
             }
     )
     if ($forbiddenPayload.Count -ne 0) {
@@ -354,10 +368,10 @@ try {
 
     $manifest = [ordered]@{
         format_version = 1
-        artifact = "fenics-embed-runtime-win-x64-cp312"
+        artifact = "fenics-embed-runtime-win-x64-cp314"
         version = $Version
         platform = "win-x64"
-        python_abi = "cp312"
+        python_abi = "cp314"
         profile = "fenics"
         producer = [ordered]@{
             repository = "precsim/python-numpy-fenics"
@@ -366,6 +380,7 @@ try {
         python = [ordered]@{
             version = $probe.python
         }
+        tcl_tk = $baseIdentity.tcl_tk
         numpy = [ordered]@{
             version = $probe.numpy
             base_manifest_sha256 = $baseIdentity.manifest_sha256
@@ -376,6 +391,7 @@ try {
             base_profile = "numpy"
             producer_python_included = $false
             producer_numpy_included = $false
+            producer_tcl_tk_included = $false
         }
         dolfinx = [ordered]@{ version = $probe.dolfinx }
         petsc4py = [ordered]@{ version = $probe.petsc4py }
@@ -399,7 +415,7 @@ try {
     $manifestPath = Join-Path $stageRoot "fenics-embed-manifest.json"
     Write-Utf8NoBom -Path $manifestPath -Text (($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
 
-    $assetName = "fenics-embed-runtime-v$Version-win-x64-cp312.zip"
+    $assetName = "fenics-embed-runtime-v$Version-win-x64-cp314.zip"
     $zipPath = Join-Path $outputPath $assetName
     Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $stageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
