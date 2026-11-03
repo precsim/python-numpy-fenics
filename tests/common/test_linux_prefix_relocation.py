@@ -16,11 +16,11 @@ from scripts.linux.package_fenics_overlay import (
 
 
 class CondaPrefixRelocationTests(unittest.TestCase):
-    def test_noarch_cache_paths_reconstruct_immutable_cp312_prefix(self) -> None:
+    def test_noarch_cache_paths_reconstruct_cp314_prefix(self) -> None:
         link = {"noarch": {"type": "python"}}
         self.assertEqual(
             cache_path_to_installed_path(PurePosixPath("site-packages/dolfinx/a.so"), link),
-            PurePosixPath("lib/python3.12/site-packages/dolfinx/a.so"),
+            PurePosixPath("lib/python3.14/site-packages/dolfinx/a.so"),
         )
         self.assertEqual(
             cache_path_to_installed_path(PurePosixPath("python-scripts/ffcx"), link),
@@ -31,7 +31,7 @@ class CondaPrefixRelocationTests(unittest.TestCase):
             PurePosixPath("site-packages/a.py"),
         )
 
-    def test_stock_cp312_site_paths_stage_under_cp314(self) -> None:
+    def test_legacy_stable_abi_site_paths_stage_under_cp314(self) -> None:
         self.assertEqual(
             staged_runtime_relative(PurePosixPath("lib/python3.12/site-packages/dolfinx/a.py")),
             PurePosixPath("lib/python3.14/site-packages/dolfinx/a.py"),

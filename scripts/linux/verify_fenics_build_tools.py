@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify the standalone Linux FEniCS C++ build-tool transaction.
 
-This verifier is intentionally independent of the immutable 128-record FEniCS
+This verifier is intentionally independent of the immutable 124-record FEniCS
 runtime package lock.  It proves that the checked-in build-only @EXPLICIT file
 is exactly the transitive dependency closure of the preserved GCC14/CMake/Ninja
 source-build roots, that every archive byte is present and SHA-256 verified,
@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-EXPECTED_EXPLICIT_SHA256 = "763466504eb4af7a1ac9948269d8b228b6df683df5e5d0f30c434249e8529690"
+EXPECTED_EXPLICIT_SHA256 = "1f4a80d51a0fb1dc4a0ed91c76cfc9927aad9ffd456bf3c127b54e18f042ed4b"
 EXPECTED_PACKAGE_COUNT = 41
 EXPECTED_ROOTS = {
     "gcc_linux-64": ("14.4.0", "hc469d41_2"),

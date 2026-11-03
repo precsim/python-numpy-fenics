@@ -32,7 +32,7 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             mod.EXPECTED_FEEDSTOCK_SHA256,
         )
         lock = mod.verify_runtime_lock(contract, RUNTIME_LOCK)
-        self.assertEqual(lock["record_count"], 128)
+        self.assertEqual(lock["record_count"], 124)
         self.assertEqual(lock["packages"]["libcurl"]["version"], "8.23.0")
         self.assertEqual(lock["packages"]["icu"]["version"], "78.3")
         self.assertIn("disabled", contract["capability_impact"]["libcurl_public_suffix_list"])
@@ -223,12 +223,12 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
     def test_hosted_evidence_binds_verified_runtime_build_tools_and_stock_failure(self) -> None:
         prefix = {
             "solver_used": False,
-            "lock_record_count": 128,
-            "installed_record_count": 128,
-            "verified_package_archive_count": 128,
+            "lock_record_count": 124,
+            "installed_record_count": 124,
+            "verified_package_archive_count": 124,
             "package_hash_verification": "cached-package-sha256-plus-installed-record-match",
             "replay_input_format": "@EXPLICIT-url-plus-sha256",
-            "packages": [{} for _ in range(128)],
+            "packages": [{} for _ in range(124)],
         }
         build_tools = {
             "purpose": "linux-fenics-cxx20-build-toolchain-only",

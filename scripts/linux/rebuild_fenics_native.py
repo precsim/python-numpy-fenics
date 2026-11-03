@@ -107,7 +107,7 @@ WHEEL_OWNERS = {
     "fenics_basix": "fenics-basix",
     "fenics_dolfinx": "fenics-dolfinx",
 }
-STOCK_PYTHON_SITE = PurePosixPath("lib/python3.12/site-packages")
+LOCKED_PYTHON_SITE = PurePosixPath("lib/python3.14/site-packages")
 TARGET_PYTHON_SITE = PurePosixPath("lib/python3.14/site-packages")
 WHEEL_MEMBER_ROOTS = {
     "fenics-basix": ("basix", "fenics_basix-0.11.0.dist-info"),
@@ -280,6 +280,12 @@ def validate_sources(source_lock_path: Path, source_dir: Path) -> tuple[dict, li
     manifest = load_json(source_lock_path)
     if manifest.get("schema_version") != 1:
         raise InputError("unsupported FEniCS rebuild source-manifest schema")
+    if manifest.get("target") != {
+        "architecture": "x86_64",
+        "python_abi": "cp314",
+        "glibc_floor": "2.17",
+    }:
+        raise InputError("FEniCS rebuild source manifest target must be x86_64/cp314/glibc-2.17")
     sources = manifest.get("sources")
     if not isinstance(sources, dict) or tuple(sources) != REQUIRED_SOURCES:
         raise InputError("source manifest must contain exactly the fixed Basix/DOLFINx/fmt/spdlog/pugixml/libxml2 sources")
@@ -523,7 +529,7 @@ def validate_libxml2_build_deps(path: Path, package_lock: Path) -> tuple[dict, P
         raise InputError("libxml2 build-dependency FEniCS package-lock identity mismatch")
     require_sha(input_evidence.get("fenics_prefix_verification_sha256"), "libxml2 build-dependency prefix verification sha256")
     if (
-        input_evidence.get("fenics_prefix_verified_package_count") != 128
+        input_evidence.get("fenics_prefix_verified_package_count") != 124
         or input_evidence.get("development_replay_input_format") != "@EXPLICIT-url-plus-sha256"
         or input_evidence.get("dependency_solver_used") is not False
     ):
@@ -1001,7 +1007,7 @@ def build_candidate(
     wheel_env["PYTHONPATH"] = os.pathsep.join([
         str(python_builder_site),
         str(basix_audit),
-        str(stock.joinpath(*STOCK_PYTHON_SITE.parts)),
+        str(stock.joinpath(*LOCKED_PYTHON_SITE.parts)),
     ])
     wheel_env["CMAKE_ARGS"] = (
         f"-DCMAKE_C_COMPILER={tools['cc']} "
@@ -1248,13 +1254,21 @@ def collect_candidate_replacements(
                 raise InputError(f"cp314 wheel payload escapes the fixed package roots for {owner}: {text}")
             stock_paths = owned_by_package.get(owner, set())
             if not any(
-                PurePosixPath(stock_path).is_relative_to(STOCK_PYTHON_SITE)
-                and PurePosixPath(stock_path).relative_to(STOCK_PYTHON_SITE).parts
-                and PurePosixPath(stock_path).relative_to(STOCK_PYTHON_SITE).parts[0] in roots_for_owner
+                PurePosixPath(stock_path).is_relative_to(LOCKED_PYTHON_SITE)
+                and PurePosixPath(stock_path).relative_to(LOCKED_PYTHON_SITE).parts
+                and PurePosixPath(stock_path).relative_to(LOCKED_PYTHON_SITE).parts[0] in roots_for_owner
                 for stock_path in stock_paths
             ):
-                raise InputError(f"cp314 wheel payload owner has no bound cp312 stock Python payload: {owner}")
-            replaces_sha = None
+                raise InputError(f"cp314 wheel payload owner has no bound cp314 locked Python payload: {owner}")
+            if text in stock_paths:
+                stock = locked_prefix / Path(*destination_relative.parts)
+                if not stock.is_file() or stock.is_symlink():
+                    raise InputError(
+                        f"cp314 wheel replacement stock destination is not a regular file: {owner}: {text}"
+                    )
+                replaces_sha = sha256(stock)
+            else:
+                replaces_sha = None
         else:
             if owner not in owned_by_package or text not in owned_by_package[owner]:
                 raise InputError(f"candidate replacement is not owned by locked package {owner}: {text}")

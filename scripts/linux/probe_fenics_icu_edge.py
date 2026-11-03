@@ -2,7 +2,7 @@
 """Hosted Linux probe for cutting the HDF5 -> curl -> libpsl -> ICU edge.
 
 The probe rebuilds only libcurl 8.23.0 with ``--without-libpsl`` from pinned
-public inputs.  It never changes the 128-package runtime lock and never claims
+public inputs.  It never changes the 124-package runtime lock and never claims
 that the resulting library is a releasable overlay input.  Its purpose is to
 produce executable closure evidence for one ICU edge while retaining the
 independent MPICH -> hwloc -> libxml2 -> ICU path as a negative control.
@@ -25,7 +25,7 @@ from urllib.request import Request, urlopen
 
 
 CONTRACT_KIND = "linux-fenics-libcurl-without-libpsl-icu-edge-probe"
-EXPECTED_LOCK_RECORD_COUNT = 128
+EXPECTED_LOCK_RECORD_COUNT = 124
 EXPECTED_CURL_VERSION = "8.23.0"
 EXPECTED_CURL_SOURCE_SHA256 = "95b22eb32bf6d1fa6e3e9463bdb61cece3efc56d86576a9b3cbd428246a6d854"
 EXPECTED_FEEDSTOCK_COMMIT = "d770c46d773d7e2c81555d606720c3d6435b216f"
@@ -91,7 +91,7 @@ def load_contract(path: Path) -> dict:
 
     runtime_lock = data.get("runtime_lock")
     if not isinstance(runtime_lock, dict) or runtime_lock.get("record_count") != EXPECTED_LOCK_RECORD_COUNT:
-        raise ProbeError("ICU-edge contract must preserve the exact 128-record runtime lock")
+        raise ProbeError("ICU-edge contract must preserve the exact 124-record runtime lock")
     packages = runtime_lock.get("packages")
     expected_names = {"hdf5", "libcurl", "libpsl", "icu", "mpich", "libhwloc", "libxml2", "libxml2-16"}
     if not isinstance(packages, dict) or set(packages) != expected_names:
@@ -250,7 +250,7 @@ def validate_hosted_evidence(prefix_verification: Path, build_tool_verification:
         or not isinstance(prefix.get("packages"), list)
         or len(prefix["packages"]) != EXPECTED_LOCK_RECORD_COUNT
     ):
-        raise ProbeError("hosted FEniCS prefix verification does not prove the exact 128-record locked replay")
+        raise ProbeError("hosted FEniCS prefix verification does not prove the exact 124-record locked replay")
 
     build_tools = load_json(build_tool_verification)
     expected_roots = {

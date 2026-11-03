@@ -7,7 +7,7 @@
   },
   "runtime_lock": {
     "path": "locks/linux/linux-x86_64-fenics-package-lock.json",
-    "record_count": 128,
+    "record_count": 124,
     "packages": {
       "hdf5": {
         "version": "1.14.6",

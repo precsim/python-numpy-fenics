@@ -32,14 +32,18 @@ REQUIRED_FIELDS = (
     "md5",
 )
 
-EXPECTED_RECORD_COUNT = 128
+EXPECTED_RECORD_COUNT = 124
 
 SOURCE_EXPLICIT_SHA256 = {
-    "x86_64": "945ad865b5f9404354a5c87bf4db9c93e97da54b77d734780ad3524296277a27",
+    "x86_64": "739bd3ca25ff63eff57f95291f41871465789e2340bfd984b237702f08fc14b5",
 }
 
 REQUIRED_VERSIONS = {
-    "python": "3.12.16",
+    "python": "3.14.10",
+    "python_abi": "3.14",
+    "cpython": "3.14.10",
+    "libpython": "3.14.10",
+    "python-gil": "3.14.10",
     "numpy": "2.5.2",
     "fenics-dolfinx": "0.11.0",
     "fenics-libdolfinx": "0.11.0",
@@ -56,6 +60,33 @@ REQUIRED_VERSIONS = {
 
 REQUIRED_BUILDS = {
     "libopenblas": "openmp_h156ec52_2",
+    "mpich": "hfbb40bb_4",
+}
+
+CP314_BUILD_MARKERS = {
+    "python": "cp314",
+    "python_abi": "cp314",
+    "cpython": "py314",
+    "libpython": "cp314",
+    "numpy": "py314",
+    "mpi4py": "py314",
+    "cffi": "py314",
+}
+
+# The cp314 solve intentionally retains these exact older Python-label builds.
+# FEniCS/PETSc Python extensions are selected with conda-forge's stable-ABI
+# support, while the remaining entries are native/data companions. Their build
+# labels are immutable package identities and are qualified as-is.
+ALLOWED_LEGACY_PYTHON_LABEL_PACKAGES = {
+    "fenics-basix",
+    "fenics-basix-nanobind-abi",
+    "fenics-dolfinx",
+    "fenics-libbasix",
+    "fenics-libdolfinx",
+    "icu",
+    "kahip",
+    "petsc4py",
+    "slepc4py",
 }
 
 
@@ -153,6 +184,34 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
                 f"package lock build mismatch for {name}: "
                 f"{actual_build!r} != {expected_build!r}"
             )
+
+    for name, marker in CP314_BUILD_MARKERS.items():
+        record = by_name.get(name)
+        if record is None:
+            raise SystemExit(f"package lock is missing required cp314 package: {name}")
+        build = str(record["build"])
+        if marker not in build:
+            raise SystemExit(
+                f"package lock build mismatch for {name}: "
+                f"{build!r} does not contain required marker {marker!r}"
+            )
+
+    if "_python_abi3_support" not in by_name:
+        raise SystemExit("package lock is missing _python_abi3_support for stable-ABI payloads")
+    legacy_python_label_packages = {
+        str(record["name"])
+        for record in packages
+        if any(
+            marker in (str(record["build"]) + " " + str(record["url"])).lower()
+            for marker in ("py310", "py311", "py312", "py313", "cp310", "cp311", "cp312", "cp313")
+        )
+    }
+    if legacy_python_label_packages != ALLOWED_LEGACY_PYTHON_LABEL_PACKAGES:
+        raise SystemExit(
+            "unexpected legacy Python-label package set in cp314 lock: "
+            f"{sorted(legacy_python_label_packages)!r} != "
+            f"{sorted(ALLOWED_LEGACY_PYTHON_LABEL_PACKAGES)!r}"
+        )
     return payload
 
 

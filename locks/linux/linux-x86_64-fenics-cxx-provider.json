@@ -6,15 +6,15 @@
   "source_build": false,
   "runtime_package_lock": {
     "path": "locks/linux/linux-x86_64-fenics-package-lock.json",
-    "sha256": "fb5d53e3ea6b060763de137d9b5425c7fb702eeff10c35dffc512190e212794f"
+    "sha256": "c2b69e439ef3ba11020765f54268cda5b25918ee4cbd347dcce29965a2b8947b"
   },
   "runtime_source_explicit": {
     "path": "locks/linux/linux-x86_64-fenics-explicit.txt",
-    "canonical_sha256": "945ad865b5f9404354a5c87bf4db9c93e97da54b77d734780ad3524296277a27"
+    "canonical_sha256": "739bd3ca25ff63eff57f95291f41871465789e2340bfd984b237702f08fc14b5"
   },
   "native_build_tool_explicit": {
     "path": "locks/linux/linux-x86_64-fenics-build-tools-explicit.txt",
-    "canonical_sha256": "763466504eb4af7a1ac9948269d8b228b6df683df5e5d0f30c434249e8529690",
+    "canonical_sha256": "1f4a80d51a0fb1dc4a0ed91c76cfc9927aad9ffd456bf3c127b54e18f042ed4b",
     "used_for_provider_link": false,
     "purpose": "bind the companion GCC 14.4 C++20 native-rebuild toolchain identity"
   },

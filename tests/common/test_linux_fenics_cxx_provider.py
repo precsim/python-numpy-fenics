@@ -31,18 +31,18 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
 
     def test_checked_in_recipe_binds_runtime_and_build_tool_locks(self) -> None:
         locks = validate_checked_in_locks(self.recipe)
-        self.assertEqual(locks["runtime_package_lock"]["record_count"], 128)
+        self.assertEqual(locks["runtime_package_lock"]["record_count"], 124)
         self.assertEqual(
             locks["runtime_package_lock"]["sha256"],
-            "fb5d53e3ea6b060763de137d9b5425c7fb702eeff10c35dffc512190e212794f",
+            "c2b69e439ef3ba11020765f54268cda5b25918ee4cbd347dcce29965a2b8947b",
         )
         self.assertEqual(
             locks["runtime_source_explicit"]["canonical_sha256"],
-            "945ad865b5f9404354a5c87bf4db9c93e97da54b77d734780ad3524296277a27",
+            "739bd3ca25ff63eff57f95291f41871465789e2340bfd984b237702f08fc14b5",
         )
         self.assertEqual(
             locks["native_build_tool_explicit"]["canonical_sha256"],
-            "763466504eb4af7a1ac9948269d8b228b6df683df5e5d0f30c434249e8529690",
+            "1f4a80d51a0fb1dc4a0ed91c76cfc9927aad9ffd456bf3c127b54e18f042ed4b",
         )
         self.assertFalse(locks["native_build_tool_explicit"]["used_for_provider_link"])
         self.assertEqual(
@@ -151,9 +151,9 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
             "format_version": 1,
             "architecture": "x86_64",
             "lock_sha256": lock_sha,
-            "lock_record_count": 128,
-            "installed_record_count": 128,
-            "verified_package_archive_count": 128,
+            "lock_record_count": 124,
+            "installed_record_count": 124,
+            "verified_package_archive_count": 124,
             "package_hash_verification": "cached-package-sha256-plus-installed-record-match",
             "solver_used": False,
         }

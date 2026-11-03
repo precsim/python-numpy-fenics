@@ -266,7 +266,7 @@ if (
     or manifest.get("architecture") != "x86_64"
     or manifest.get("python_abi") != "cp314"
     or manifest.get("consumer_python") != "3.14.10"
-    or manifest.get("stock_package_python_abi") != "cp312"
+    or manifest.get("locked_package_python_abi") != "cp314"
     or manifest.get("tcl_tk") != base_manifest_data.get("tcl_tk")
     or producer.get("repository") != "precsim/python-numpy-fenics"
     or manifest.get("numpy", {}).get("version") != "2.5.2"

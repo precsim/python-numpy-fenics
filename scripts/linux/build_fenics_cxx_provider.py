@@ -144,8 +144,8 @@ def validate_checked_in_locks(recipe: dict[str, Any]) -> dict[str, Any]:
     if runtime_lock.get("architecture") != "x86_64" or runtime_lock.get("format_version") != 1:
         raise ProviderBuildError("runtime package lock identity does not match Linux x86_64")
     packages = runtime_lock.get("packages")
-    if not isinstance(packages, list) or len(packages) != 128:
-        raise ProviderBuildError("runtime package lock must contain exactly 128 package records")
+    if not isinstance(packages, list) or len(packages) != 124:
+        raise ProviderBuildError("runtime package lock must contain exactly 124 package records")
     by_name: dict[str, dict[str, Any]] = {}
     for item in packages:
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
@@ -205,10 +205,10 @@ def validate_prefix_evidence(path: Path, runtime_lock_sha256: str) -> dict[str, 
         raise ProviderBuildError("runtime prefix evidence identity mismatch")
     if evidence.get("lock_sha256") != runtime_lock_sha256:
         raise ProviderBuildError("runtime prefix evidence was not produced from the pinned runtime lock")
-    if evidence.get("lock_record_count") != 128 or evidence.get("installed_record_count") != 128:
-        raise ProviderBuildError("runtime prefix evidence does not cover the exact 128-record lock")
-    if evidence.get("verified_package_archive_count") != 128:
-        raise ProviderBuildError("runtime prefix evidence did not independently hash all 128 archives")
+    if evidence.get("lock_record_count") != 124 or evidence.get("installed_record_count") != 124:
+        raise ProviderBuildError("runtime prefix evidence does not cover the exact 124-record lock")
+    if evidence.get("verified_package_archive_count") != 124:
+        raise ProviderBuildError("runtime prefix evidence did not independently hash all 124 archives")
     if evidence.get("package_hash_verification") != "cached-package-sha256-plus-installed-record-match":
         raise ProviderBuildError("runtime prefix evidence has an unsupported archive verification mode")
     if evidence.get("solver_used") is not False:
@@ -217,8 +217,8 @@ def validate_prefix_evidence(path: Path, runtime_lock_sha256: str) -> dict[str, 
         "path": str(path.resolve()),
         "sha256": sha256_file(path),
         "lock_sha256": runtime_lock_sha256,
-        "lock_record_count": 128,
-        "verified_package_archive_count": 128,
+        "lock_record_count": 124,
+        "verified_package_archive_count": 124,
         "solver_used": False,
     }
 
