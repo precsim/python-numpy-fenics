@@ -1,8 +1,8 @@
 """Decide whether an existing PR needs runtime qualification.
 
 GitHub branch protection requires the qualification job names even when a PR
-only changes Markdown. The workflows therefore run this inexpensive gate and
-skip their runtime jobs for documentation-only pull requests.
+only changes documentation or the repository license. The workflows therefore
+run this inexpensive gate and skip runtime jobs for those pull requests.
 """
 
 import json
@@ -12,8 +12,11 @@ import urllib.request
 
 
 def needs_qualification(paths: list[str]) -> bool:
-    """Fail closed on missing changes; Markdown files are documentation only."""
-    return not paths or any(not path.lower().endswith(".md") for path in paths)
+    """Fail closed except for Markdown documentation and the root license."""
+    return not paths or any(
+        not (path.lower().endswith(".md") or path == "LICENSE.txt")
+        for path in paths
+    )
 
 
 def pull_request_files(repository: str, number: str, token: str) -> list[str]:
