@@ -559,9 +559,12 @@ def candidate_curl_provider(install_prefix: Path, readelf: Path) -> tuple[Path, 
 def find_root(prefix: Path, pattern: str) -> Path:
     candidates = [path.resolve() for path in sorted((prefix / "lib").glob(pattern)) if not path.is_symlink() and is_elf(path)]
     unique = sorted(set(candidates))
-    if len(unique) != 1:
-        raise ProbeError(f"expected one ELF root for {pattern}, found {len(unique)}: {unique}")
-    return unique[0]
+    if not unique:
+        raise ProbeError(f"expected one ELF root for {pattern}, found 0: []")
+    identities = {sha256_file(path) for path in unique}
+    if len(identities) != 1:
+        raise ProbeError(f"expected one ELF root identity for {pattern}, found {len(unique)}: {unique}")
+    return min(unique, key=lambda path: (len(path.name), path.name))
 
 
 def closure(root: Path, providers: dict[str, Path], readelf: Path, external_allowlist: set[str]) -> dict:

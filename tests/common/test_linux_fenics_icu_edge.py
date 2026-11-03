@@ -149,6 +149,21 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
                 with self.assertRaisesRegex(mod.ProbeError, "multiple locked providers|ambiguous locked symlink"):
                     mod.build_provider_index(prefix, Path("readelf"))
 
+    def test_find_root_collapses_only_byte_identical_regular_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw)
+            library_root = prefix / "lib"
+            library_root.mkdir()
+            soname = library_root / "libroot.so.1"
+            versioned = library_root / "libroot.so.1.2.3"
+            soname.write_bytes(b"\x7fELFroot")
+            versioned.write_bytes(soname.read_bytes())
+            self.assertEqual(mod.find_root(prefix, "libroot.so.*"), soname.resolve())
+
+            versioned.write_bytes(b"\x7fELFdifferent-root")
+            with self.assertRaisesRegex(mod.ProbeError, "expected one ELF root identity"):
+                mod.find_root(prefix, "libroot.so.*")
+
     def test_strict_abi_and_rpath_checks_fail_closed(self) -> None:
         maxima = mod.audit_version_tokens(
             ["GLIBC_2.17", "GLIBCXX_3.4.19", "CXXABI_1.3.7", "GCC_4.8.0"], strict=True
