@@ -78,6 +78,20 @@ class LinuxAbiPolicyTests(unittest.TestCase):
         for path in ("lib/libicuuc.so.78.3", "lib/libicudata.so.78.3", "bin/icuinfo"):
             self.assertIsNone(path_exclusion_reason(PurePosixPath(path)))
 
+    def test_prune_ucx_cuda_plugins_without_discarding_cpu_runtime(self) -> None:
+        for path in (
+            "lib/ucx/libucm_cuda.so",
+            "lib/ucx/libucm_cuda.so.0.0.0",
+            "lib/ucx/libuct_cuda.so",
+            "lib/ucx/libuct_cuda.so.0.0.0",
+        ):
+            self.assertEqual(
+                path_exclusion_reason(PurePosixPath(path)),
+                "unused-ucx-cuda-plugin",
+            )
+        for path in ("lib/libucp.so.0", "lib/libuct.so.0", "lib/ucx/libuct_cma.so.0"):
+            self.assertIsNone(path_exclusion_reason(PurePosixPath(path)))
+
     def test_locked_libgcc_duplicate_resolves_by_rpath_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             stage_root = Path(raw)

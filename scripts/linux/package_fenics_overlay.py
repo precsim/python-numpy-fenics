@@ -600,6 +600,11 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         # build-time utilities.  Neither participates in the qualified
         # DOLFINx runtime or FFCx JIT closure; their stock C++ ABI is too new.
         return "unused-icu-data-build-tool"
+    if re.fullmatch(r"lib/ucx/libu(?:cm|ct)_cuda\.so(?:\..*)?", text):
+        # The locked UCX package carries optional CUDA transport/memory hooks.
+        # This profile qualifies the CPU runtime only, and these plugins require
+        # host NVIDIA providers such as libcuda.so.1 and libnvidia-ml.so.1.
+        return "unused-ucx-cuda-plugin"
     if text == "bin/io_demo" or re.fullmatch(r"lib/ucx/libucx_perftest_cuda\.so(?:\..*)?", text):
         return "unused-ucx-test-tool"
     if re.fullmatch(r"lib/libcfp\.so(?:\..*)?", text):
