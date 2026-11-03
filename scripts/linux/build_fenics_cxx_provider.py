@@ -557,6 +557,9 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
+        # The provider is built as root in the pinned manylinux container,
+        # then inspected by the non-root GitHub Actions host.
+        temp.chmod(0o644)
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
