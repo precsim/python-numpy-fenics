@@ -84,10 +84,12 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             "lib/ucx/libucm_cuda.so.0.0.0",
             "lib/ucx/libuct_cuda.so",
             "lib/ucx/libuct_cuda.so.0.0.0",
+            "lib/ucx/libuct_ib_mlx5_gda.so",
+            "lib/ucx/libuct_ib_mlx5_gda.so.0.0.0",
         ):
             self.assertEqual(
                 path_exclusion_reason(PurePosixPath(path)),
-                "unused-ucx-cuda-plugin",
+                "unused-ucx-gpu-plugin",
             )
         for path in ("lib/libucp.so.0", "lib/libuct.so.0", "lib/ucx/libuct_cma.so.0"):
             self.assertIsNone(path_exclusion_reason(PurePosixPath(path)))
