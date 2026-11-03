@@ -76,10 +76,13 @@ def _mapped_soname_paths(soname: str) -> set[Path]:
         raise RuntimeError("Linux FEniCS activation requires /proc/self/maps for provider isolation")
     result: set[Path] = set()
     for line in maps.read_text(errors="replace").splitlines():
-        fields = line.split()
-        if not fields or not fields[-1].startswith("/"):
+        # /proc/self/maps has five fixed columns followed by an optional
+        # pathname. The relocated runtime is intentionally tested in a path
+        # containing spaces; unrestricted split() truncates that pathname.
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6 or not fields[5].startswith("/"):
             continue
-        path = Path(fields[-1])
+        path = Path(fields[5])
         if path.name != soname and not path.name.startswith(soname + "."):
             continue
         try:

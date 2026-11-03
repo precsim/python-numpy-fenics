@@ -669,10 +669,10 @@ if "MPICH" not in library_version.upper():
 
 mapped = set()
 for line in Path("/proc/self/maps").read_text(errors="replace").splitlines():
-    fields = line.split()
-    if fields and fields[-1].startswith("/"):
+    fields = line.split(maxsplit=5)
+    if len(fields) == 6 and fields[5].startswith("/"):
         try:
-            mapped.add(Path(fields[-1]).resolve())
+            mapped.add(Path(fields[5]).resolve())
         except OSError:
             pass
 mpi = {path for path in mapped if path.name.startswith("libmpi.so")}
