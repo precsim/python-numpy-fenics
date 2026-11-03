@@ -59,7 +59,7 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
             },
         )
 
-    def test_recipe_pins_known_gcc16_provider_proof(self) -> None:
+    def test_recipe_pins_cp314_hosted_gcc16_provider_candidate(self) -> None:
         self.assertEqual(
             self.recipe["link_inputs"]["gcc_driver"]["sha256"],
             "1b866d8450249db5231194834ff440ad20b1f5e9316c94cd6b59c2da575545e0",
@@ -71,18 +71,18 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         contract = transform_contract(self.recipe)
         self.assertEqual(
             contract.input_sha256,
-            "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58",
+            "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c",
         )
         self.assertEqual(
             contract.output_sha256,
-            "39473bb7046bd62af7fbafda82c18d6f755de28a9e32ec65734985d72ff71cb4",
+            "26363d1b44952be590a02eea5f34dacc7e836c79e4976e33927491fb63cd1d19",
         )
         self.assertEqual(contract.expected_unique_count, 146)
-        self.assertEqual(contract.expected_dynsym_count, 7261)
+        self.assertEqual(contract.expected_dynsym_count, 7253)
         self.assertEqual(contract.expected_soname, "libfenics_cxxrt.so.1")
         self.assertEqual(
             contract.expected_version_max,
-            {"GLIBC": (2, 17), "GLIBCXX": None, "CXXABI": None, "GCC": (4, 3, 0)},
+            {"GLIBC": (2, 17), "GLIBCXX": None, "CXXABI": None, "GCC": (4, 2, 0)},
         )
 
         evidence = json.loads(
@@ -90,7 +90,12 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        proof = next(item for item in evidence["providers"] if item["id"] == "locked-gcc16-linker-proof")
+        # Keep the earlier Poisson-qualified cp312 proof intact.  The cp314
+        # candidate is a separately observed hosted link pending the complete
+        # overlay and Poisson qualification run.
+        historical = next(item for item in evidence["providers"] if item["id"] == "locked-gcc16-linker-proof")
+        self.assertEqual(historical["expected_dynsym_count"], 7261)
+        proof = next(item for item in evidence["providers"] if item["id"] == "cp314-hosted-gcc16-link-candidate")
         self.assertEqual(contract.input_sha256, proof["transform_input_sha256"])
         self.assertEqual(contract.output_sha256, proof["transformed_sha256"])
         self.assertEqual(contract.expected_unique_count, proof["expected_unique_count"])

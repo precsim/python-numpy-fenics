@@ -119,20 +119,20 @@
       "SOURCE_DATE_EPOCH": "0",
       "TZ": "UTC"
     },
-    "expected_sha256": "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58"
+    "expected_sha256": "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c"
   },
   "transform": {
     "operation_kind": "elf-symbol-binding-transform",
-    "expected_input_sha256": "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58",
-    "expected_output_sha256": "39473bb7046bd62af7fbafda82c18d6f755de28a9e32ec65734985d72ff71cb4",
+    "expected_input_sha256": "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c",
+    "expected_output_sha256": "26363d1b44952be590a02eea5f34dacc7e836c79e4976e33927491fb63cd1d19",
     "expected_unique_count": 146,
-    "expected_dynsym_count": 7261,
+    "expected_dynsym_count": 7253,
     "expected_soname": "libfenics_cxxrt.so.1",
     "expected_version_max": {
       "GLIBC": "2.17",
       "GLIBCXX": null,
       "CXXABI": null,
-      "GCC": "4.3.0"
+      "GCC": "4.2.0"
     }
   }
 }
