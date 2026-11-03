@@ -942,6 +942,7 @@ def build_candidate(
     common = [
         "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
         f"-DCMAKE_C_COMPILER={tools['cc']}",
         f"-DCMAKE_CXX_COMPILER={tools['cxx']}",
         f"-DCMAKE_C_FLAGS=-specs={c_specs}",
