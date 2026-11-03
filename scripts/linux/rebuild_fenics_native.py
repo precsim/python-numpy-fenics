@@ -939,6 +939,7 @@ def build_candidate(
         "MPICH_CC": str(tools["cc"]), "MPICH_CXX": str(tools["cxx"]),
         "PKG_CONFIG_PATH": f"{stock}/lib/pkgconfig:{stock}/share/pkgconfig",
         "LD_LIBRARY_PATH": f"{lib}:{stock}/lib",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
         "SOURCE_DATE_EPOCH": "315532800",
     })
