@@ -731,12 +731,19 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
         # Keep the stock direct zlib provider edge while testing the isolated
         # PSL omission. The conda compiler otherwise drops -lz with its
         # default --as-needed behavior in this independent curl build.
-        "LIBS": "-lz",
+        # The locked libzlib runtime provides libz.so.1; an unversioned
+        # libz.so development linker alias is not part of this runtime lock.
+        "LIBS": "-l:libz.so.1",
         "LD_LIBRARY_PATH": str(locked_prefix / "lib"),
     }
     configure = [str(source_root / "configure"), f"--prefix={install_prefix}", f"--host={contract['probe']['host_triplet']}"]
     configure.extend(flag.format(locked_prefix=locked_prefix) for flag in contract["probe"]["configure_flags"])
-    configure_result = run(configure, cwd=source_root, env=env)
+    try:
+        configure_result = run(configure, cwd=source_root, env=env)
+    except ProbeError as exc:
+        config_log = source_root / "config.log"
+        tail = "\n".join(config_log.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]) if config_log.is_file() else "missing config.log"
+        raise ProbeError(f"{exc}\nconfigure config.log (last 100 lines):\n{tail}") from exc
     run([str(tools["make"]), "-j2"], cwd=source_root, env=env)
     run([str(tools["make"]), "install"], cwd=source_root, env=env)
     # Conda's compiler wrapper adds a link-time search path into its own
