@@ -991,7 +991,7 @@ def build_candidate(
     icu_env.update({
         "CFLAGS": f"-specs={c_specs} -fPIC",
         "CXXFLAGS": f"-specs={cxx_specs} -fPIC -fvisibility-inlines-hidden",
-        "LDFLAGS": link_flags,
+        "LDFLAGS": f"-L{link_root}",
     })
     icu_source = src / "icu" / "source"
     if not (icu_source / "configure").is_file():
