@@ -618,7 +618,7 @@ jobs:
           }
           print(f"candidate_output_binding_sha256={data['candidate_output_binding_sha256']}")
           PY
-          sha256sum "$handoff" > "$scratch/evidence/native-build-handoff.sha256"
+          sha256sum "$handoff" > "$prototype/native-build-handoff.sha256"
           echo "FENICS_NATIVE_BUILD_HANDOFF=$handoff" >> "$GITHUB_ENV"
 
       - name: Record cp314 stable-ABI package boundary
