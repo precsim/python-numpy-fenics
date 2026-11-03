@@ -981,12 +981,16 @@ def build_candidate(
     ])
 
     wheel_rpath = r"$ORIGIN/../../../../lib"
+    compatibility = build / "python-builder-compat"
+    compatibility.mkdir()
+    compat_source = Path(__file__).with_name("fenics_builder_sitecustomize.py")
+    shutil.copy2(compat_source, compatibility / "sitecustomize.py")
     wheel_env = env.copy()
     wheel_env.update({
         "CMAKE_PREFIX_PATH": f"{prefix};{stock}",
         "CFLAGS": f"-specs={c_specs}",
         "CXXFLAGS": f"-specs={cxx_specs} -fvisibility-inlines-hidden",
-        "PYTHONPATH": str(python_builder_site),
+        "PYTHONPATH": os.pathsep.join([str(compatibility), str(python_builder_site)]),
         "PYTHONNOUSERSITE": "1",
         "PIP_CONFIG_FILE": os.devnull,
         "PIP_NO_INDEX": "1",
@@ -1009,6 +1013,7 @@ def build_candidate(
     with zipfile.ZipFile(basix_wheel) as zf:
         zf.extractall(basix_audit)
     wheel_env["PYTHONPATH"] = os.pathsep.join([
+        str(compatibility),
         str(python_builder_site),
         str(basix_audit),
         str(stock.joinpath(*LOCKED_PYTHON_SITE.parts)),
