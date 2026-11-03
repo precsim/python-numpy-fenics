@@ -825,17 +825,32 @@ def validate_linker_resolution_output(output: str, candidate_lib: Path) -> str:
     return str(provider_real)
 
 
-def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path) -> dict:
+def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path, scratch: Path) -> dict:
+    # The stock HDF5 ELF has an RPATH that intentionally resolves its locked
+    # libcurl before LD_LIBRARY_PATH.  Exercise the candidate using a private
+    # relocated HDF5 copy, retaining the original locked ELF unchanged.
+    patchelf = shutil.which("patchelf")
+    if not patchelf:
+        raise ProbeError("HDF5 linker control requires patchelf")
+    control = scratch / "hdf5-linker-control"
+    control.mkdir()
+    staged_hdf5 = control / hdf5.name
+    shutil.copy2(hdf5, staged_hdf5)
+    (control / "libcurl.so.4").symlink_to(candidate_lib / "libcurl.so.4")
+    run([patchelf, "--force-rpath", "--set-rpath", "$ORIGIN", str(staged_hdf5)])
     env = {
         "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": os.pathsep.join([str(candidate_lib), str(locked_prefix / "lib")]),
         "LD_BIND_NOW": "1",
     }
-    output = run(["ldd", "-r", str(hdf5)], env=env).stdout
+    output = run(["ldd", "-r", str(staged_hdf5)], env=env).stdout
     provider = validate_linker_resolution_output(output, candidate_lib)
     return {
         "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         "libcurl_provider": provider,
+        "control_hdf5_sha256": sha256_file(staged_hdf5),
+        "original_hdf5_sha256": sha256_file(hdf5),
+        "control_rpath": "$ORIGIN",
     }
 
 
@@ -911,7 +926,7 @@ def run_probe(
     if candidate_curl.resolve() not in candidate_path_set:
         raise ProbeError("HDF5 candidate closure resolved libcurl somewhere other than the rebuilt provider")
     closure_abi = audit_candidate_closure(candidate_curl_closure, readelf)
-    linker_probe = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix)
+    linker_probe = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix, scratch)
 
     feature_env = {
         "PATH": "/usr/bin:/bin",
