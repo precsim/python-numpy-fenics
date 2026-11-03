@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: completed
 priority: P1
 depends_on: []
 ---
@@ -24,3 +24,11 @@ downstream integration repositories into this producer.
   qualification evidence.
 - Public mocks exercise embedding-relevant loader conflicts without copying a
   downstream consumer implementation.
+
+## Qualification result
+
+The core and NumPy profiles passed standalone qualification on Windows x64,
+Linux x86_64 (glibc 2.17), macOS arm64 and macOS x86_64 under Rosetta 2 at
+revision `95d56a5`. PR #3 merged that revision into `main` as `f6e6e77`.
+See [the recorded jobs and promotion constraints](../docs/cp314-core-numpy-qualification.md).
+Pre-release publication is a separate phase.

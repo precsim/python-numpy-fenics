@@ -19,18 +19,32 @@ on:
       - "scripts/common/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
-      - "specs/02-core-numpy-profiles.md"
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: windows-core-numpy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect-runtime-changes-windows
+    runs-on: ubuntu-24.04
+    outputs:
+      qualify: ${{ steps.classify.outputs.qualify }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/common/qualify_pr_changes.py
+
   qualify:
     name: qualify-windows-core-numpy
+    needs: changes
+    if: needs.changes.outputs.qualify == 'true'
     runs-on: windows-2022
     timeout-minutes: 45
     steps:

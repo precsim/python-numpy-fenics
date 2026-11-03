@@ -20,8 +20,6 @@ on:
       - "locks/linux/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
-      - "specs/02-core-numpy-profiles.md"
-      - "specs/linux/**"
 
 concurrency:
   group: qualify-linux-core-numpy-${{ github.event.pull_request.number || github.ref }}
@@ -29,14 +27,29 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
   MANYLINUX_DIGEST: sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
 
 jobs:
+  changes:
+    name: detect-runtime-changes-linux
+    runs-on: ubuntu-24.04
+    outputs:
+      qualify: ${{ steps.classify.outputs.qualify }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/common/qualify_pr_changes.py
+
   runtime:
     name: qualify-linux-core-numpy
+    needs: changes
+    if: needs.changes.outputs.qualify == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
