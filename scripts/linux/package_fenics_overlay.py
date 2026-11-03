@@ -423,7 +423,15 @@ def validate_runtime_manifest_tree(root: Path, manifest_path: Path, manifest: di
             raise SystemExit(f"unsupported public NumPy runtime manifest kind for {rel}: {kind!r}")
 
 
-def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any]:
+def validate_base_runtime(
+    base: Path,
+    qualification_path: Path,
+    expected_producer_revision: str,
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_producer_revision):
+        raise SystemExit(
+            "expected public NumPy base producer revision must be a full lowercase Git SHA"
+        )
     manifest_path = base / "runtime-manifest.json"
     core_provenance_path = base / "build-provenance-linux.json"
     provenance_path = base / "build-provenance-linux-numpy.json"
@@ -444,6 +452,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         or manifest.get("profile") != "numpy"
         or manifest.get("python_abi") != TARGET_PYTHON_ABI
         or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
+        or manifest.get("producer", {}).get("revision") != expected_producer_revision
     ):
         raise SystemExit(f"invalid public NumPy base runtime manifest: {manifest_path}")
     tcl_tk = manifest.get("tcl_tk")
@@ -480,7 +489,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         or qualification.get("producer_repository") != "precsim/python-numpy-fenics"
         or qualification.get("platform") != "linux-x64"
         or qualification.get("profile") != "numpy"
-        or qualification.get("producer_revision") != manifest.get("producer", {}).get("revision")
+        or qualification.get("producer_revision") != expected_producer_revision
         or not isinstance(checks, dict)
         or any(checks.get(name) != "pass" for name in required_checks)
     ):
@@ -507,6 +516,7 @@ def validate_base_runtime(base: Path, qualification_path: Path) -> dict[str, Any
         "numpy_payload_path": numpy_payload,
         "qualification": qualification,
         "qualification_path": qualification_path,
+        "producer_revision": expected_producer_revision,
         "tcl_tk": tcl_tk,
     }
 
@@ -1929,6 +1939,11 @@ def main() -> int:
     parser.add_argument("--lock", required=True)
     parser.add_argument("--base-runtime", required=True, help="qualified public linux-x64 NumPy runtime")
     parser.add_argument("--base-qualification", required=True)
+    parser.add_argument(
+        "--base-producer-revision",
+        required=True,
+        help="full immutable producer revision of the qualified public NumPy base release",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--abi-preflight-evidence",
@@ -1965,7 +1980,7 @@ def main() -> int:
     lock = load_lock(lock_path)
     records = installed_records(prefix)
     prefix_evidence = verify_external_prefix_evidence(lock, lock_path, evidence_path, records)
-    base_info = validate_base_runtime(base, base_qualification)
+    base_info = validate_base_runtime(base, base_qualification, args.base_producer_revision)
     base_site = base.joinpath(*TARGET_PYTHON_SITE.parts)
     numpy_identity = numpy_tree_identity(base)
     native_rebuild_handoff: dict[str, Any] | None = None
@@ -2281,7 +2296,7 @@ def main() -> int:
                 "provenance_sha256": sha256_file(base_info["provenance_path"]),
                 "numpy_payload_manifest_sha256": sha256_file(base_info["numpy_payload_path"]),
                 "qualification_sha256": sha256_file(base_info["qualification_path"]),
-                "producer_revision": base_info["manifest"].get("producer", {}).get("revision"),
+                "producer_revision": base_info["producer_revision"],
                 "numpy_tree_sha256": numpy_identity["tree_sha256"],
             },
         }
@@ -2322,6 +2337,8 @@ def main() -> int:
                 "version": "2.5.2",
                 "ownership": "consumer-numpy-profile",
                 "producer_payload_excluded": True,
+                "base_producer_revision": base_info["producer_revision"],
+                "base_manifest_sha256": sha256_file(base_info["manifest_path"]),
                 "base_tree_sha256": numpy_identity["tree_sha256"],
                 "base_entry_count": numpy_identity["entry_count"],
             },

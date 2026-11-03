@@ -4,7 +4,15 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Zip,
     [Parameter(Mandatory = $true)]
-    [string]$BaseRuntime
+    [string]$BaseRuntime,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseQualification,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseArchive,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseReleaseTag,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseReleaseLock
 )
 
 Set-StrictMode -Version Latest
@@ -14,12 +22,35 @@ $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $zipPath = (Resolve-Path -LiteralPath $Zip -ErrorAction Stop).Path
 $baseRuntimePath = (Resolve-Path -LiteralPath $BaseRuntime -ErrorAction Stop).Path
+$baseQualificationPath = (Resolve-Path -LiteralPath $BaseQualification -ErrorAction Stop).Path
+$baseArchivePath = (Resolve-Path -LiteralPath $BaseArchive -ErrorAction Stop).Path
+$baseReleaseLockPath = (Resolve-Path -LiteralPath $BaseReleaseLock -ErrorAction Stop).Path
 $baseManifestPath = Join-Path $baseRuntimePath "runtime-manifest.json"
 if (-not (Test-Path -LiteralPath $baseManifestPath -PathType Leaf)) {
     throw "Qualified NumPy base runtime manifest is missing: $baseManifestPath"
 }
 $baseManifest = Get-Content -LiteralPath $baseManifestPath -Raw | ConvertFrom-Json
 $baseManifestHash = (Get-FileHash -LiteralPath $baseManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$baseQualificationRecord = Get-Content -LiteralPath $baseQualificationPath -Raw | ConvertFrom-Json
+$baseQualificationHash = (Get-FileHash -LiteralPath $baseQualificationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$baseArchiveHash = (Get-FileHash -LiteralPath $baseArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$baseReleaseLockHash = (Get-FileHash -LiteralPath $baseReleaseLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$baseReleaseLockRecord = Get-Content -LiteralPath $baseReleaseLockPath -Raw | ConvertFrom-Json
+$basePlatformPins = $baseReleaseLockRecord.platforms.'win-x64'
+$ExpectedBaseRevision = [string]$baseReleaseLockRecord.producer_revision
+if ($BaseReleaseTag -notmatch '^runtime-v\d+\.\d+\.\d+-rc[1-9]\d*$' -or
+    $baseReleaseLockRecord.format_version -ne 1 -or
+    $baseReleaseLockRecord.repository -ne "precsim/python-numpy-fenics" -or
+    $baseReleaseLockRecord.tag -ne $BaseReleaseTag -or
+    $ExpectedBaseRevision -notmatch '^[0-9a-f]{40}$' -or
+    $null -eq $basePlatformPins) {
+    throw "Qualified NumPy base release identity is invalid"
+}
+if ($baseManifestHash -ne [string]$basePlatformPins.manifest_sha256 -or
+    $baseQualificationHash -ne [string]$basePlatformPins.qualification_sha256 -or
+    $baseArchiveHash -ne [string]$basePlatformPins.archive_sha256) {
+    throw "Qualified NumPy base files do not match the immutable release lock"
+}
 if ($baseManifest.format_version -ne 1 -or
     $baseManifest.artifact -ne "python-runtime-win-x64-cp314-numpy" -or
     $baseManifest.platform -ne "win-x64" -or
@@ -31,8 +62,18 @@ if ($baseManifest.format_version -ne 1 -or
     $baseManifest.tcl_tk.ownership -ne "producer" -or
     $baseManifest.numpy.version -ne "2.5.2" -or
     -not $baseManifest.base_core -or
-    $baseManifest.producer.repository -ne "precsim/python-numpy-fenics") {
+    $baseManifest.producer.repository -ne "precsim/python-numpy-fenics" -or
+    $baseManifest.producer.revision -ne $ExpectedBaseRevision) {
     throw "FEniCS overlay requires the qualified public win-x64 cp314 NumPy base runtime with producer Tcl/Tk 8.6.18"
+}
+if ($baseQualificationRecord.format_version -ne 1 -or
+    $baseQualificationRecord.producer_repository -ne "precsim/python-numpy-fenics" -or
+    $baseQualificationRecord.producer_revision -ne $ExpectedBaseRevision -or
+    $baseQualificationRecord.platform -ne "win-x64" -or
+    $baseQualificationRecord.profile -ne "numpy" -or
+    $baseQualificationRecord.artifact -ne [IO.Path]::GetFileName($baseArchivePath) -or
+    ([string]$baseQualificationRecord.artifact_sha256).ToLowerInvariant() -ne $baseArchiveHash) {
+    throw "Qualified NumPy base qualification/archive identity is invalid"
 }
 
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("fenics embedded runtime test " + [guid]::NewGuid().ToString("N"))
@@ -98,6 +139,11 @@ try {
         throw "Embedded-runtime manifest identity is invalid"
     }
     if ($manifest.numpy.version -ne "2.5.2" -or
+        $manifest.numpy.base_release_tag -ne $BaseReleaseTag -or
+        $manifest.numpy.base_producer_revision -ne $ExpectedBaseRevision -or
+        $manifest.numpy.base_release_lock_sha256 -ne $baseReleaseLockHash -or
+        $manifest.numpy.base_archive_sha256 -ne $baseArchiveHash -or
+        $manifest.numpy.base_qualification_sha256 -ne $baseQualificationHash -or
         $manifest.numpy.base_manifest_sha256 -ne $baseManifestHash -or
         $manifest.numpy.base_tree_sha256 -ne $baseTreeHash -or
         $manifest.numpy.base_entry_count -ne $numpyBefore.Count -or

@@ -209,6 +209,7 @@ def numpy_base_identity(
         "manifest_sha256": sha256_file(manifest_path),
         "tree_sha256": aggregate.hexdigest(),
         "entry_count": len(entries),
+        "producer_revision": manifest["producer"]["revision"],
         "tcl_tk": tcl_tk,
     }
 
@@ -947,11 +948,18 @@ parser.add_argument("--base-runtime", required=True)
 parser.add_argument("--arch", required=True, choices=("arm64", "x86_64"))
 parser.add_argument("--output", required=True)
 parser.add_argument("--version", default="0.1.0")
+parser.add_argument("--base-producer-revision", required=True)
 parser.add_argument("--producer-revision", required=True)
 args = parser.parse_args()
 
 if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
     raise SystemExit(f"overlay version must be X.Y.Z: {args.version!r}")
+for label, revision in (
+    ("base producer", args.base_producer_revision),
+    ("overlay producer", args.producer_revision),
+):
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit(f"{label} revision must be a full lowercase git SHA: {revision!r}")
 
 prefix = Path(args.prefix).resolve()
 lock_path = Path(args.lock).resolve()
@@ -969,7 +977,7 @@ for required in (prefix / "conda-meta", lock_path, package_cache, base_runtime, 
 base_identity = numpy_base_identity(
     base_runtime,
     expected_platform=expected_platform,
-    expected_revision=args.producer_revision,
+    expected_revision=args.base_producer_revision,
     expected_version=args.version,
 )
 
@@ -1206,6 +1214,7 @@ try:
             "version": "2.5.2",
             "ownership": "consumer-numpy-profile",
             "producer_payload_excluded": True,
+            "base_producer_revision": base_identity["producer_revision"],
             "base_manifest_sha256": base_identity["manifest_sha256"],
             "base_tree_sha256": base_identity["tree_sha256"],
             "base_entry_count": base_identity["entry_count"],

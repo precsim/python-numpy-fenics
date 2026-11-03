@@ -22,36 +22,22 @@ jobs:
           - architecture: arm64
             runner: macos-15
             artifact_platform: macos-arm64
+            artifact_arch: arm64
             conda_subdir: osx-arm64
-            python_asset_id: "678419297"
-            python_asset_name: python-3.14.10-darwin-arm64.tar.gz
-            toolcache_arch: arm64
-            numpy_wheel: numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
-            numpy_url: https://files.pythonhosted.org/packages/b9/ee/d08226fc858044355983a6e5b94f08ff6f3969e0a2b160a4a89f0ddb3445/numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
-            numpy_sha256: 9e9413326d726c2545bfa65d2c0876871e8d8386e77f992c1d426e180bbd4323
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp314.zip
           - architecture: x86_64
             runner: macos-15
             artifact_platform: macos-x64
+            artifact_arch: x64
             conda_subdir: osx-64
-            python_asset_id: "678419298"
-            python_asset_name: python-3.14.10-darwin-x64.tar.gz
-            toolcache_arch: x64
-            numpy_wheel: numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl
-            numpy_url: https://files.pythonhosted.org/packages/94/f0/6d3d933056440ebbc5e6bad92065fc6c26a48a84a36b1208580e94eea76c/numpy-2.5.2-cp314-cp314-macosx_14_0_x86_64.whl
-            numpy_sha256: 60e902ac295855348a5ca2ea4c89108989a9f5fddfad3dfc0a8f36b10358567e
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-x64-cp314.zip
     env:
       TARGET_ARCH: ${{ matrix.architecture }}
       ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
+      ARTIFACT_ARCH: ${{ matrix.artifact_arch }}
       TARGET_SUBDIR: ${{ matrix.conda_subdir }}
-      PYTHON_ASSET_ID: ${{ matrix.python_asset_id }}
-      PYTHON_ASSET_NAME: ${{ matrix.python_asset_name }}
-      TOOLCACHE_ARCH: ${{ matrix.toolcache_arch }}
-      NUMPY_WHEEL_NAME: ${{ matrix.numpy_wheel }}
-      NUMPY_WHEEL_URL: ${{ matrix.numpy_url }}
-      NUMPY_WHEEL_SHA256: ${{ matrix.numpy_sha256 }}
       OVERLAY_ASSET: ${{ matrix.overlay_asset }}
+      NUMPY_BASE_TAG: runtime-v0.1.0-rc1
       GH_TOKEN: ${{ github.token }}
 
     steps:
@@ -173,142 +159,51 @@ jobs:
           echo "FENICS_PACKAGE_CACHE=$package_cache" >> "$GITHUB_ENV"
           echo "FENICS_OVERLAY_EVIDENCE=$evidence" >> "$GITHUB_ENV"
 
-      - name: Download pinned public CPython base assets
+      - name: Restore immutable qualified NumPy base runtime
         shell: bash
         run: |
           set -euo pipefail
-          destination="$RUNNER_TEMP/public-python-assets-$TARGET_ARCH"
-          mkdir -p "$destination"
-          python3 - "$PYTHON_ASSET_ID" "$PYTHON_ASSET_NAME" "$destination" <<'PY'
+          mkdir -p dist
+          base_runtime="out/macos-$TARGET_ARCH/numpy"
+          base_qualification="dist/qualification-macos-$ARTIFACT_ARCH-numpy-base.json"
+          base_archive="dist/python-runtime-v0.1.0-macos-$ARTIFACT_ARCH-cp314-numpy.zip"
+          python3 scripts/common/restore_qualified_numpy_base.py \
+            --tag "$NUMPY_BASE_TAG" \
+            --platform "$ARTIFACT_PLATFORM" \
+            --output "$base_runtime" \
+            --qualification-output "$base_qualification" \
+            --archive-output "$base_archive"
+          python3 scripts/macos/verify-runtime-evidence.py \
+            --runtime "$base_runtime" --profile numpy --arch "$TARGET_ARCH"
+          python3 - locks/core/fenics-numpy-base-release.json \
+            "$base_runtime/runtime-manifest.json" "$base_qualification" "$NUMPY_BASE_TAG" <<'PY'
           import json
           import os
           import pathlib
-          import shutil
           import sys
-          import urllib.request
 
-          asset_id = int(sys.argv[1])
-          asset_name = sys.argv[2]
-          destination = pathlib.Path(sys.argv[3])
-          for current_id, expected_name in (
-              (asset_id, asset_name),
-              (678419306, "hashes.sha256"),
-          ):
-              request = urllib.request.Request(
-                  f"https://api.github.com/repos/actions/python-versions/releases/assets/{current_id}",
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                      "User-Agent": "python-numpy-fenics-ci",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
+          pin_path = pathlib.Path(sys.argv[1])
+          manifest_path = pathlib.Path(sys.argv[2])
+          qualification_path = pathlib.Path(sys.argv[3])
+          expected_tag = sys.argv[4]
+          pin = json.loads(pin_path.read_text(encoding="utf-8-sig"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+          qualification = json.loads(qualification_path.read_text(encoding="utf-8-sig"))
+          if pin.get("repository") != "precsim/python-numpy-fenics" or pin.get("tag") != expected_tag:
+              raise SystemExit(f"NumPy base release pin does not match requested release: {pin_path}")
+          expected_revision = pin.get("producer_revision")
+          manifest_revision = manifest.get("producer", {}).get("revision")
+          qualification_revision = qualification.get("producer_revision")
+          if manifest_revision != expected_revision or qualification_revision != expected_revision:
+              raise SystemExit(
+                  "restored NumPy base revision mismatch: "
+                  f"manifest={manifest_revision!r} qualification={qualification_revision!r} "
+                  f"expected={expected_revision!r}"
               )
-              with urllib.request.urlopen(request) as response:
-                  metadata = json.load(response)
-              if metadata.get("id") != current_id or metadata.get("name") != expected_name:
-                  raise SystemExit(f"pinned CPython asset identity mismatch: {metadata!r}")
-              download = urllib.request.Request(
-                  metadata["browser_download_url"],
-                  headers={"User-Agent": "python-numpy-fenics-ci"},
-              )
-              target = destination / expected_name
-              with urllib.request.urlopen(download) as response, target.open("wb") as stream:
-                  shutil.copyfileobj(response, stream)
-          env = pathlib.Path(os.environ["GITHUB_ENV"])
-          with env.open("a", encoding="utf-8") as stream:
-              stream.write(f"PUBLIC_CPYTHON_ARCHIVE={destination / asset_name}\n")
-              stream.write(f"PUBLIC_CPYTHON_HASHES={destination / 'hashes.sha256'}\n")
+          with pathlib.Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+              stream.write(f"NUMPY_BASE_REVISION={expected_revision}\n")
+          print(f"numpy_base_revision={expected_revision}")
           PY
-
-      - name: Install pinned public CPython base
-        shell: bash
-        run: |
-          set -euo pipefail
-          setup_dir="$RUNNER_TEMP/public-python-setup-$TARGET_ARCH"
-          rm -rf "$setup_dir"
-          mkdir -p "$setup_dir"
-          tar -xzf "$PUBLIC_CPYTHON_ARCHIVE" -C "$setup_dir"
-          export AGENT_TOOLSDIRECTORY="$RUNNER_TEMP/public-toolcache"
-          (cd "$setup_dir" && bash ./setup.sh)
-          python_real="$AGENT_TOOLSDIRECTORY/Python/3.14.10/$TOOLCACHE_ARCH/bin/python3.14"
-          test -x "$python_real"
-          if [[ "$TARGET_ARCH" == x86_64 ]]; then
-            python_launcher="$RUNNER_TEMP/public-python3.14-x86_64"
-            cat > "$python_launcher" <<EOF
-          #!/bin/bash
-          exec /usr/bin/arch -x86_64 "$python_real" "\$@"
-          EOF
-            chmod +x "$python_launcher"
-            selected="$python_launcher"
-          else
-            selected="$python_real"
-          fi
-          echo "PUBLIC_PRODUCER_PYTHON=$selected" >> "$GITHUB_ENV"
-          "$selected" -I -S - <<'PY'
-          import platform, struct
-          assert platform.python_version() == "3.14.10"
-          assert 8 * struct.calcsize("P") == 64
-          print(f"public_base_machine={platform.machine()}")
-          PY
-
-      - name: Fetch and verify public NumPy base wheel
-        shell: bash
-        run: |
-          set -euo pipefail
-          wheel="$RUNNER_TEMP/$NUMPY_WHEEL_NAME"
-          curl --fail --location --retry 3 --retry-all-errors -o "$wheel" "$NUMPY_WHEEL_URL"
-          echo "$NUMPY_WHEEL_SHA256  $wheel" | shasum -a 256 -c -
-          echo "PUBLIC_NUMPY_WHEEL=$wheel" >> "$GITHUB_ENV"
-
-      - name: Fetch locked Tcl/Tk 8.6.18 sources
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_dir="$RUNNER_TEMP/tcltk-8.6.18-sources"
-          python3 scripts/common/fetch_tcltk_sources.py --output-dir "$source_dir"
-          echo "TCL_SOURCE=$source_dir/tcl8.6.18-src.tar.gz" >> "$GITHUB_ENV"
-          echo "TK_SOURCE=$source_dir/tk8.6.18-src.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Fetch CPython 3.14.10 source for _tkinter rebuild
-        shell: bash
-        run: |
-          set -euo pipefail
-          source="$RUNNER_TEMP/Python-3.14.10.tar.xz"
-          curl --fail --location --retry 3 --retry-all-errors \
-            -o "$source" \
-            https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tar.xz
-          echo "de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032  $source" \
-            | shasum -a 256 -c -
-          echo "CPYTHON_SOURCE=$source" >> "$GITHUB_ENV"
-
-      - name: Stage exact public NumPy base runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/macos/stage-core-runtime.sh scripts/macos/stage-numpy-runtime.sh
-          scripts/macos/stage-core-runtime.sh \
-            --python "$PUBLIC_PRODUCER_PYTHON" \
-            --python-archive "$PUBLIC_CPYTHON_ARCHIVE" \
-            --python-hashes "$PUBLIC_CPYTHON_HASHES" \
-            --python-source "$CPYTHON_SOURCE" \
-            --tcl-source "$TCL_SOURCE" \
-            --tk-source "$TK_SOURCE" \
-            --arch "$TARGET_ARCH"
-          python3 scripts/macos/verify-runtime-evidence.py \
-            --runtime "out/macos-$TARGET_ARCH/core" --profile core --arch "$TARGET_ARCH"
-          scripts/macos/stage-numpy-runtime.sh \
-            --core-runtime "out/macos-$TARGET_ARCH/core" \
-            --output-runtime "out/macos-$TARGET_ARCH/numpy" \
-            --numpy-wheel "$PUBLIC_NUMPY_WHEEL" \
-            --numpy-url "$NUMPY_WHEEL_URL" \
-            --arch "$TARGET_ARCH"
-          python3 scripts/macos/verify-runtime-evidence.py \
-            --runtime "out/macos-$TARGET_ARCH/numpy" --profile numpy --arch "$TARGET_ARCH"
-          python3 scripts/common/write_runtime_manifest.py \
-            --root "out/macos-$TARGET_ARCH/numpy" \
-            --platform "$ARTIFACT_PLATFORM" \
-            --profile numpy \
-            --component-provenance "out/macos-$TARGET_ARCH/numpy/build-provenance-macos.json"
 
       - name: Prove fresh FFCx JIT and serial PETSc solve from locked packages
         shell: bash
@@ -336,6 +231,7 @@ jobs:
             --arch "$TARGET_ARCH" \
             --output dist \
             --version 0.1.0 \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
             --producer-revision "$producer_revision" \
             2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/package-overlay.log"
           test -f "dist/$OVERLAY_ASSET"
@@ -367,6 +263,7 @@ jobs:
             --arch "$TARGET_ARCH" \
             --output dist-repeat \
             --version 0.1.0 \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
             --producer-revision "$producer_revision" \
             > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
           cmp "dist/$OVERLAY_ASSET" "dist-repeat/$OVERLAY_ASSET"
@@ -431,6 +328,10 @@ jobs:
           cp "dist/$OVERLAY_ASSET" "$FENICS_OVERLAY_EVIDENCE/"
           cp "dist/$OVERLAY_ASSET.json" "$FENICS_OVERLAY_EVIDENCE/"
           cp "dist/$OVERLAY_ASSET.sha256" "$FENICS_OVERLAY_EVIDENCE/"
+          cp "dist/qualification-macos-$ARTIFACT_ARCH-numpy-base.json" \
+            "$FENICS_OVERLAY_EVIDENCE/numpy-base-qualification.json"
+          cp "out/macos-$TARGET_ARCH/numpy/runtime-manifest.json" \
+            "$FENICS_OVERLAY_EVIDENCE/numpy-base-runtime-manifest.json"
           unzip -p "dist/$OVERLAY_ASSET" fenics-embed-manifest.json \
             > "$FENICS_OVERLAY_EVIDENCE/fenics-embed-manifest.json"
           unzip -p "dist/$OVERLAY_ASSET" fenics-runtime/provenance/native-census.json \
