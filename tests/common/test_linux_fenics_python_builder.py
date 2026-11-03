@@ -62,6 +62,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
         self.assertEqual(records["scikit-build-core"]["selected_extras"], ["pyproject"])
         self.assertEqual(records["scikit-build-core"]["extra_compatibility_dependencies"], ["pyproject-metadata"])
         self.assertEqual(records["wheel"]["version"], "0.48.0")
+        self.assertEqual(records["wheel"]["pin_source"], "public-wheel-pin-for-offline-basix-dolfinx-build")
         self.assertFalse(lock["policy"]["dependency_resolution"])
         self.assertFalse(lock["policy"]["index_access"])
 

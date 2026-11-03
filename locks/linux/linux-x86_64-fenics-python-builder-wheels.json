@@ -85,7 +85,7 @@
       "active_dependencies": [
         "packaging"
       ],
-      "pin_source": "linux-x86_64-fenics-package-lock.json#wheel-version"
+      "pin_source": "public-wheel-pin-for-offline-basix-dolfinx-build"
     }
   ],
   "modules": {

@@ -192,9 +192,18 @@ def validate_lock(lock_path: Path, numpy_sources_path: Path, fenics_package_lock
         for record in fenics_lock.get("packages", [])
         if isinstance(record, dict)
     }
-    wheel_package = fenics_packages.get("wheel")
-    if wheel_package is None or wheel_package.get("version") != records["wheel"].get("version"):
-        raise BuilderInputError("Python builder wheel version differs from the immutable FEniCS package lock")
+    expected_fenics_packages = {
+        "python": "3.14.10",
+        "numpy": "2.5.2",
+        "fenics-basix": "0.11.0",
+        "fenics-dolfinx": "0.11.0",
+    }
+    for name, version in expected_fenics_packages.items():
+        record = fenics_packages.get(name)
+        if record is None or record.get("version") != version:
+            raise BuilderInputError(
+                f"Python builder target differs from immutable FEniCS package identity: {name}={version}"
+            )
     return lock, records
 
 
