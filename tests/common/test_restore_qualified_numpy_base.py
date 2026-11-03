@@ -56,6 +56,17 @@ class RestoreNumPyBaseTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "duplicate ZIP entry"):
                 restore.restore_zip(archive, root / "runtime2")
 
+    def test_linux_profile_identity_comes_from_pinned_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "runtime"
+            runtime.mkdir()
+            restore.validate_extracted_profile_marker(runtime, "linux-x64")
+            with self.assertRaisesRegex(SystemExit, "not the NumPy profile"):
+                restore.validate_extracted_profile_marker(runtime, "win-x64")
+            (runtime / "RUNTIME_PROFILE").write_text("numpy\n", encoding="utf-8")
+            restore.validate_extracted_profile_marker(runtime, "linux-x64")
+            restore.validate_extracted_profile_marker(runtime, "win-x64")
+
     def test_rejects_modified_release_asset_before_extracting(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

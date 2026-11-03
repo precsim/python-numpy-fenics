@@ -160,6 +160,21 @@ def restore_tar(archive_path: Path, root: Path) -> None:
                 path.chmod(member.mode & 0o777)
 
 
+def validate_extracted_profile_marker(output: Path, platform: str) -> None:
+    """Validate platform profile markers without inventing one for Linux.
+
+    Windows and macOS runtime layouts carry a RUNTIME_PROFILE marker.  The
+    published Linux runtime contract records the profile in the independently
+    pinned runtime manifest instead and has never emitted that marker.
+    """
+
+    marker = output / "RUNTIME_PROFILE"
+    if platform == "linux-x64" and not marker.exists():
+        return
+    require(marker.is_file() and marker.read_text(encoding="utf-8").strip() == "numpy",
+            "extracted base runtime is not the NumPy profile")
+
+
 def verified_restore(
     tag: str,
     platform: str,
@@ -228,8 +243,7 @@ def verified_restore(
             embedded = output / "runtime-manifest.json"
             require(embedded.is_file() and embedded.read_bytes() == manifest_file.read_bytes(),
                     "extracted base runtime manifest does not match locked release manifest")
-            require((output / "RUNTIME_PROFILE").read_text(encoding="utf-8").strip() == "numpy",
-                    "extracted base runtime is not the NumPy profile")
+            validate_extracted_profile_marker(output, platform)
         except BaseException:
             shutil.rmtree(output)
             raise
