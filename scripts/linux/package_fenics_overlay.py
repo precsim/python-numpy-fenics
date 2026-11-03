@@ -106,6 +106,7 @@ NATIVE_HANDOFF_REPLACEMENT_OWNERS = {
     "spdlog",
     "pugixml",
     "libxml2-16",
+    "icu",
     "fenics-libbasix",
     "fenics-basix",
     "fenics-libdolfinx",
@@ -116,7 +117,7 @@ NATIVE_HANDOFF_WHEEL_ROOTS = {
     "fenics-basix": ("basix", "fenics_basix-0.11.0.dist-info"),
     "fenics-dolfinx": ("dolfinx", "fenics_dolfinx-0.11.0.dist-info"),
 }
-NATIVE_HANDOFF_SOURCE_COMPONENTS = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+NATIVE_HANDOFF_SOURCE_COMPONENTS = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
 NATIVE_HANDOFF_SOURCE_MANIFEST = "locks/linux/linux-x86_64-fenics-rebuild-sources.json"
 NATIVE_HANDOFF_EXPECTED_STOCK_VIOLATING_PACKAGES = (
     "fenics-basix",

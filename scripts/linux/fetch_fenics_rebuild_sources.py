@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
-EXPECTED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+EXPECTED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
 PUBLIC_SOURCE_HOSTS = {"github.com", "gitlab.gnome.org"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 

@@ -53,6 +53,14 @@
       "url": "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.15.4/libxml2-v2.15.4.tar.gz",
       "sha256": "a569ee9c59eabb197a0d5047046d757ee14c86fb2d4a734555b633cb5584ad25",
       "recipe_package": "libxml2-16"
+    },
+    "icu": {
+      "name": "icu",
+      "version": "78.3",
+      "filename": "icu4c-78.3-sources.tgz",
+      "url": "https://github.com/unicode-org/icu/releases/download/release-78.3/icu4c-78.3-sources.tgz",
+      "sha256": "3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0",
+      "recipe_package": "icu"
     }
   },
   "patches": {
@@ -71,7 +79,8 @@
     "fenics-basix",
     "fenics-libdolfinx",
     "fenics-dolfinx",
-    "libxml2-16"
+    "libxml2-16",
+    "icu"
   ],
   "build_policy": {
     "dependency_resolution": false,
@@ -84,7 +93,7 @@
       "libadios2": "requires DOLFINX_ENABLE_ADIOS2=OFF and zero reached paths in native closure proof",
       "zeromq": "requires libadios2 omission and zero reached paths in native closure proof"
     },
-    "icu_resolution": "rebuild libxml2 2.15.4 with LIBXML2_WITH_ICU=OFF; ICU remains a qualification blocker until post-rebuild closure proves no reached ICU provider",
+    "icu_resolution": "rebuild reached ICU 78.3 libraries from pinned upstream sources with the frozen GCC/C++ provider; keep libxml2 rebuilt without ICU and require final ELF ABI closure proof",
     "runtime_symbol_ceilings": {
       "GLIBC": "2.17",
       "GLIBCXX": "3.4.19",

@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 import zipfile
 
 
-REQUIRED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+REQUIRED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
 REQUIRED_PACKAGES = (
     "fmt",
     "spdlog",
@@ -40,6 +40,7 @@ REQUIRED_PACKAGES = (
     "fenics-libdolfinx",
     "fenics-dolfinx",
     "libxml2-16",
+    "icu",
 )
 EXPECTED_STOCK_ABI_VIOLATING_PACKAGES = (
     "fenics-basix",
@@ -108,6 +109,7 @@ REBUILD_COMPONENT_OWNERS = {
     "spdlog": "spdlog",
     "pugixml": "pugixml",
     "libxml2": "libxml2-16",
+    "icu": "icu",
     "dolfinx": "fenics-libdolfinx",
 }
 WHEEL_OWNERS = {
@@ -295,7 +297,7 @@ def validate_sources(source_lock_path: Path, source_dir: Path) -> tuple[dict, li
         raise InputError("FEniCS rebuild source manifest target must be x86_64/cp314/glibc-2.17")
     sources = manifest.get("sources")
     if not isinstance(sources, dict) or tuple(sources) != REQUIRED_SOURCES:
-        raise InputError("source manifest must contain exactly the fixed Basix/DOLFINx/fmt/spdlog/pugixml/libxml2 sources")
+        raise InputError("source manifest must contain exactly the fixed Basix/DOLFINx/fmt/spdlog/pugixml/libxml2/ICU sources")
     evidence = []
     for key in REQUIRED_SOURCES:
         record = sources[key]
@@ -980,6 +982,35 @@ def build_candidate(
         "-DLIBXML2_WITH_TESTS=OFF", "-DLIBXML2_WITH_PROGRAMS=OFF", "-DLIBXML2_WITH_DOCS=OFF",
         "-DLIBXML2_WITH_LEGACY=ON", "-DLIBXML2_WITH_TLS=ON", f"-DCMAKE_SHARED_LINKER_FLAGS={link_flags}",
     ])
+    # ICU remains reachable through locked MPI/hwloc and curl/PSL providers,
+    # even with the rebuilt libxml2 configured without ICU support.  Rebuild
+    # only the locked 78.3 ICU libraries against the frozen C++ provider.
+    icu_build = build / "icu"
+    icu_build.mkdir()
+    icu_env = env.copy()
+    icu_env.update({
+        "CFLAGS": f"-specs={c_specs} -fPIC",
+        "CXXFLAGS": f"-specs={cxx_specs} -fPIC -fvisibility-inlines-hidden",
+        "LDFLAGS": link_flags,
+    })
+    icu_source = src / "icu" / "source"
+    if not (icu_source / "configure").is_file():
+        raise InputError("pinned ICU 78.3 source archive has no configure script")
+    run("/bin/bash", str(icu_source / "configure"),
+        f"--prefix={prefix}", f"--libdir={lib}",
+        "--enable-shared", "--disable-static",
+        "--disable-samples", "--disable-extras",
+        "--with-data-packaging=library", env=icu_env, cwd=icu_build)
+    run(tools["make"], "-j4", env=icu_env, cwd=icu_build)
+    run(tools["make"], "install", env=icu_env, cwd=icu_build)
+    icu_installed = sorted(
+        path for path in lib.glob("libicu*.so*") if path.is_file()
+    )
+    if not icu_installed or not any(path.name == "libicuuc.so.78.3" for path in icu_installed):
+        raise InputError("ICU 78.3 rebuild did not install versioned runtime libraries")
+    (icu_build / "install_manifest.txt").write_text(
+        "".join(f"{path}\n" for path in icu_installed), encoding="utf-8"
+    )
     cmake_build("dolfinx", src / "dolfinx-0.11.0" / "cpp", [
         f"-DCMAKE_PREFIX_PATH={prefix};{stock}", f"-DCMAKE_LIBRARY_PATH={prefix}/lib;{stock}/lib", f"-DMPI_C_COMPILER={stock}/bin/mpicc", f"-DMPI_CXX_COMPILER={stock}/bin/mpicxx",
         "-DMPI_CXX_SKIP_MPICXX=ON", "-DMPI_CXX_LIB_NAMES=mpi", "-DDOLFINX_BASIX_PYTHON=OFF", "-DDOLFINX_UFCX_PYTHON=OFF", "-DDOLFINX_ENABLE_ADIOS2=OFF", "-DDOLFINX_ENABLE_KAHIP=OFF", "-DDOLFINX_ENABLE_PETSC=ON", "-DDOLFINX_ENABLE_SLEPC=ON", "-DDOLFINX_ENABLE_SUPERLU_DIST=ON", "-DDOLFINX_ENABLE_PARMETIS=ON", "-DDOLFINX_ENABLE_SCOTCH=ON", f"-DCMAKE_SHARED_LINKER_FLAGS={link_flags}", f"-DCMAKE_MODULE_LINKER_FLAGS={link_flags}",
@@ -1057,6 +1088,12 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
         "lib/libspdlog.so.*",
         "lib/libpugixml.so.*",
         "lib/libxml2.so.*",
+        "lib/libicudata.so.78.3",
+        "lib/libicui18n.so.78.3",
+        "lib/libicuio.so.78.3",
+        "lib/libicuuc.so.78.3",
+        "lib/libicutu.so.78.3",
+        "lib/libicutest.so.78.3",
         "lib/libdolfinx.so.0.11.0",
     ]
     elfs: list[Path] = []
