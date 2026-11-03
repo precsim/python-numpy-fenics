@@ -5,6 +5,14 @@ releasable Linux producer overlay. Nothing described as a prototype here
 authorizes `source_rebuilds` provenance, a hosted qualification result, or a
 public prerelease.
 
+**Historical cp312 evidence:** The experiments and frozen compatibility
+contract below use the earlier CPython 3.12.10 / NumPy 2.5.2 base. Core and
+NumPy have since moved to CPython 3.14.10 / cp314 on all producer targets.
+These experiments have not been repeated or qualified against that new base.
+The retained FEniCS workflow also still uses legacy cp312 and Tcl/Tk 8.6.12
+inputs; migrating that workflow and independently qualifying its results are
+separate, deferred work. See [the migration record](cp314-core-numpy-qualification.md).
+
 ## Frozen compatibility contract
 
 - Consumer-owned CPython 3.12 and NumPy 2.5.2 remain outside the FEniCS

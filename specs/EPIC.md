@@ -27,5 +27,5 @@ consumer source private.
 | Windows FEniCS overlay migration | windows/01-fenics-overlay.md | in-progress |
 | macOS FEniCS overlay migration | macos/01-fenics-overlay.md | in-progress |
 | Linux FEniCS overlay producer | linux/01-fenics-overlay.md | draft |
-| Core/NumPy producer migration | 02-core-numpy-profiles.md | in-progress |
+| Core/NumPy producer migration | 02-core-numpy-profiles.md | completed |
 | Producer pre-release publication | 03-prerelease.md | draft |

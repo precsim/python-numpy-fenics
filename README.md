@@ -38,10 +38,17 @@ The intended producer matrix is:
 
 | Platform | core | numpy | fenics |
 | --- | --- | --- | --- |
-| Windows x64 | producer migration | producer migration | deferred/manual |
-| Linux x86_64 / glibc >= 2.17 | producer migration | producer migration | deferred/manual |
-| macOS arm64 | producer migration | producer migration | deferred/manual |
-| macOS x86_64 | producer migration | producer migration | deferred/manual |
+| Windows x64 | qualified | qualified | deferred/manual |
+| Linux x86_64 / glibc >= 2.17 | qualified | qualified | deferred/manual |
+| macOS arm64 | qualified | qualified | deferred/manual |
+| macOS x86_64 (Rosetta 2) | qualified | qualified | deferred/manual |
+
+The core/NumPy migration was qualified on feature revision `95d56a5` and
+merged into `main` by PR #3 (`f6e6e77`). The qualification run IDs and scope
+are recorded in [the cp314 migration record](docs/cp314-core-numpy-qualification.md).
+These results qualify the merged implementation; publication requires its own
+matching `main` revision qualification evidence as described in
+[the pre-release guide](docs/prerelease-guide.md).
 
 FEniCS is cumulative on the exact matching NumPy profile. A FEniCS overlay must
 not replace consumer-owned NumPy bytes unless its profile contract explicitly
@@ -51,6 +58,8 @@ The active producer pre-release scope is `core` + `numpy`. FEniCS qualification
 workflows and packaging code are retained for future use but are not required to
 publish a producer pre-release. The manual pre-release workflow can explicitly
 opt into the complete FEniCS matrix when that work resumes.
+The retained FEniCS workflows and Linux experiment notes still contain legacy
+cp312 inputs and are not qualified for the new cp314 baseline.
 
 ## Producer artifact contract
 
