@@ -423,8 +423,28 @@ if candidate is not None:
         for item in candidate["replacements"]
     }
     overlap = sorted(replacement_paths.intersection(by_path))
-    if overlap:
-        raise SystemExit(f"rebuilt replacement paths were also prefix-relocated from stock metadata: {overlap!r}")
+    dolfinx_extension = (
+        "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/"
+        "cpp.cpython-314-x86_64-linux-gnu.so"
+    )
+    for relative in overlap:
+        # The rebuilt DOLFINx extension embeds the producer's build prefix.
+        # Its prefix relocation is independently recorded after the replacement
+        # is staged, and both records must identify the same final ELF bytes.
+        replacement = next(
+            item for item in replacements
+            if "fenics-runtime/conda/" + item["destination"] == relative
+        )
+        relocation = by_path[relative]
+        if (
+            relative != dolfinx_extension
+            or replacement.get("owner") != "fenics-dolfinx"
+            or relocation.get("package") != "fenics-dolfinx"
+            or relocation.get("mode") != "binary"
+            or relocation.get("replacement") != "@FENICS_RUNTIME_PREFIX@"
+            or replacement.get("sha256") != relocation.get("final_sha256")
+        ):
+            raise SystemExit(f"inconsistent rebuilt replacement and prefix relocation: {relative}")
 required_relocations = {
     "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
