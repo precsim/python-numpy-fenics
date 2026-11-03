@@ -161,6 +161,29 @@ class LinuxAbiPolicyTests(unittest.TestCase):
                 compiler_private.resolve(),
             )
 
+    def test_exact_needed_filename_wins_over_soname_only_competitor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            stage_root = Path(raw)
+            private_prefix = stage_root / "fenics-runtime" / "conda"
+            library_dir = private_prefix / "lib"
+            library_dir.mkdir(parents=True)
+            exact = library_dir / "libgomp.so.1"
+            soname_only = library_dir / "libomp.so"
+            exact.write_bytes(b"gomp")
+            soname_only.write_bytes(b"omp")
+
+            self.assertEqual(
+                _resolve_bundled_provider(
+                    stage_root,
+                    private_prefix,
+                    "bin/ucx_perftest",
+                    "libgomp.so.1",
+                    {exact.resolve(), soname_only.resolve()},
+                    [library_dir.resolve()],
+                ),
+                exact.resolve(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

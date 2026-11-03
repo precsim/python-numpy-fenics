@@ -1580,6 +1580,19 @@ def _resolve_bundled_provider(
                 return matches[0]
             if len(matches) > 1:
                 break
+    elif duplicate_pair is None:
+        # DT_NEEDED lookup is by filename, not by another object's SONAME.
+        # If one staged search directory contains the exact requested name,
+        # prefer that provider over objects that only advertise the same
+        # SONAME. The independent native-candidate audit applies the same
+        # exact-name precedence before treating providers as ambiguous.
+        for directory in search_dirs:
+            lookup = directory / name
+            if not lookup.exists() and not lookup.is_symlink():
+                continue
+            provider = lookup.resolve(strict=False)
+            if provider in candidates:
+                return provider
     raise SystemExit(
         f"ambiguous bundled ELF provider: {consumer} -> {name}: "
         f"{sorted(map(str, candidates))}"
