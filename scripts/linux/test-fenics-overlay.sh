@@ -448,9 +448,12 @@ if candidate is not None:
 required_relocations = {
     "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
-    "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/cpp.abi3.so": ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/python3.14/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
 }
+required_relocations[
+    dolfinx_extension if candidate is not None
+    else "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/cpp.abi3.so"
+] = ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@")
 for relative, expected in required_relocations.items():
     if relative in replacement_paths:
         continue
