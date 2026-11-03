@@ -1542,6 +1542,7 @@ def set_relative_runpaths(stage_root: Path, private_prefix: Path) -> list[Path]:
 
 def _resolve_bundled_provider(
     stage_root: Path,
+    private_prefix: Path,
     consumer: str,
     name: str,
     candidates: set[Path],
@@ -1550,7 +1551,9 @@ def _resolve_bundled_provider(
     if len(candidates) == 1:
         return next(iter(candidates))
     relative_candidates = {
-        candidate.relative_to(stage_root).as_posix(): candidate for candidate in candidates
+        candidate.relative_to(private_prefix).as_posix(): candidate
+        for candidate in candidates
+        if under(candidate, private_prefix)
     }
     duplicate_pair = LOCKED_GCC_DUPLICATE_PROVIDERS.get(name)
     expected_pair = (
@@ -1558,7 +1561,11 @@ def _resolve_bundled_provider(
         if duplicate_pair is not None
         else set()
     )
-    if duplicate_pair is not None and set(relative_candidates) == expected_pair:
+    if (
+        duplicate_pair is not None
+        and len(relative_candidates) == len(candidates)
+        and set(relative_candidates) == expected_pair
+    ):
         # Preserve the dynamic loader's staged RPATH order.  This selects the
         # top-level locked runtime provider for normal FEniCS consumers while
         # a GCC toolchain object in the compiler-private directory keeps its
@@ -1714,6 +1721,7 @@ def audit_elf(
             if candidates:
                 provider = _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     rel,
                     name,
                     candidates,

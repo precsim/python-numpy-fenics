@@ -68,8 +68,9 @@ class LinuxAbiPolicyTests(unittest.TestCase):
     def test_locked_libgcc_duplicate_resolves_by_rpath_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             stage_root = Path(raw)
-            runtime = stage_root / LIBGCC_RUNTIME_RELATIVE
-            compiler_private = stage_root / LIBGCC_COMPILER_PRIVATE_RELATIVE
+            private_prefix = stage_root / "fenics-runtime" / "conda"
+            runtime = private_prefix / LIBGCC_RUNTIME_RELATIVE
+            compiler_private = private_prefix / LIBGCC_COMPILER_PRIVATE_RELATIVE
             runtime.parent.mkdir(parents=True)
             compiler_private.parent.mkdir(parents=True)
             runtime.write_bytes(b"runtime")
@@ -79,6 +80,7 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             self.assertEqual(
                 _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     "lib/libbasix.so",
                     "libgcc_s.so.1",
                     candidates,
@@ -89,6 +91,7 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             self.assertEqual(
                 _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     LIBGCC_COMPILER_PRIVATE_RELATIVE.as_posix(),
                     "libgcc_s.so.1",
                     candidates,
@@ -97,23 +100,38 @@ class LinuxAbiPolicyTests(unittest.TestCase):
                 compiler_private.resolve(),
             )
 
-            other = stage_root / "other" / "libgcc_s.so.1"
+            other = private_prefix / "other" / "libgcc_s.so.1"
             other.parent.mkdir()
             other.write_bytes(b"other")
             with self.assertRaisesRegex(SystemExit, "ambiguous bundled ELF provider"):
                 _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     "lib/libbasix.so",
                     "libgcc_s.so.1",
                     candidates | {other.resolve()},
                     [runtime.parent.resolve(), compiler_private.parent.resolve(), other.parent.resolve()],
                 )
 
+            outside = stage_root / "outside" / "libgcc_s.so.1"
+            outside.parent.mkdir()
+            outside.write_bytes(b"outside")
+            with self.assertRaisesRegex(SystemExit, "ambiguous bundled ELF provider"):
+                _resolve_bundled_provider(
+                    stage_root,
+                    private_prefix,
+                    "lib/libbasix.so",
+                    "libgcc_s.so.1",
+                    candidates | {outside.resolve()},
+                    [runtime.parent.resolve(), compiler_private.parent.resolve(), outside.parent.resolve()],
+                )
+
     def test_locked_libstdcxx_duplicate_resolves_by_rpath_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             stage_root = Path(raw)
-            runtime = stage_root / LIBSTDCXX_RUNTIME_RELATIVE
-            compiler_private = stage_root / LIBSTDCXX_COMPILER_PRIVATE_RELATIVE
+            private_prefix = stage_root / "fenics-runtime" / "conda"
+            runtime = private_prefix / LIBSTDCXX_RUNTIME_RELATIVE
+            compiler_private = private_prefix / LIBSTDCXX_COMPILER_PRIVATE_RELATIVE
             runtime.parent.mkdir(parents=True)
             compiler_private.parent.mkdir(parents=True)
             runtime.write_bytes(b"runtime")
@@ -123,6 +141,7 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             self.assertEqual(
                 _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     "lib/libhdf5_cpp.so.310.0.6",
                     "libstdc++.so.6",
                     candidates,
@@ -133,6 +152,7 @@ class LinuxAbiPolicyTests(unittest.TestCase):
             self.assertEqual(
                 _resolve_bundled_provider(
                     stage_root,
+                    private_prefix,
                     LIBSTDCXX_COMPILER_PRIVATE_RELATIVE.as_posix(),
                     "libstdc++.so.6",
                     candidates,
