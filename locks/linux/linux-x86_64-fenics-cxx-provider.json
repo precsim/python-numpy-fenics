@@ -6,7 +6,7 @@
   "source_build": false,
   "runtime_package_lock": {
     "path": "locks/linux/linux-x86_64-fenics-package-lock.json",
-    "sha256": "c2b69e439ef3ba11020765f54268cda5b25918ee4cbd347dcce29965a2b8947b"
+    "canonical_sha256": "ac633e9aa4d23c83af79d078958eec75ff6ab5b08786d25c75c8a21d33123380"
   },
   "runtime_source_explicit": {
     "path": "locks/linux/linux-x86_64-fenics-explicit.txt",

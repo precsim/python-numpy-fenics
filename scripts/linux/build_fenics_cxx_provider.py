@@ -114,8 +114,8 @@ def validate_checked_in_locks(recipe: dict[str, Any]) -> dict[str, Any]:
     runtime_explicit_path = require_repo_path(runtime_explicit_record.get("path"), "runtime explicit path")
     build_tool_explicit_path = require_repo_path(build_tool_record.get("path"), "build-tool explicit path")
 
-    expected_runtime_sha = require_sha256(runtime_record.get("sha256"), "runtime package lock SHA-256")
-    actual_runtime_sha = sha256_file(runtime_lock_path)
+    expected_runtime_sha = require_sha256(runtime_record.get("canonical_sha256"), "runtime package lock canonical SHA-256")
+    actual_runtime_sha = canonical_text_sha256(runtime_lock_path)
     if actual_runtime_sha != expected_runtime_sha:
         raise ProviderBuildError(
             f"runtime package lock SHA-256 mismatch: {actual_runtime_sha} != {expected_runtime_sha}"

@@ -34,7 +34,7 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         self.assertEqual(locks["runtime_package_lock"]["record_count"], 124)
         self.assertEqual(
             locks["runtime_package_lock"]["sha256"],
-            "c2b69e439ef3ba11020765f54268cda5b25918ee4cbd347dcce29965a2b8947b",
+            "ac633e9aa4d23c83af79d078958eec75ff6ab5b08786d25c75c8a21d33123380",
         )
         self.assertEqual(
             locks["runtime_source_explicit"]["canonical_sha256"],
@@ -146,7 +146,7 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         self.assertEqual(env["LC_ALL"], "C")
 
     def test_prefix_evidence_must_bind_exact_runtime_lock(self) -> None:
-        lock_sha = self.recipe["runtime_package_lock"]["sha256"]
+        lock_sha = self.recipe["runtime_package_lock"]["canonical_sha256"]
         payload = {
             "format_version": 1,
             "architecture": "x86_64",
