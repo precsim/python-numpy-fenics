@@ -56,6 +56,15 @@ class LinuxAbiPolicyTests(unittest.TestCase):
         )
         self.assertIsNone(path_exclusion_reason(PurePosixPath("lib/libmpi.so.12")))
 
+    def test_prune_icu_data_build_tools_without_discarding_runtime(self) -> None:
+        for path in ("bin/genrb", "bin/icuexportdata"):
+            self.assertEqual(
+                path_exclusion_reason(PurePosixPath(path)),
+                "unused-icu-data-build-tool",
+            )
+        for path in ("lib/libicuuc.so.78.3", "lib/libicudata.so.78.3", "bin/icuinfo"):
+            self.assertIsNone(path_exclusion_reason(PurePosixPath(path)))
+
     def test_locked_libgcc_duplicate_resolves_by_rpath_order(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             stage_root = Path(raw)

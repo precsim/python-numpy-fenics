@@ -595,6 +595,11 @@ def path_exclusion_reason(relative: PurePosixPath) -> str | None:
         return "unused-mpich-cxx-binding"
     if text in {"bin/nghttp", "bin/nghttpd", "bin/nghttpx"}:
         return "unused-nghttp2-cli"
+    if text in {"bin/genrb", "bin/icuexportdata"}:
+        # The locked ICU package's resource compiler and data exporter are
+        # build-time utilities.  Neither participates in the qualified
+        # DOLFINx runtime or FFCx JIT closure; their stock C++ ABI is too new.
+        return "unused-icu-data-build-tool"
     if text == "bin/io_demo" or re.fullmatch(r"lib/ucx/libucx_perftest_cuda\.so(?:\..*)?", text):
         return "unused-ucx-test-tool"
     if re.fullmatch(r"lib/libcfp\.so(?:\..*)?", text):
