@@ -45,6 +45,13 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
+      - name: Enforce cp314 FEniCS native package identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/linux/check_fenics_cp314_lock.py \
+            --lock locks/linux/linux-x86_64-fenics-package-lock.json
+
       - name: Pull and verify pinned manylinux2014 image
         shell: bash
         run: |

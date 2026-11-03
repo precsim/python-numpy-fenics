@@ -30,9 +30,23 @@ REQUIRED_FIELDS = (
     "md5",
 )
 
-QUALIFIED_EXPLICIT_SHA256 = {
-    "arm64": "0dfcbf4405646de8a0b96470483ad1371e55e4538d2e6b27bfcfebcc96126547",
-    "x86_64": "af133bac1d322cc266e9781e36b920ffbe9afb8af7e462b015946d5f78b58c3f",
+PINNED_EXPLICIT_SHA256 = {
+    "arm64": "48d4f258078058cc5f4c4d4cf5816e37ccb7c728a0f251aa8f70fd33bac7acc7",
+    "x86_64": "534ec7e123b8d8a195785287ef1665a42d3b39f3d116d3ebb2427d1977214307",
+}
+
+# conda-forge's FEniCS 0.11 macOS packages use the CPython limited API and
+# retain a py312 build label for their >=3.12 ABI3 floor.  The lib packages
+# and KaHIP record are native-only despite the same historical build label.
+# The exact interpreter/NumPy/Python-extension records below must still be
+# cp314, and no cp312 ABI record is accepted.
+LEGACY_PY312_LABEL_ALLOWLIST = {
+    "fenics-basix",
+    "fenics-basix-nanobind-abi",
+    "fenics-dolfinx",
+    "fenics-libbasix",
+    "fenics-libdolfinx",
+    "kahip",
 }
 
 
@@ -87,15 +101,36 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
         if key in seen:
             raise SystemExit(f"duplicate package-lock identity: {key!r}")
         seen.add(key)
+
+    by_name = {str(record["name"]): record for record in packages}
+    python_record = by_name.get("python", {})
+    abi_record = by_name.get("python_abi", {})
+    if (
+        python_record.get("version") != "3.14.10"
+        or abi_record.get("version") != "3.14"
+        or "cp314" not in str(abi_record.get("build", ""))
+    ):
+        raise SystemExit("macOS FEniCS package lock must target CPython 3.14.10 / cp314")
+    for name in ("cpython", "libpython", "python-gil"):
+        record = by_name.get(name)
+        if record is not None and record.get("version") != "3.14.10":
+            raise SystemExit(f"macOS FEniCS package lock contains incompatible {name}: {record['version']}")
+    for record in packages:
+        name = str(record["name"])
+        values = (str(record.get("build", "")), str(record.get("url", "")))
+        if any("cp312" in value for value in values):
+            raise SystemExit(f"macOS FEniCS package lock contains a cp312 ABI package: {name}")
+        if any("py312" in value for value in values) and name not in LEGACY_PY312_LABEL_ALLOWLIST:
+            raise SystemExit(f"macOS FEniCS package lock contains an unapproved py312 build label: {name}")
     return payload
 
 
-def qualified_url_order(lock: dict[str, Any], source_explicit: Path) -> list[str]:
+def pinned_url_order(lock: dict[str, Any], source_explicit: Path) -> list[str]:
     actual_sha = sha256_file(source_explicit)
-    expected_sha = QUALIFIED_EXPLICIT_SHA256[lock["architecture"]]
+    expected_sha = PINNED_EXPLICIT_SHA256[lock["architecture"]]
     if actual_sha != expected_sha:
         raise SystemExit(
-            f"qualified explicit transaction digest mismatch: {actual_sha} != {expected_sha}"
+            f"pinned explicit transaction digest mismatch: {actual_sha} != {expected_sha}"
         )
     urls = [
         line.strip()
@@ -104,20 +139,20 @@ def qualified_url_order(lock: dict[str, Any], source_explicit: Path) -> list[str
     ]
     locked_urls = [str(record["url"]) for record in lock["packages"]]
     if len(urls) != len(set(urls)):
-        raise SystemExit("qualified explicit transaction contains duplicate package URLs")
+        raise SystemExit("pinned explicit transaction contains duplicate package URLs")
     if len(locked_urls) != len(set(locked_urls)):
         raise SystemExit("checked-in package lock contains duplicate package URLs")
     if len(urls) != len(locked_urls) or set(urls) != set(locked_urls):
-        raise SystemExit("qualified explicit package URL set differs from the checked-in package lock")
+        raise SystemExit("pinned explicit package URL set differs from the checked-in package lock")
     return urls
 
 
 def render_explicit(lock: dict[str, Any], source_explicit: Path) -> str:
     platform = "osx-arm64" if lock["architecture"] == "arm64" else "osx-64"
     records_by_url = {str(record["url"]): record for record in lock["packages"]}
-    urls = qualified_url_order(lock, source_explicit)
+    urls = pinned_url_order(lock, source_explicit)
     lines = [
-        "# Generated from the qualified producer explicit URL order plus checked-in SHA-256 locks.",
+        "# Generated from the pinned producer explicit URL order plus checked-in SHA-256 locks.",
         "# Dependency solving is forbidden for this transaction.",
         f"# qualified-explicit-sha256: {sha256_file(source_explicit)}",
         f"# platform: {platform}",
@@ -230,7 +265,7 @@ if args.command == "explicit":
     source_explicit = Path(args.source_explicit).resolve()
     output.write_text(render_explicit(lock, source_explicit), encoding="utf-8")
     print(f"package_lock_sha256={sha256_file(lock_path)}")
-    print(f"qualified_explicit_sha256={sha256_file(source_explicit)}")
+    print(f"pinned_explicit_sha256={sha256_file(source_explicit)}")
     print(f"explicit_records={len(lock['packages'])}")
     print("dependency_solver=disabled")
 elif args.command == "verify-prefix":

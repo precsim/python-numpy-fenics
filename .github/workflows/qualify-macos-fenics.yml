@@ -93,9 +93,9 @@ jobs:
           mkdir -p "$evidence"
           rm -rf "$prefix"
 
-          # The old cp312 lock must never be combined with the cp314 NumPy
-          # base. This gate remains closed until a fully SHA-pinned cp314
-          # FEniCS transaction has been independently qualified.
+          # The FEniCS 0.11 ABI3/native packages retain py312 build labels on
+          # conda-forge even when solved with cp314. Exact CPython ABI records
+          # and ordinary Python extension packages must still be cp314.
           python3 - "$lock" <<'PY'
           import json
           import pathlib
@@ -104,6 +104,14 @@ jobs:
           path = pathlib.Path(sys.argv[1])
           packages = json.loads(path.read_text(encoding="utf-8"))["packages"]
           by_name = {record["name"]: record for record in packages}
+          legacy_py312_label_allowlist = {
+              "fenics-basix",
+              "fenics-basix-nanobind-abi",
+              "fenics-dolfinx",
+              "fenics-libbasix",
+              "fenics-libdolfinx",
+              "kahip",
+          }
           python = by_name.get("python", {})
           abi = by_name.get("python_abi", {})
           if python.get("version") != "3.14.10" or abi.get("version") != "3.14" or "cp314" not in abi.get("build", ""):
@@ -116,8 +124,14 @@ jobs:
               if record is not None and record.get("version") != "3.14.10":
                   raise SystemExit(f"FEniCS lock contains incompatible {name}: {record['version']}")
           for record in packages:
-              if "cp312" in record["build"] or "cp312" in record["url"] or "py312" in record["build"]:
+              values = (str(record.get("build", "")), str(record.get("url", "")))
+              if any("cp312" in value for value in values):
                   raise SystemExit(f"legacy CPython ABI package in FEniCS lock: {record['name']}")
+              if (
+                  any("py312" in value for value in values)
+                  and record["name"] not in legacy_py312_label_allowlist
+              ):
+                  raise SystemExit(f"unapproved legacy Python build label in FEniCS lock: {record['name']}")
           PY
 
           {

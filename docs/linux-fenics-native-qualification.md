@@ -14,6 +14,19 @@ but the historical FEniCS lock and rebuild experiments still use cp312; these
 require new package and native closure evidence before qualification. See
 [the migration record](cp314-core-numpy-qualification.md).
 
+**CPython 3.14 candidate investigation (2026-11-03):** A micromamba 2.10.0
+strict-priority conda-forge Linux x86_64 dry-run, with virtual packages
+`__glibc=2.17`, `__linux=3.10.0`, `__archspec=x86_64`, successfully resolved
+Python 3.14.10, NumPy 2.5.2 and FEniCS/DOLFINx 0.11.0, but selected legacy
+`py311`/`py312` binaries for FEniCS Basix, DOLFINx, petsc4py and related
+packages. A second solve requiring `py314` for `fenics-basix`,
+`fenics-libbasix`, `fenics-dolfinx`, `fenics-libdolfinx` and `petsc4py` failed:
+those builds do not exist in the channel for the pinned versions. A successful
+unconstrained solve is not proof that these native extensions can run under
+CPython 3.14 or satisfy the glibc 2.17 native-closure contract. The retained
+cp312 lock must not be relabeled as cp314. The workflow now checks the full
+lock for legacy Python identities before downloading native build inputs.
+
 ## Frozen compatibility contract
 
 - Consumer-owned CPython 3.12 and NumPy 2.5.2 remain outside the FEniCS

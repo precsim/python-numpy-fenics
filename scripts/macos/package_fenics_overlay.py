@@ -51,6 +51,14 @@ EXCLUDED_PACKAGE_NAMES = {
     "wheel",
     "pkg-config",
 }
+LEGACY_PY312_LABEL_ALLOWLIST = {
+    "fenics-basix",
+    "fenics-basix-nanobind-abi",
+    "fenics-dolfinx",
+    "fenics-libbasix",
+    "fenics-libdolfinx",
+    "kahip",
+}
 JIT_TOOLCHAIN_PACKAGE_NAMES = {
     "cctools",
     "clang",
@@ -996,8 +1004,12 @@ for name in ("cpython", "libpython", "python-gil"):
     if record is not None and record.get("version") != "3.14.10":
         raise SystemExit(f"FEniCS package lock contains incompatible {name}: {record['version']}")
 for record in lock["packages"]:
-    if any(token in str(record.get(field, "")) for field in ("build", "url") for token in ("cp312", "py312")):
-        raise SystemExit(f"FEniCS package lock contains legacy CPython ABI package: {record['name']}")
+    name = str(record["name"])
+    values = (str(record.get("build", "")), str(record.get("url", "")))
+    if any("cp312" in value for value in values):
+        raise SystemExit(f"FEniCS package lock contains legacy CPython ABI package: {name}")
+    if any("py312" in value for value in values) and name not in LEGACY_PY312_LABEL_ALLOWLIST:
+        raise SystemExit(f"FEniCS package lock contains unapproved legacy Python build label: {name}")
 records = installed_records(prefix)
 verify_locked_prefix(lock, records)
 
