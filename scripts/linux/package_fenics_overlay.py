@@ -1378,7 +1378,10 @@ def collect_licenses(
 
 def is_elf(path: Path) -> bool:
     try:
-        return path.is_file() and not path.is_symlink() and path.open("rb").read(4) == b"\x7fELF"
+        if not path.is_file() or path.is_symlink():
+            return False
+        with path.open("rb") as stream:
+            return stream.read(4) == b"\x7fELF"
     except OSError:
         return False
 
@@ -1907,6 +1910,50 @@ def file_contains_bytes(path: Path, needle: bytes) -> bool:
     return False
 
 
+def relocate_rebuilt_dolfinx_extension_prefix(
+    stage_root: Path, source_prefix: Path
+) -> dict[str, Any] | None:
+    """Relocate embedded build paths in the rebuilt cp314 DOLFINx extension.
+
+    The extension's ELF RPATH has already been rewritten.  The remaining
+    strings must be NUL-terminated, fixed-width strings; do not modify any
+    other ELF payload or any unrelated staged package.
+    """
+    relative = (
+        "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/"
+        "cpp.cpython-314-x86_64-linux-gnu.so"
+    )
+    extension = stage_root / relative
+    if not extension.is_file() or extension.is_symlink() or not is_elf(extension):
+        return None
+    needle = str(source_prefix).encode("utf-8")
+    original = extension.read_bytes()
+    if needle not in original:
+        return None
+    before_dynamic = dynamic(extension)
+    if any(str(source_prefix) in item for item in before_dynamic[2]):
+        raise SystemExit("DOLFINx extension still has a build-prefix dynamic RPATH")
+    rewritten, count = replace_conda_prefix(
+        original, needle, RUNTIME_PREFIX_TOKEN.encode("utf-8"), "binary"
+    )
+    if count == 0 or needle in rewritten:
+        raise SystemExit("DOLFINx extension embedded-prefix relocation failed")
+    mode = stat.S_IMODE(extension.stat().st_mode)
+    extension.write_bytes(rewritten)
+    extension.chmod(mode)
+    if dynamic(extension) != before_dynamic:
+        raise SystemExit("DOLFINx extension relocation modified ELF dynamic metadata")
+    return {
+        "package": "fenics-dolfinx",
+        "path": relative,
+        "mode": "binary",
+        "replacement": RUNTIME_PREFIX_TOKEN,
+        "occurrences": count,
+        "installed_sha256_in_prefix": sha256_bytes(original),
+        "prefix_relocated_sha256": sha256_bytes(rewritten),
+    }
+
+
 def reject_absolute_prefix_references(stage_root: Path, prefixes: list[Path]) -> None:
     needles = [(str(prefix), str(prefix).encode()) for prefix in prefixes]
     offenders = []
@@ -2215,6 +2262,9 @@ def main() -> int:
 
         drop_prefix_bound_bin_scripts(stage_root, private_prefix, prefix, owners, excluded_owned_paths)
         set_relative_runpaths(stage_root, private_prefix)
+        relocated_dolfinx = relocate_rebuilt_dolfinx_extension_prefix(stage_root, prefix)
+        if relocated_dolfinx is not None:
+            prefix_relocation_entries.append(relocated_dolfinx)
         verify_symlink_closure(stage_root)
         reject_absolute_prefix_references(stage_root, [prefix, stage_root])
         prefix_relocation = finalize_prefix_relocation_evidence(stage_root, prefix_relocation_entries)

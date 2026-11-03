@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+import tempfile
 import unittest
+from unittest import mock
+
+from scripts.linux import package_fenics_overlay as overlay
 
 from scripts.linux.package_fenics_overlay import (
     cache_path_to_installed_path,
@@ -110,6 +114,54 @@ class CondaPrefixRelocationTests(unittest.TestCase):
         for placeholder in (b"", b"a\0b"):
             with self.subTest(placeholder=placeholder), self.assertRaises(SystemExit):
                 replace_conda_prefix(b"abc", placeholder, b"x", "text")
+
+    def test_rebuilt_dolfinx_extension_strips_only_embedded_build_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            extension = stage / (
+                "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/"
+                "cpp.cpython-314-x86_64-linux-gnu.so"
+            )
+            extension.parent.mkdir(parents=True)
+            prefix = Path("/scratch/very-long-qualified-source-prefix-name")
+            original = b"\x7fELF" + str(prefix).encode() + b"/include\0unrelated\0"
+            extension.write_bytes(original)
+            dynamic = (["libdolfinx.so"], None, ["$ORIGIN/../../../../lib"], True)
+            with mock.patch.object(overlay, "dynamic", return_value=dynamic):
+                evidence = overlay.relocate_rebuilt_dolfinx_extension_prefix(
+                    stage, prefix
+                )
+            self.assertEqual(evidence["occurrences"], 1)
+            self.assertEqual(evidence["package"], "fenics-dolfinx")
+            self.assertEqual(len(extension.read_bytes()), len(original))
+            self.assertNotIn(str(prefix).encode(), extension.read_bytes())
+            self.assertIn(b"unrelated\0", extension.read_bytes())
+            with mock.patch.object(overlay, "dynamic", return_value=dynamic):
+                self.assertIsNone(
+                    overlay.relocate_rebuilt_dolfinx_extension_prefix(
+                        stage, prefix
+                    )
+                )
+
+    def test_dolfinx_relocation_rejects_active_absolute_rpath(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            extension = stage / (
+                "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/"
+                "cpp.cpython-314-x86_64-linux-gnu.so"
+            )
+            extension.parent.mkdir(parents=True)
+            prefix = Path("/scratch/very-long-qualified-source-prefix-name")
+            extension.write_bytes(b"\x7fELF" + str(prefix).encode() + b"\0")
+            with mock.patch.object(
+                overlay,
+                "dynamic",
+                return_value=([], None, [str(prefix) + "/lib"], True),
+            ):
+                with self.assertRaisesRegex(SystemExit, "dynamic RPATH"):
+                    overlay.relocate_rebuilt_dolfinx_extension_prefix(
+                        stage, prefix
+                    )
 
 
 if __name__ == "__main__":
