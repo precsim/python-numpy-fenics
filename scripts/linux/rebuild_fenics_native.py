@@ -1266,7 +1266,7 @@ def handoff_runtime_prefix_path(relative: PurePosixPath) -> bool:
 
 def ignored_build_install_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    return text == "bin/xml2-config" or text.startswith(("include/", "lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+    return text in {"bin/xml2-config", "lib/dolfinx/dolfinx.conf"} or text.startswith(("include/", "lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
 
 
 def retained_libxml2_development_header(relative: PurePosixPath, owner: str, installed: dict) -> bool:

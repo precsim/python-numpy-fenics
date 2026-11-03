@@ -18,6 +18,7 @@ from scripts.linux import rebuild_fenics_native as producer
 class NativeRebuildHandoffTests(unittest.TestCase):
     def test_libxml2_build_helper_is_excluded_from_runtime_handoff(self) -> None:
         self.assertTrue(producer.ignored_build_install_path(PurePosixPath("bin/xml2-config")))
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("lib/dolfinx/dolfinx.conf")))
         self.assertTrue(producer.ignored_build_install_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
         self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
         self.assertFalse(producer.ignored_build_install_path(PurePosixPath("bin/dolfinx")))
