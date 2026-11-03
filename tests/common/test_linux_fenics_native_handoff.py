@@ -16,6 +16,11 @@ from scripts.linux import rebuild_fenics_native as producer
 
 
 class NativeRebuildHandoffTests(unittest.TestCase):
+    def test_libxml2_build_helper_is_excluded_from_runtime_handoff(self) -> None:
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("bin/xml2-config")))
+        self.assertFalse(producer.ignored_build_install_path(PurePosixPath("bin/dolfinx")))
+        self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("bin/xml2-config")))
+
     def test_relocated_wheel_rewrites_extension_and_record(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             wheel = Path(raw) / "test.whl"

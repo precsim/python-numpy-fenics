@@ -1268,7 +1268,7 @@ def handoff_runtime_prefix_path(relative: PurePosixPath) -> bool:
 
 def ignored_build_install_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    return text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+    return text == "bin/xml2-config" or text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
 
 
 def collect_install_owners(roots: dict[str, Path]) -> dict[str, str]:
