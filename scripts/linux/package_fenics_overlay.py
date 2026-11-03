@@ -1984,6 +1984,7 @@ def relocate_rebuilt_dolfinx_extension_prefix(
         "mode": "binary",
         "replacement": RUNTIME_PREFIX_TOKEN,
         "occurrences": count,
+        "placeholder_bytes": len(needle),
         "installed_sha256_in_prefix": sha256_bytes(original),
         "prefix_relocated_sha256": sha256_bytes(rewritten),
     }

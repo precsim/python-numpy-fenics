@@ -133,6 +133,8 @@ class CondaPrefixRelocationTests(unittest.TestCase):
                 )
             self.assertEqual(evidence["occurrences"], 1)
             self.assertEqual(evidence["package"], "fenics-dolfinx")
+            self.assertEqual(evidence["placeholder_bytes"], len(str(prefix).encode()))
+            self.assertNotIn("cache_sha256", evidence)
             self.assertEqual(len(extension.read_bytes()), len(original))
             self.assertNotIn(str(prefix).encode(), extension.read_bytes())
             self.assertIn(b"unrelated\0", extension.read_bytes())

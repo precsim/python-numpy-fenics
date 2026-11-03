@@ -467,7 +467,13 @@ for relative, entry in by_path.items():
         raise SystemExit(f"prefix relocation final hash mismatch: {relative}")
     if not entry.get("occurrences") or not entry.get("placeholder_bytes"):
         raise SystemExit(f"prefix relocation evidence is incomplete: {relative}: {entry!r}")
-    for key in ("cache_sha256", "installed_sha256_in_prefix", "prefix_relocated_sha256", "final_sha256"):
+    # Native rebuilds have no conda package-cache payload to authenticate.
+    # Their staged input is authenticated by the native rebuild handoff and
+    # the final file identity is independently checked above.
+    keys = ("installed_sha256_in_prefix", "prefix_relocated_sha256", "final_sha256")
+    if relative not in replacement_paths:
+        keys = ("cache_sha256",) + keys
+    for key in keys:
         if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get(key, ""))):
             raise SystemExit(f"prefix relocation evidence has invalid {key}: {relative}: {entry!r}")
 cfg = root / "fenics-runtime" / "conda" / "bin" / "x86_64-conda-linux-gnu.cfg"
