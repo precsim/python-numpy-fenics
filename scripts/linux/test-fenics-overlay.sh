@@ -190,6 +190,10 @@ staged_python="$runtime/bin/python3.14"
     exit 1
 }
 
+# Qualification must not mutate the inherited CPython/NumPy runtime while
+# importing its standard library or public NumPy payload.
+export PYTHONDONTWRITEBYTECODE=1
+
 hash_numpy() {
     "$staged_python" -I -S - "$site_packages" "$1" <<'PY'
 import hashlib
@@ -873,6 +877,8 @@ print(f"standalone_runtime_qualified={str(payload['standalone_runtime_qualified'
 print(f"release_eligible={str(payload['release_eligible']).lower()}")
 PY
 fi
+
+verify_inherited_base_tree "$runtime" yes
 
 echo "fenics_public_overlay_test=pass"
 echo "fenics_numpy_base_identity=pass"
