@@ -56,6 +56,19 @@ class LinuxAbiPolicyTests(unittest.TestCase):
         )
         self.assertIsNone(path_exclusion_reason(PurePosixPath("lib/libmpi.so.12")))
 
+    def test_prune_all_hdf5_cxx_bindings(self) -> None:
+        for path in (
+            "lib/libhdf5_cpp.so",
+            "lib/libhdf5_cpp.so.310.0.6",
+            "lib/libhdf5_hl_cpp.so",
+            "lib/libhdf5_hl_cpp.so.310.0.6",
+        ):
+            self.assertEqual(
+                path_exclusion_reason(PurePosixPath(path)),
+                "unused-hdf5-cxx-binding",
+            )
+        self.assertIsNone(path_exclusion_reason(PurePosixPath("lib/libhdf5_hl.so.310.0.6")))
+
     def test_prune_icu_data_build_tools_without_discarding_runtime(self) -> None:
         for path in ("bin/genrb", "bin/icuexportdata"):
             self.assertEqual(
