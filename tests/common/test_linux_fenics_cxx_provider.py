@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
+import struct
 
 from scripts.linux.build_fenics_cxx_provider import (
     DEFAULT_RECIPE,
@@ -16,6 +19,7 @@ from scripts.linux.build_fenics_cxx_provider import (
     deterministic_link_environment,
     load_recipe,
     render_link_argv,
+    relocate_provider_rpath,
     transform_contract,
     validate_checked_in_locks,
     validate_prefix_evidence,
@@ -71,11 +75,11 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         contract = transform_contract(self.recipe)
         self.assertEqual(
             contract.input_sha256,
-            "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c",
+            "1670dd51ae0dd8852b8efdb14fb57ffb9d02801f1eb9f4155c7cd8492f471edb",
         )
         self.assertEqual(
             contract.output_sha256,
-            "26363d1b44952be590a02eea5f34dacc7e836c79e4976e33927491fb63cd1d19",
+            "43ae5b863ef35269e022559019d54c621868fb135c44d4fb52fd9920cc8533ef",
         )
         self.assertEqual(contract.expected_unique_count, 146)
         self.assertEqual(contract.expected_dynsym_count, 7253)
@@ -171,6 +175,24 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ProviderBuildError, "pinned runtime lock"):
                 validate_prefix_evidence(path, lock_sha)
+
+    def test_relocation_rewrites_only_the_pinned_provider_rpath(self) -> None:
+        prefix = Path("/locked-prefix")
+        old = b"/locked-prefix/lib"
+        data = bytearray(128)
+        struct.pack_into("<qQ", data, 0, 15, 0)
+        struct.pack_into("<qQ", data, 16, 0, 0)
+        data[32:32 + len(old) + 1] = old + b"\0"
+        image = SimpleNamespace(
+            dynamic=SimpleNamespace(offset=0, size=32, entsize=16, link=1),
+            sections=[None, SimpleNamespace(offset=32, size=64, sh_type=3)],
+        )
+        with mock.patch("scripts.linux.build_fenics_cxx_provider.Elf64Image", return_value=image):
+            result = relocate_provider_rpath(bytes(data), prefix)
+            self.assertEqual(result[32:32 + len(old)], b"$ORIGIN" + b"\0" * (len(old) - 7))
+            self.assertEqual(result[:32], data[:32])
+            with self.assertRaisesRegex(ProviderBuildError, "differs from locked prefix"):
+                relocate_provider_rpath(bytes(data), Path("/different-prefix"))
 
     def test_manifest_remains_explicitly_unqualified(self) -> None:
         provider_bytes = b"provider"

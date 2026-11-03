@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.linux.elf_gnu_unique import (  # noqa: E402
+    Elf64Image,
     ElfContractError,
     TransformContract,
     VERSION_NAMESPACES,
@@ -409,7 +411,41 @@ def probe_toolchain(gcc_driver: Path, environment: dict[str, str], runtime_prefi
     }
 
 
-def link_provider(argv: list[str], environment: dict[str, str], expected_sha256: str) -> dict[str, Any]:
+def relocate_provider_rpath(data: bytes, runtime_prefix: Path) -> bytes:
+    """Replace exactly the locked compiler's absolute RPATH in place."""
+    image = Elf64Image(data)
+    dynamic = image.dynamic
+    if dynamic.entsize != 16 or dynamic.link >= len(image.sections):
+        raise ProviderBuildError("provider ELF has invalid dynamic string table")
+    strings = image.sections[dynamic.link]
+    if strings.sh_type != 3:
+        raise ProviderBuildError("provider ELF dynamic section lacks string table")
+    old = (runtime_prefix.as_posix().rstrip("/") + "/lib").encode("utf-8")
+    new = b"$ORIGIN"
+    replacements: list[tuple[int, int]] = []
+    for offset in range(dynamic.offset, dynamic.offset + dynamic.size, 16):
+        tag, value = struct.unpack_from("<qQ", data, offset)
+        if tag == 0:
+            break
+        if tag not in (15, 29):
+            continue
+        start = strings.offset + value
+        end = data.find(b"\0", start, strings.offset + strings.size)
+        if value >= strings.size or end < 0:
+            raise ProviderBuildError("provider RPATH is outside dynamic strings")
+        if data[start:end] != old:
+            raise ProviderBuildError(f"provider RPATH differs from locked prefix: {data[start:end]!r}")
+        replacements.append((start, end))
+    if len(replacements) != 1:
+        raise ProviderBuildError(f"provider requires exactly one locked-prefix RPATH, found {len(replacements)}")
+    result = bytearray(data)
+    start, end = replacements[0]
+    result[start:end] = new + b"\0" * (end - start - len(new))
+    return bytes(result)
+
+
+def link_provider(argv: list[str], environment: dict[str, str], expected_sha256: str,
+                  expected_raw_sha256: str, runtime_prefix: Path) -> dict[str, Any]:
     try:
         completed = subprocess.run(
             argv,
@@ -428,6 +464,12 @@ def link_provider(argv: list[str], environment: dict[str, str], expected_sha256:
     output = Path(argv[-1])
     if not output.is_file():
         raise ProviderBuildError("provider link succeeded without producing the expected output")
+    raw_bytes = output.read_bytes()
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if raw_sha != expected_raw_sha256:
+        raise ProviderBuildError(f"raw linked provider SHA-256 mismatch: {raw_sha} != {expected_raw_sha256}")
+    relocated = relocate_provider_rpath(raw_bytes, runtime_prefix)
+    output.write_bytes(relocated)
     actual_sha = sha256_file(output)
     if actual_sha != expected_sha256:
         raise ProviderBuildError(
@@ -439,6 +481,8 @@ def link_provider(argv: list[str], environment: dict[str, str], expected_sha256:
         "stdout": completed.stdout,
         "stderr": completed.stderr,
         "sha256": actual_sha,
+        "raw_sha256": raw_sha,
+        "relocated_rpath": "$ORIGIN",
     }
 
 
@@ -607,7 +651,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ProviderBuildError("provider manifest path collides with provider output")
 
         link_argv = render_link_argv(recipe, inputs, linked)
-        link_record = link_provider(link_argv, environment, contract.input_sha256)
+        link_record = link_provider(link_argv, environment, contract.input_sha256,
+                                    require_sha256(recipe["link"].get("expected_raw_sha256"), "raw provider SHA-256"), runtime_prefix)
         transform_record = transform_provider(linked, provider, contract)
         manifest = build_manifest(
             recipe_path=recipe_path,

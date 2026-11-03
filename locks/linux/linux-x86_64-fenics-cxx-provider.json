@@ -119,12 +119,13 @@
       "SOURCE_DATE_EPOCH": "0",
       "TZ": "UTC"
     },
-    "expected_sha256": "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c"
+    "expected_raw_sha256": "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c",
+    "expected_sha256": "1670dd51ae0dd8852b8efdb14fb57ffb9d02801f1eb9f4155c7cd8492f471edb"
   },
   "transform": {
     "operation_kind": "elf-symbol-binding-transform",
-    "expected_input_sha256": "f00e51bd86b412606df4bbcc7a4b088258c15485a635c801a5b9779f529da63c",
-    "expected_output_sha256": "26363d1b44952be590a02eea5f34dacc7e836c79e4976e33927491fb63cd1d19",
+    "expected_input_sha256": "1670dd51ae0dd8852b8efdb14fb57ffb9d02801f1eb9f4155c7cd8492f471edb",
+    "expected_output_sha256": "43ae5b863ef35269e022559019d54c621868fb135c44d4fb52fd9920cc8533ef",
     "expected_unique_count": 146,
     "expected_dynsym_count": 7253,
     "expected_soname": "libfenics_cxxrt.so.1",
