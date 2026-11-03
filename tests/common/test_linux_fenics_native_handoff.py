@@ -18,8 +18,18 @@ from scripts.linux import rebuild_fenics_native as producer
 class NativeRebuildHandoffTests(unittest.TestCase):
     def test_libxml2_build_helper_is_excluded_from_runtime_handoff(self) -> None:
         self.assertTrue(producer.ignored_build_install_path(PurePosixPath("bin/xml2-config")))
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
+        self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
         self.assertFalse(producer.ignored_build_install_path(PurePosixPath("bin/dolfinx")))
         self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("bin/xml2-config")))
+
+    def test_libxml2_headers_remain_owned_by_separate_locked_development_package(self) -> None:
+        header = PurePosixPath("include/libxml2/libxml/HTMLparser.h")
+        metadata = {"libxml2": {"paths_data": {"paths": [{"_path": header.as_posix()}]}}}
+        self.assertTrue(producer.retained_libxml2_development_header(header, "libxml2-16", metadata))
+        self.assertFalse(producer.retained_libxml2_development_header(header, "fenics-libbasix", metadata))
+        self.assertFalse(producer.retained_libxml2_development_header(header, "libxml2-16", {}))
+        self.assertFalse(producer.retained_libxml2_development_header(PurePosixPath("include/libxml2/unknown.h"), "libxml2-16", metadata))
 
     def test_relocated_wheel_rewrites_extension_and_record(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

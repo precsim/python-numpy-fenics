@@ -1261,14 +1261,20 @@ def installed_owned_paths(record: dict) -> set[str]:
 
 def handoff_runtime_prefix_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    if text.startswith("include/"):
-        return True
     return re.fullmatch(r"lib/[^/]+\.so(?:\..*)?", text) is not None
 
 
 def ignored_build_install_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    return text == "bin/xml2-config" or text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+    return text == "bin/xml2-config" or text.startswith(("include/", "lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+
+
+def retained_libxml2_development_header(relative: PurePosixPath, owner: str, installed: dict) -> bool:
+    """Keep separately locked libxml2 headers from its development package."""
+    if owner != "libxml2-16" or relative.parts[:2] != ("include", "libxml2"):
+        return False
+    development = installed.get("libxml2")
+    return development is not None and relative.as_posix() in installed_owned_paths(development)
 
 
 def collect_install_owners(roots: dict[str, Path]) -> dict[str, str]:
@@ -1378,6 +1384,8 @@ def collect_candidate_replacements(
     for raw_relative, owner in sorted(install_owners.items()):
         relative = safe_handoff_relative(raw_relative, "candidate install destination")
         source = roots["prefix"] / Path(*relative.parts)
+        if retained_libxml2_development_header(relative, owner, installed):
+            continue
         if source.is_symlink():
             stock = locked_prefix / Path(*relative.parts)
             if owner != HANDOFF_PROVIDER_OWNER and stock.is_symlink():
