@@ -2317,6 +2317,17 @@ def main() -> int:
             sha256_file(lock_path),
             sha256_file(evidence_path),
         )
+        # The handoff hashes prove the original rebuilt payloads at staging.
+        # Relocating DT_RPATH (and the DOLFINx build prefix) changes their
+        # bytes. Manifest replacement identities must describe the final
+        # shipped objects, after the native closure audit has passed.
+        for item in staged_native_replacements:
+            relative = safe_relative(str(item["destination"]))
+            staged_path = private_prefix.joinpath(*relative.parts)
+            if not staged_path.is_file() or staged_path.is_symlink():
+                raise SystemExit(f"native replacement disappeared after relocation: {relative}")
+            item["sha256"] = sha256_file(staged_path)
+            item["bytes"] = staged_path.stat().st_size
         if preserved_legacy_python_paths:
             raise SystemExit(
                 "stock ABI preflight unexpectedly passed while target-specific legacy Python payload remained; "
