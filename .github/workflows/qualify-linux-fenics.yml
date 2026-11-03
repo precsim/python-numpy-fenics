@@ -237,7 +237,9 @@ jobs:
           assert data["stage"] == "stock-binary-closure-before-selective-rebuild"
           assert data["status"] == "fail"
           assert data["source_rebuilds_authorized"] is False
-          assert data["violation_count"] == 164
+          # The stock closure keeps its ABI failures, with ICU's two unused
+          # data-build executables now excluded from the shipped runtime.
+          assert data["violation_count"] == 158
           assert data["violating_packages"] == expected_packages
           assert re.fullmatch(r"[0-9a-f]{64}", data["selection_fingerprint_sha256"])
           print(f"stock_abi_violation_count={data['violation_count']}")
