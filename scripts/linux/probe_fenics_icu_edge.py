@@ -526,16 +526,12 @@ def build_provider_index(prefix: Path, readelf: Path) -> tuple[dict[str, Path], 
             continue
         target = path.resolve(strict=False)
         if target in audits:
-            prior = providers.get(path.name)
-            if prior is not None and prior.resolve() != target:
-                prior_audit = audits.get(prior.resolve())
-                target_audit = audits.get(target)
-                if (
-                    prior_audit is None
-                    or target_audit is None
-                    or prior_audit.get("sha256") != target_audit.get("sha256")
-                ):
-                    raise ProbeError(f"ambiguous locked symlink provider for {path.name}")
+            # An exact filename in the prefix is the loader-visible provider
+            # for that DT_NEEDED name.  This is how conda's _openmp_mutex
+            # selects LLVM OpenMP: libgomp.so.1 is a symlink to libomp while
+            # the GNU libgomp package still ships libgomp.so.1.0.0 with the
+            # same SONAME.  The exact symlink must override that SONAME-only
+            # claim.
             providers[path.name] = target
     return providers, audits
 

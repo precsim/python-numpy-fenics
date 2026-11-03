@@ -114,7 +114,7 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
                 with self.assertRaisesRegex(mod.ProbeError, "multiple locked providers"):
                     mod.build_provider_index(prefix, Path("readelf"))
 
-    def test_provider_index_accepts_symlink_to_identical_regular_provider_only(self) -> None:
+    def test_provider_index_exact_symlink_overrides_soname_only_provider(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             prefix = Path(raw)
             library_root = prefix / "lib"
@@ -143,11 +143,6 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
                 providers, _ = mod.build_provider_index(prefix, Path("readelf"))
             self.assertEqual(providers["libalias.so.1"], versioned.resolve())
-
-            versioned.write_bytes(b"\x7fELFdifferent-provider")
-            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
-                with self.assertRaisesRegex(mod.ProbeError, "multiple locked providers|ambiguous locked symlink"):
-                    mod.build_provider_index(prefix, Path("readelf"))
 
     def test_find_root_collapses_only_byte_identical_regular_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

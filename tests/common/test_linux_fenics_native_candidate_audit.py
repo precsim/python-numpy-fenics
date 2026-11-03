@@ -207,7 +207,7 @@ class NativeCandidateAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(audit.AuditError, "unresolved non-system"):
                     audit.build_report(candidate, Path("readelf"))
 
-    def test_rejects_ambiguous_provider(self):
+    def test_prefers_exact_filename_over_conflicting_soname_only_provider(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             candidate, fake_inspect, specs = self.make_fixture(root)
@@ -229,8 +229,8 @@ class NativeCandidateAuditTests(unittest.TestCase):
                 ["GLIBC_2.17"],
             )
             with mock.patch.object(audit, "inspect_elf", side_effect=fake_inspect):
-                with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
-                    audit.build_report(candidate, Path("readelf"))
+                report = audit.build_report(candidate, Path("readelf"))
+            self.assertEqual(report["unresolved_non_system"], [])
 
     def test_rejects_dolfinx_build_flag_disagreement(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -291,8 +291,39 @@ class NativeCandidateAuditTests(unittest.TestCase):
 
         conflict = dict(versioned, sha256="b" * 64)
         index = audit._provider_index([first, conflict])
+        self.assertEqual(
+            audit._resolve_provider("libsame.so.1", index, "consumer.so")["path"],
+            first["path"],
+        )
+
+        other_exact = {
+            "path": "alt/libsame.so.1",
+            "sha256": "c" * 64,
+            "soname": "libsame.so.1",
+            "aliases": {"libsame.so.1"},
+        }
+        index = audit._provider_index([first, other_exact])
         with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
             audit._resolve_provider("libsame.so.1", index, "consumer.so")
+
+    def test_provider_index_exact_alias_overrides_conflicting_soname_only_provider(self):
+        gnu = {
+            "path": "lib/libgomp.so.1.0.0",
+            "sha256": "a" * 64,
+            "soname": "libgomp.so.1",
+            "aliases": {"libgomp.so.1.0.0"},
+        }
+        llvm = {
+            "path": "lib/libomp.so.5",
+            "sha256": "b" * 64,
+            "soname": "libomp.so.5",
+            "aliases": {"libomp.so.5", "libgomp.so.1"},
+        }
+        index = audit._provider_index([gnu, llvm])
+        self.assertEqual(
+            audit._resolve_provider("libgomp.so.1", index, "consumer.so")["path"],
+            llvm["path"],
+        )
 
 
 if __name__ == "__main__":

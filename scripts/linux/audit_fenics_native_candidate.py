@@ -408,6 +408,13 @@ def _provider_index(nodes: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
             identical = [item for item in existing if item["sha256"] == node["sha256"]]
             conflicting = [item for item in existing if item["sha256"] != node["sha256"]]
             if conflicting:
+                node_exact = name in node["aliases"]
+                existing_exact = [item for item in existing if name in item["aliases"]]
+                if node_exact and not existing_exact:
+                    index[name] = [node]
+                    continue
+                if existing_exact and not node_exact:
+                    continue
                 existing.append(node)
                 continue
             if identical:
