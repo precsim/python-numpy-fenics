@@ -70,6 +70,12 @@ NUMPY_PREFIXES = tuple(
 GCC_SPECS_RELATIVE = PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs")
 LIBGCC_RUNTIME_RELATIVE = PurePosixPath("lib/libgcc_s.so.1")
 LIBGCC_COMPILER_PRIVATE_RELATIVE = GCC_SPECS_RELATIVE.parent / "libgcc_s.so.1"
+LIBSTDCXX_RUNTIME_RELATIVE = PurePosixPath("lib/libstdc++.so.6.0.36")
+LIBSTDCXX_COMPILER_PRIVATE_RELATIVE = GCC_SPECS_RELATIVE.parent / "libstdc++.so.6.0.36"
+LOCKED_GCC_DUPLICATE_PROVIDERS = {
+    "libgcc_s.so.1": (LIBGCC_RUNTIME_RELATIVE, LIBGCC_COMPILER_PRIVATE_RELATIVE),
+    "libstdc++.so.6": (LIBSTDCXX_RUNTIME_RELATIVE, LIBSTDCXX_COMPILER_PRIVATE_RELATIVE),
+}
 GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
 RUNTIME_PREFIX_TOKEN = "@FENICS_RUNTIME_PREFIX@"
 REQUIRED_SYMBOL_CEILINGS = {
@@ -1537,15 +1543,17 @@ def _resolve_bundled_provider(
     relative_candidates = {
         candidate.relative_to(stage_root).as_posix(): candidate for candidate in candidates
     }
-    expected_libgcc = {
-        LIBGCC_RUNTIME_RELATIVE.as_posix(),
-        LIBGCC_COMPILER_PRIVATE_RELATIVE.as_posix(),
-    }
-    if name == "libgcc_s.so.1" and set(relative_candidates) == expected_libgcc:
+    duplicate_pair = LOCKED_GCC_DUPLICATE_PROVIDERS.get(name)
+    expected_pair = (
+        {item.as_posix() for item in duplicate_pair}
+        if duplicate_pair is not None
+        else set()
+    )
+    if duplicate_pair is not None and set(relative_candidates) == expected_pair:
         # Preserve the dynamic loader's staged RPATH order.  This selects the
-        # top-level runtime provider for normal FEniCS consumers while a GCC
-        # toolchain object in the compiler-private directory keeps its local
-        # provider.  Any additional provider remains an ambiguity failure.
+        # top-level locked runtime provider for normal FEniCS consumers while
+        # a GCC toolchain object in the compiler-private directory keeps its
+        # local provider. Any additional provider remains an ambiguity failure.
         for directory in search_dirs:
             matches = [
                 candidate

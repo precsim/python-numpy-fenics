@@ -325,7 +325,7 @@ class NativeCandidateAuditTests(unittest.TestCase):
             llvm["path"],
         )
 
-    def test_libgcc_runtime_provider_precedes_compiler_private_copy(self):
+    def test_locked_gcc_runtime_providers_precede_compiler_private_copies(self):
         runtime = {"path": "lib/libgcc_s.so.1", "sha256": "a" * 64,
                    "soname": "libgcc_s.so.1", "aliases": {"libgcc_s.so.1"}}
         compiler = {"path": "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libgcc_s.so.1",
@@ -347,6 +347,26 @@ class NativeCandidateAuditTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
             audit._resolve_provider("libgcc_s.so.1", compiler_only, "lib/libbasix.so")
+
+        std_runtime = {
+            "path": "lib/libstdc++.so.6.0.36",
+            "sha256": "d" * 64,
+            "soname": "libstdc++.so.6",
+            "aliases": {"libstdc++.so.6", "libstdc++.so.6.0.36"},
+        }
+        std_compiler = {
+            "path": "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libstdc++.so.6.0.36",
+            "sha256": "e" * 64,
+            "soname": "libstdc++.so.6",
+            "aliases": {"libstdc++.so.6", "libstdc++.so.6.0.36"},
+        }
+        index = audit._provider_index([std_compiler, std_runtime])
+        self.assertEqual(
+            audit._resolve_provider(
+                "libstdc++.so.6", index, "lib/libhdf5_cpp.so.310.0.6"
+            )["path"],
+            std_runtime["path"],
+        )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ from scripts.linux.package_fenics_overlay import (
     ALLOWED_NONNUMERIC_VERSION_TOKENS,
     LIBGCC_COMPILER_PRIVATE_RELATIVE,
     LIBGCC_RUNTIME_RELATIVE,
+    LIBSTDCXX_COMPILER_PRIVATE_RELATIVE,
+    LIBSTDCXX_RUNTIME_RELATIVE,
     REQUIRED_SYMBOL_CEILINGS,
     SYSROOT_ALLOWED_NONNUMERIC_VERSION_TOKENS,
     _resolve_bundled_provider,
@@ -97,6 +99,38 @@ class LinuxAbiPolicyTests(unittest.TestCase):
                     candidates | {other.resolve()},
                     [runtime.parent.resolve(), compiler_private.parent.resolve(), other.parent.resolve()],
                 )
+
+    def test_locked_libstdcxx_duplicate_resolves_by_rpath_order(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            stage_root = Path(raw)
+            runtime = stage_root / LIBSTDCXX_RUNTIME_RELATIVE
+            compiler_private = stage_root / LIBSTDCXX_COMPILER_PRIVATE_RELATIVE
+            runtime.parent.mkdir(parents=True)
+            compiler_private.parent.mkdir(parents=True)
+            runtime.write_bytes(b"runtime")
+            compiler_private.write_bytes(b"compiler")
+            candidates = {runtime.resolve(), compiler_private.resolve()}
+
+            self.assertEqual(
+                _resolve_bundled_provider(
+                    stage_root,
+                    "lib/libhdf5_cpp.so.310.0.6",
+                    "libstdc++.so.6",
+                    candidates,
+                    [runtime.parent.resolve(), compiler_private.parent.resolve()],
+                ),
+                runtime.resolve(),
+            )
+            self.assertEqual(
+                _resolve_bundled_provider(
+                    stage_root,
+                    LIBSTDCXX_COMPILER_PRIVATE_RELATIVE.as_posix(),
+                    "libstdc++.so.6",
+                    candidates,
+                    [compiler_private.parent.resolve(), runtime.parent.resolve()],
+                ),
+                compiler_private.resolve(),
+            )
 
 
 if __name__ == "__main__":
