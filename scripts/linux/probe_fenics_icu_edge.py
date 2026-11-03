@@ -760,12 +760,14 @@ def relocate_curl_probe(install_prefix: Path, build_tool_prefix: Path) -> list[d
         before = read_elf(path, readelf)
         # Reject unexpected absolute paths even during this build-only probe.
         build_lib = str(build_tool_prefix / "lib")
+        install_lib = str(install_prefix / "lib")
         for packed in before["rpath"]:
             for entry in packed.split(":"):
-                if entry and not entry.startswith("$ORIGIN") and entry != build_lib:
+                if entry and not entry.startswith("$ORIGIN") and entry not in (build_lib, install_lib):
                     raise ProbeError(f"unexpected curl probe build RPATH: {path}: {entry}")
+        relative_rpath = "$ORIGIN/../lib" if path.parent == install_prefix / "bin" else "$ORIGIN"
         if before["rpath"]:
-            run([patchelf, "--set-rpath", "$ORIGIN", str(path)])
+            run([patchelf, "--set-rpath", relative_rpath, str(path)])
         after = read_elf(path, readelf, strict_abi=True)
         records.append({"path": str(path), "before_rpath": before["rpath"], "after_rpath": after["rpath"], "sha256": after["sha256"]})
     if not any(Path(record["path"]).name.startswith("libcurl.so") for record in records):

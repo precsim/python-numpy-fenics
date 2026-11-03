@@ -201,7 +201,7 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
                 records = mod.relocate_curl_probe(install, tools)
             self.assertEqual(len(records), 2)
             self.assertEqual(len(calls), 2)
-            self.assertTrue(all(argv[1:3] == ["--set-rpath", "$ORIGIN"] for argv in calls))
+            self.assertEqual({argv[2] for argv in calls}, {"$ORIGIN", "$ORIGIN/../lib"})
 
             def unexpected_read_elf(path, _readelf, strict_abi=False):
                 return {"rpath": ["/unexpected/lib"]}
