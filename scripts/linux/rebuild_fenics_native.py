@@ -90,10 +90,14 @@ ABI_CEILINGS = {
 HANDOFF_FORMAT_VERSION = 1
 HANDOFF_KIND = "linux-fenics-native-rebuild-handoff"
 HANDOFF_STATUS = "candidate-unqualified"
-CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION = 1
+CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION = 2
 CANDIDATE_BUILD_HANDOFF_KIND = "linux-fenics-native-build-candidate-handoff"
 CANDIDATE_BUILD_HANDOFF_STATUS = "candidate-built-unqualified"
 HANDOFF_OMISSION_PACKAGES = ("kahip", "libadios2", "zeromq")
+DOLFINX_OMISSION_BUILD_FLAGS = {
+    "DOLFINX_ENABLE_ADIOS2": "OFF",
+    "DOLFINX_ENABLE_KAHIP": "OFF",
+}
 HANDOFF_PROVIDER_OWNER = "python-numpy-fenics-native-provider"
 REBUILD_COMPONENT_OWNERS = {
     "basix": "fenics-libbasix",
@@ -1335,6 +1339,26 @@ def regular_file_identity(path: Path, label: str) -> dict:
     return {"path": str(path.resolve()), "sha256": sha256(path)}
 
 
+def dolfinx_build_configuration(roots: dict[str, Path]) -> dict:
+    """Bind the DOLFINx omission-producing CMake configuration into the candidate."""
+
+    cache = roots["build"] / "dolfinx" / "CMakeCache.txt"
+    identity = regular_file_identity(cache, "DOLFINx CMake cache")
+    observed: dict[str, list[str]] = {name: [] for name in DOLFINX_OMISSION_BUILD_FLAGS}
+    pattern = re.compile(r"(DOLFINX_ENABLE_(?:ADIOS2|KAHIP)):[^=]+=([^\r\n]+)")
+    for line in cache.read_text(encoding="utf-8", errors="strict").splitlines():
+        match = pattern.fullmatch(line)
+        if match and match.group(1) in observed:
+            observed[match.group(1)].append(match.group(2).strip().upper())
+    flags: dict[str, str] = {}
+    for name, expected in DOLFINX_OMISSION_BUILD_FLAGS.items():
+        values = observed[name]
+        if values != [expected]:
+            raise InputError(f"DOLFINx build cache does not prove {name}={expected}: {values!r}")
+        flags[name] = expected
+    return {"cmake_cache": identity, "flags": flags}
+
+
 def write_candidate_build_handoff(
     destination: Path,
     *,
@@ -1385,6 +1409,7 @@ def write_candidate_build_handoff(
     if set(source_hashes_unsorted) != set(REQUIRED_SOURCES):
         raise InputError("candidate build source evidence differs from the fixed source set")
     source_hashes = {name: source_hashes_unsorted[name] for name in sorted(REQUIRED_SOURCES)}
+    build_configuration = dolfinx_build_configuration(roots)
 
     payload = {
         "format_version": CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION,
@@ -1412,6 +1437,7 @@ def write_candidate_build_handoff(
             "private_provider_manifest": regular_file_identity(
                 private_provider_manifest, "private-provider manifest"
             ),
+            "dolfinx_build_configuration": build_configuration,
         },
         "candidate_output_binding": output_binding,
         "candidate_output_binding_sha256": output_binding_sha,
@@ -1488,6 +1514,7 @@ def validate_candidate_build_handoff(path: Path) -> dict:
         "python_builder_manifest",
         "libxml2_build_deps_manifest",
         "private_provider_manifest",
+        "dolfinx_build_configuration",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected_inputs:
         raise InputError("candidate build handoff has unexpected or missing inputs")
@@ -1510,6 +1537,17 @@ def validate_candidate_build_handoff(path: Path) -> dict:
     python_builder_manifest = checked_input("python_builder_manifest")
     libxml2_build_deps_manifest = checked_input("libxml2_build_deps_manifest")
     private_provider_manifest = checked_input("private_provider_manifest")
+
+    expected_build_configuration = inputs.get("dolfinx_build_configuration")
+    if (
+        not isinstance(expected_build_configuration, dict)
+        or set(expected_build_configuration) != {"cmake_cache", "flags"}
+        or expected_build_configuration.get("flags") != DOLFINX_OMISSION_BUILD_FLAGS
+    ):
+        raise InputError("candidate build DOLFINx configuration identity is invalid")
+    actual_build_configuration = dolfinx_build_configuration(roots)
+    if actual_build_configuration != expected_build_configuration:
+        raise InputError("candidate build DOLFINx configuration changed after candidate handoff")
 
     locked_prefix_record = inputs.get("locked_prefix")
     if not isinstance(locked_prefix_record, dict) or set(locked_prefix_record) != {"path"}:
@@ -1622,6 +1660,7 @@ def validate_candidate_build_handoff(path: Path) -> dict:
         "python_builder_manifest": python_builder_manifest,
         "libxml2_build_deps_manifest": libxml2_build_deps_manifest,
         "private_provider_manifest": private_provider_manifest,
+        "dolfinx_build_configuration": actual_build_configuration,
         "wheels": wheels,
         "elf_records": elf_records,
         "wheel_records": wheel_records,
@@ -1753,6 +1792,8 @@ def finalize_candidate_build_handoff(
     candidate = validate_candidate_build_handoff(candidate_handoff_path)
     native_closure = validate_native_closure_report(native_closure_report)
     verify_native_closure_candidate_binding(native_closure, candidate["candidate_output_binding"])
+    if native_closure["dolfinx_build_flags"] != candidate["dolfinx_build_configuration"]["flags"]:
+        raise InputError("native closure DOLFINx build flags differ from candidate-bound CMake evidence")
     if destination is None:
         destination = candidate["roots"]["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
     payload = write_package_handoff(

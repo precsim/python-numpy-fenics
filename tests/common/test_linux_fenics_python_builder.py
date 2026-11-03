@@ -223,6 +223,7 @@ class LinuxFenicsPythonBuilderTests(unittest.TestCase):
                     "private_openblas": "pass",
                     "blas_lapack_functional": "pass",
                     "native_closure": "pass",
+                    "relocation": "pass",
                     "private_consumer_checkout": "not-applicable",
                 },
             }), encoding="utf-8")

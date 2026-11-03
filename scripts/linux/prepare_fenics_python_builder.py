@@ -500,12 +500,15 @@ def validate_base_runtime(base_runtime: Path, base_archive: Path, base_qualifica
         "native_closure": "pass",
         "private_consumer_checkout": "not-applicable",
     }
+    qualification_checks = qualification.get("checks")
     if (
         qualification.get("format_version") != 1
         or qualification.get("platform") != "linux-x64"
         or qualification.get("profile") != "numpy"
         or qualification.get("artifact") != base_archive.name
-        or qualification.get("checks") != required_checks
+        or not isinstance(qualification_checks, dict)
+        or any(qualification_checks.get(name) != expected for name, expected in required_checks.items())
+        or any(value not in {"pass", "not-applicable"} for value in qualification_checks.values())
     ):
         raise BuilderInputError("base qualification does not match the required qualified NumPy handoff")
     if sha256_file(base_archive) != qualification.get("artifact_sha256"):

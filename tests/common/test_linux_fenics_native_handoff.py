@@ -76,6 +76,11 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             (build_dir / "install_manifest.txt").write_text(
                 str(installed.resolve()) + "\n", encoding="utf-8"
             )
+        (candidate_build / "dolfinx" / "CMakeCache.txt").write_text(
+            "DOLFINX_ENABLE_ADIOS2:BOOL=OFF\n"
+            "DOLFINX_ENABLE_KAHIP:BOOL=OFF\n",
+            encoding="utf-8",
+        )
 
         candidate_output_binding = {
             "replacements": [
@@ -319,6 +324,10 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 validated["candidate_output_binding_sha256"],
                 payload["candidate_output_binding_sha256"],
             )
+            self.assertEqual(
+                validated["dolfinx_build_configuration"]["flags"],
+                producer.DOLFINX_OMISSION_BUILD_FLAGS,
+            )
 
             closure = {
                 "dolfinx_build_flags": {
@@ -351,6 +360,53 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 final_payload["inputs"]["native_closure"]["candidate_output_binding_sha256"],
                 payload["candidate_output_binding_sha256"],
             )
+
+    def test_candidate_build_handoff_rejects_changed_dolfinx_build_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _, prefix, lock, prefix_evidence, extra = self.make_fixture(root)
+            candidate_root = extra["candidate_root"]
+            roots = {
+                name: candidate_root / name
+                for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+            }
+            source_manifest = extra["source_manifest_data"]
+            candidate_handoff = roots["evidence"] / "native-build-handoff.json"
+            producer.write_candidate_build_handoff(
+                candidate_handoff,
+                roots=roots,
+                locked_prefix=prefix,
+                package_lock=lock,
+                prefix_verification={
+                    "verification": {"path": str(prefix_evidence), "sha256": producer.sha256(prefix_evidence)}
+                },
+                stock_abi_preflight={
+                    "path": str(extra["preflight"]),
+                    "sha256": producer.sha256(extra["preflight"]),
+                    "selection_fingerprint_sha256": json.loads(extra["preflight"].read_text())["selection_fingerprint_sha256"],
+                },
+                source_manifest=extra["source_manifest"],
+                source_evidence=[
+                    {"component": name, "sha256": source_manifest["sources"][name]["sha256"]}
+                    for name in producer.REQUIRED_SOURCES
+                ],
+                build_tool_explicit=extra["build_tool_explicit"],
+                python_builder_manifest=extra["python_builder_manifest"],
+                libxml2_build_deps_manifest=extra["libxml2_build_deps_manifest"],
+                private_provider_manifest=extra["private_provider_manifest"],
+                wheels=[],
+                elf_records=[
+                    {"path": str(extra["provider_candidate"]), "sha256": producer.sha256(extra["provider_candidate"])},
+                    {"path": str(extra["fmt_candidate"]), "sha256": producer.sha256(extra["fmt_candidate"])},
+                ],
+                wheel_records=[],
+            )
+            (roots["build"] / "dolfinx" / "CMakeCache.txt").write_text(
+                "DOLFINX_ENABLE_ADIOS2:BOOL=ON\nDOLFINX_ENABLE_KAHIP:BOOL=OFF\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(producer.InputError, "DOLFINx build cache does not prove"):
+                producer.validate_candidate_build_handoff(candidate_handoff)
 
     def test_candidate_build_handoff_rejects_changed_live_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

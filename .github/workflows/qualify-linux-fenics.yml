@@ -42,6 +42,7 @@ jobs:
           python3 -m unittest tests.common.test_linux_fenics_python_builder
           python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
           python3 -m unittest tests.common.test_linux_fenics_native_handoff
+          python3 -m unittest tests.common.test_linux_fenics_native_candidate_audit
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
 
@@ -597,11 +598,17 @@ jobs:
           import sys
 
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          assert data["format_version"] == 1
+          assert data["format_version"] == 2
           assert data["kind"] == "linux-fenics-native-build-candidate-handoff"
           assert data["status"] == "candidate-built-unqualified"
           assert data["source_rebuild_provenance_eligible"] is False
           assert re.fullmatch(r"[0-9a-f]{64}", data["candidate_output_binding_sha256"])
+          build_configuration = data["inputs"]["dolfinx_build_configuration"]
+          assert build_configuration["flags"] == {
+              "DOLFINX_ENABLE_ADIOS2": "OFF",
+              "DOLFINX_ENABLE_KAHIP": "OFF",
+          }
+          assert re.fullmatch(r"[0-9a-f]{64}", build_configuration["cmake_cache"]["sha256"])
           assert data["qualification"] == {
               "full_native_closure": "not-run",
               "hosted_linux_glibc217": "not-run",
@@ -684,23 +691,64 @@ jobs:
               raise SystemExit(f"cp314 replay retained legacy Python site paths: {unresolved}")
           PY
 
-      - name: Keep Linux FEniCS release gate closed pending independent candidate qualification
+      - name: Audit and finalize exact native candidate on glibc 2.17
         shell: bash
         run: |
           set -euo pipefail
-          blocker="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/release-blockers.txt"
-          cat > "$blocker" <<'EOF'
-          Linux FEniCS selective native rebuild remains unqualified.
-          Required before the release path can proceed:
-          - preserve the cp314 stable-ABI replay proof in cp314-stable-abi-boundary.json and keep every installed Python payload under the cp314 site-packages root
-          - independently audit the exact native-build-handoff candidate and bind its candidate_output_binding_sha256 to a post-rebuild native-closure report
-          - prove KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
-          - finalize the candidate into the strict package_fenics_overlay.py native-rebuild handoff only after that closure proof passes
-          - package the finalized candidate and pass standalone glibc 2.17 ABI/relocation/fresh-FFCx-JIT/PETSc/Poisson qualification
-          - promote source-rebuild provenance/release eligibility only from those positive, artifact-bound qualification results
-          EOF
-          cat "$blocker" >&2
-          exit 1
+          scratch="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/rebuild-candidate"
+          closure="$scratch/evidence/native-closure.json"
+          final_handoff="$scratch/evidence/package-handoff/native-rebuild-handoff.json"
+          rm -f "$closure"
+          rm -rf "$(dirname "$final_handoff")"
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(uname -m)" = x86_64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              /opt/python/cp314-cp314/bin/python scripts/linux/audit_fenics_native_candidate.py \
+                --candidate-build-handoff "$1" \
+                --output "$2" \
+                --readelf "$3"
+              /opt/python/cp314-cp314/bin/python scripts/linux/finalize_fenics_native.py \
+                --candidate-build-handoff "$1" \
+                --native-closure-report "$2" \
+                --output "$4"
+            ' -- \
+              "/workspace/$FENICS_NATIVE_BUILD_HANDOFF" \
+              "/workspace/$closure" \
+              "$FENICS_BUILD_TOOL_PREFIX/bin/x86_64-conda-linux-gnu-readelf" \
+              "/workspace/$final_handoff" \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/native-candidate-audit.log"
+          test -f "$closure"
+          test -f "$final_handoff"
+          sha256sum "$closure" "$final_handoff" \
+            > "$scratch/evidence/native-candidate-finalization.sha256"
+          echo "FENICS_NATIVE_CLOSURE_REPORT=$closure" >> "$GITHUB_ENV"
+          echo "FENICS_NATIVE_REBUILD_HANDOFF=$final_handoff" >> "$GITHUB_ENV"
+
+      - name: Package independently qualified native candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/linux/package_fenics_overlay.py \
+            --prefix "$FENICS_LOCKED_PREFIX" \
+            --prefix-evidence "$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --lock "$FENICS_LOCK_FILE" \
+            --base-runtime out/linux-x64/numpy \
+            --base-qualification dist/qualification-linux-x64-numpy-base.json \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
+            --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
+            --output dist \
+            --version 0.1.0 \
+            --producer-revision "$PRODUCER_REVISION" \
+            | tee "$FENICS_OVERLAY_EVIDENCE/package-qualified-candidate.log"
+          test -f "dist/$OVERLAY_ASSET"
 
       - name: Qualify overlay offline inside pinned glibc 2.17 container
         shell: bash
@@ -737,6 +785,8 @@ jobs:
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
+            --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
             --output dist-repeat \
             --version 0.1.0 \
             --producer-revision "$PRODUCER_REVISION" \
@@ -780,6 +830,8 @@ jobs:
             "$evidence/source-provenance.json" \
             "$evidence/native-dependency-census.json" \
             "$evidence/stock-native-abi-preflight.json" \
+            "$FENICS_NATIVE_CLOSURE_REPORT" \
+            "$FENICS_NATIVE_REBUILD_HANDOFF" \
             "$evidence/license-inventory.json" \
             "$evidence/package-lock-verification.json" \
             "$evidence/numpy-base-qualification.json" \
