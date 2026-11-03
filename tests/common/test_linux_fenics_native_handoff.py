@@ -3,16 +3,39 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 from scripts.linux import package_fenics_overlay as mod
 from scripts.linux import rebuild_fenics_native as producer
 
 
 class NativeRebuildHandoffTests(unittest.TestCase):
+    def test_relocated_wheel_rewrites_extension_and_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            wheel = Path(raw) / "test.whl"
+            original = b"\x7fELFold"
+            extension = "basix/_basixcpp.so"
+            record = "fenics_basix-0.11.0.dist-info/RECORD"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(extension, original)
+                archive.writestr("basix/__init__.py", b"# import\n")
+                archive.writestr(record, f"{extension},sha256=old,{len(original)}\n{record},,\n")
+            replacement = b"\x7fELFrelocated"
+            producer.rewrite_relocated_wheel(wheel, {extension: replacement})
+            with zipfile.ZipFile(wheel) as archive:
+                self.assertEqual(archive.read(extension), replacement)
+                self.assertEqual(archive.read("basix/__init__.py"), b"# import\n")
+                digest = base64.urlsafe_b64encode(hashlib.sha256(replacement).digest()).rstrip(b"=").decode("ascii")
+                self.assertIn(f"{extension},sha256={digest},{len(replacement)}", archive.read(record).decode())
+            with self.assertRaisesRegex(producer.InputError, "duplicate or missing"):
+                producer.rewrite_relocated_wheel(wheel, {"missing.so": replacement})
+
     def make_fixture(
         self, root: Path, *, stale_candidate: bool = False
     ) -> tuple[Path, Path, Path, Path, dict[str, dict]]:

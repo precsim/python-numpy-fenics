@@ -13,7 +13,10 @@ provenance.  Qualification remains a separate hosted-runtime gate.
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -1044,7 +1047,7 @@ def build_candidate(
     return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit]
 
 
-def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path]) -> tuple[list[dict], list[dict]]:
+def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path], locked_prefix: Path) -> tuple[list[dict], list[dict]]:
     prefix = roots["prefix"]
     patterns = [
         "lib/libfenics_cxxrt.so.1",
@@ -1066,6 +1069,41 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
         if not candidates:
             raise InputError(f"rebuilt wheel contains no extension module: {root}")
         elfs.extend(candidates)
+    relocation_records = []
+    for path in dict.fromkeys(elfs):
+        if path.name == "libfenics_cxxrt.so.1":
+            continue  # separately SHA-256 pinned before entering this builder
+        before = inspect_elf(path, tools["readelf"], require_relative_rpath=False)
+        entries = [entry for packed in before["rpath"] for entry in packed.split(":") if entry]
+        absolute = [entry for entry in entries if not entry.startswith("$ORIGIN")]
+        if not absolute:
+            continue
+        allowed = {str(roots["prefix"] / "lib"), str(roots["prefix"] / "lib64")}
+        # The locked FEniCS runtime is an input to the build, never a runtime
+        # provider path in the standalone overlay.
+        allowed.add(str(locked_prefix / "lib"))
+        if any(entry not in allowed for entry in absolute):
+            raise InputError(f"unrecognized native rebuild RPATH in {path}: {absolute}")
+        relative = "$ORIGIN" if path.is_relative_to(prefix / "lib") else "$ORIGIN/../../../../lib"
+        patchelf = shutil.which("patchelf")
+        if not patchelf:
+            raise InputError("native ELF RPATH relocation requires patchelf")
+        run(patchelf, "--force-rpath", "--set-rpath", relative, str(path))
+        after = inspect_elf(path, tools["readelf"])
+        for field in ("needed", "soname", "required_versions", "private_versions", "version_max"):
+            if before[field] != after[field]:
+                raise InputError(f"native ELF relocation modified {field}: {path}")
+        relocation_records.append({"path": str(path), "before_sha256": before["sha256"], "after_sha256": after["sha256"], "before_rpath": before["rpath"], "after_rpath": after["rpath"]})
+    (roots["evidence"] / "native-rpath-relocation.json").write_text(
+        json.dumps(relocation_records, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    for wheel, audit_root in zip(wheels, audits, strict=True):
+        replacements = {
+            Path(item["path"]).relative_to(audit_root).as_posix(): Path(item["path"]).read_bytes()
+            for item in relocation_records if Path(item["path"]).is_relative_to(audit_root)
+        }
+        if replacements:
+            rewrite_relocated_wheel(wheel, replacements)
     elf_records = [inspect_elf(path, tools["readelf"]) for path in dict.fromkeys(elfs)]
     for record in elf_records:
         if record["path"].endswith("libfenics_cxxrt.so.1"):
@@ -1074,6 +1112,47 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
             raise InputError(f"rebuilt output retains host C++ runtime symbol versions: {record['path']}")
     wheel_records = [{"path": str(path), "sha256": sha256(path), "size": path.stat().st_size} for path in wheels]
     return elf_records, wheel_records
+
+
+def rewrite_relocated_wheel(wheel: Path, replacements: dict[str, bytes]) -> None:
+    """Update rebuilt extension bytes and wheel RECORD without changing other files."""
+    temp = wheel.with_suffix(".relocated.tmp")
+    try:
+        with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(temp, "w") as destination:
+            names = source.namelist()
+            if len(set(names)) != len(names) or not set(replacements).issubset(names):
+                raise InputError("relocated wheel has duplicate or missing extension members")
+            record_names = [name for name in names if name.endswith(".dist-info/RECORD")]
+            if len(record_names) != 1:
+                raise InputError("relocated wheel must contain exactly one RECORD")
+            record_name = record_names[0]
+            rows = list(csv.reader(io.StringIO(source.read(record_name).decode("utf-8"))))
+            seen = set()
+            for row in rows:
+                if len(row) != 3:
+                    raise InputError("malformed rebuilt wheel RECORD")
+                name = row[0]
+                if name in replacements:
+                    digest = hashlib.sha256(replacements[name]).digest()
+                    row[1] = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+                    row[2] = str(len(replacements[name]))
+                    seen.add(name)
+            if seen != set(replacements):
+                raise InputError("relocated wheel extension absent from RECORD")
+            text_buffer = io.StringIO(newline="")
+            writer = csv.writer(text_buffer, lineterminator="\n")
+            writer.writerows(rows)
+            for member in source.infolist():
+                if member.filename == record_name:
+                    contents = text_buffer.getvalue().encode("utf-8")
+                else:
+                    contents = replacements.get(member.filename)
+                    if contents is None:
+                        contents = source.read(member.filename)
+                destination.writestr(member, contents)
+        os.replace(temp, wheel)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def candidate_output_binding(
@@ -2006,7 +2085,7 @@ def main(argv: list[str] | None = None) -> int:
                 zlib_library,
                 lzma_library,
             )
-            elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools)
+            elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools, args.locked_prefix.resolve())
             candidate_build_path = roots["evidence"] / "native-build-handoff.json"
             candidate_build_payload = write_candidate_build_handoff(
                 candidate_build_path,
