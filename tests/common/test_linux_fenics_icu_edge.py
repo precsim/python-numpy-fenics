@@ -83,6 +83,36 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProbeError, "remove only a libpsl"):
             mod.validate_needed_delta(stock, {"needed": ["libc.so.6", "libssl.so.3"]})
 
+    def test_provider_index_accepts_byte_identical_regular_soname_aliases_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw)
+            library_root = prefix / "lib"
+            library_root.mkdir()
+            soname = library_root / "libsame.so.1"
+            versioned = library_root / "libsame.so.1.2.3"
+            soname.write_bytes(b"\x7fELFsame-provider")
+            versioned.write_bytes(soname.read_bytes())
+
+            def fake_read_elf(path, _readelf, strict_abi=False):
+                return {
+                    "path": str(path),
+                    "sha256": mod.sha256_file(path),
+                    "soname": "libsame.so.1",
+                    "needed": [],
+                    "rpath": [],
+                    "required_versions": [],
+                    "version_max": {},
+                }
+
+            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
+                providers, _ = mod.build_provider_index(prefix, Path("readelf"))
+            self.assertEqual(providers["libsame.so.1"], soname.resolve())
+
+            versioned.write_bytes(b"\x7fELFdifferent-provider")
+            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
+                with self.assertRaisesRegex(mod.ProbeError, "multiple locked providers"):
+                    mod.build_provider_index(prefix, Path("readelf"))
+
     def test_strict_abi_and_rpath_checks_fail_closed(self) -> None:
         maxima = mod.audit_version_tokens(
             ["GLIBC_2.17", "GLIBCXX_3.4.19", "CXXABI_1.3.7", "GCC_4.8.0"], strict=True

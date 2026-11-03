@@ -510,7 +510,16 @@ def build_provider_index(prefix: Path, readelf: Path) -> tuple[dict[str, Path], 
         for key in keys:
             prior = providers.get(key)
             if prior is not None and prior.resolve() != path.resolve():
-                raise ProbeError(f"multiple locked providers for {key}: {prior} and {path}")
+                prior_audit = audits.get(prior.resolve())
+                if prior_audit is None or prior_audit.get("sha256") != audit.get("sha256"):
+                    raise ProbeError(f"multiple locked providers for {key}: {prior} and {path}")
+                # Conda packages may install an exact SONAME filename and a
+                # versioned regular-file alias as byte-identical hardlink/copy
+                # payloads.  Treat that as one provider identity and prefer the
+                # exact filename matching the requested SONAME when available.
+                if path.name == key and prior.name != key:
+                    providers[key] = path.resolve()
+                continue
             providers[key] = path.resolve()
     for path in sorted(library_root.iterdir()):
         if not path.is_symlink():
