@@ -284,7 +284,7 @@ if (
     or manifest.get("native", {}).get("mpi", {}).get("provider_count") != 1
     or producer.get("source_rebuilds") != []
 ):
-    raise SystemExit(f"invalid Linux FEniCS overlay manifest: {manifest!r}")
+    raise SystemExit("invalid Linux FEniCS overlay manifest core/ABI contract")
 if candidate is None:
     if producer.get("omitted_packages") not in (None, []):
         raise SystemExit("stock overlay unexpectedly declares native-rebuild omissions")
