@@ -528,7 +528,14 @@ def build_provider_index(prefix: Path, readelf: Path) -> tuple[dict[str, Path], 
         if target in audits:
             prior = providers.get(path.name)
             if prior is not None and prior.resolve() != target:
-                raise ProbeError(f"ambiguous locked symlink provider for {path.name}")
+                prior_audit = audits.get(prior.resolve())
+                target_audit = audits.get(target)
+                if (
+                    prior_audit is None
+                    or target_audit is None
+                    or prior_audit.get("sha256") != target_audit.get("sha256")
+                ):
+                    raise ProbeError(f"ambiguous locked symlink provider for {path.name}")
             providers[path.name] = target
     return providers, audits
 
