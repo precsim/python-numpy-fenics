@@ -69,6 +69,10 @@ PEP599_EXTERNAL = {
 }
 
 SKIP_PROVIDER_PACKAGES = {"sysroot_linux-64", "kernel-headers_linux-64"}
+LIBGCC_RUNTIME_PROVIDER = "lib/libgcc_s.so.1"
+LIBGCC_COMPILER_PRIVATE_PROVIDER = (
+    "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libgcc_s.so.1"
+)
 VERSION_NAMESPACES = tuple(ABI_CEILINGS)
 ALLOWED_NONNUMERIC_VERSIONS = {"CXXABI_TM_1"}
 VERSION_TOKEN = re.compile(r"\bName: ((?:GLIBC|CXXABI|GLIBCXX|GCC)_[A-Za-z0-9_.]+)")
@@ -435,12 +439,13 @@ def _resolve_provider(
     consumer: str,
 ) -> dict[str, Any] | None:
     providers = index.get(name, [])
-    if name == "libgcc_s.so.1" and len(providers) > 1:
-        # The locked GCC package also ships a compiler-private libgcc_s.
-        # ELF runtime lookup uses the top-level lib/ provider in this prefix.
-        runtime = [item for item in providers if item["path"] == "lib/libgcc_s.so.1"]
-        if len(runtime) == 1:
-            return runtime[0]
+    if name == "libgcc_s.so.1" and {
+        item["path"] for item in providers
+    } == {LIBGCC_RUNTIME_PROVIDER, LIBGCC_COMPILER_PRIVATE_PROVIDER}:
+        # The locked GCC 16.2.0 package ships one compiler-private copy in
+        # addition to the top-level runtime provider used by rebuilt FEniCS
+        # libraries.  Keep this exception exact so any new provider is fatal.
+        return next(item for item in providers if item["path"] == LIBGCC_RUNTIME_PROVIDER)
     if len(providers) > 1:
         raise AuditError(
             f"ambiguous provider for {consumer} -> {name}: "

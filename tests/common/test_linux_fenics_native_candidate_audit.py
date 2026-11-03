@@ -333,7 +333,20 @@ class NativeCandidateAuditTests(unittest.TestCase):
         index = audit._provider_index([compiler, runtime])
         self.assertEqual(audit._resolve_provider("libgcc_s.so.1", index, "lib/libbasix.so")["path"], runtime["path"])
         index["libgcc_s.so.1"].append(dict(compiler, path="other/libgcc_s.so.1"))
-        self.assertEqual(audit._resolve_provider("libgcc_s.so.1", index, "lib/libbasix.so")["path"], runtime["path"])
+        with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
+            audit._resolve_provider("libgcc_s.so.1", index, "lib/libbasix.so")
+        compiler_only = audit._provider_index(
+            [
+                compiler,
+                dict(
+                    compiler,
+                    path="lib/gcc/x86_64-conda-linux-gnu/17.0.0/libgcc_s.so.1",
+                    sha256="c" * 64,
+                ),
+            ]
+        )
+        with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
+            audit._resolve_provider("libgcc_s.so.1", compiler_only, "lib/libbasix.so")
 
 
 if __name__ == "__main__":

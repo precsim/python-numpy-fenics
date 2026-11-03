@@ -68,6 +68,8 @@ NUMPY_PREFIXES = tuple(
     for prefix in (f"{site.as_posix()}/numpy/", f"{site.as_posix()}/numpy.libs/")
 )
 GCC_SPECS_RELATIVE = PurePosixPath("lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs")
+LIBGCC_RUNTIME_RELATIVE = PurePosixPath("lib/libgcc_s.so.1")
+LIBGCC_COMPILER_PRIVATE_RELATIVE = GCC_SPECS_RELATIVE.parent / "libgcc_s.so.1"
 GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
 RUNTIME_PREFIX_TOKEN = "@FENICS_RUNTIME_PREFIX@"
 REQUIRED_SYMBOL_CEILINGS = {
@@ -1523,6 +1525,43 @@ def set_relative_runpaths(stage_root: Path, private_prefix: Path) -> list[Path]:
     return dynamic_elfs
 
 
+def _resolve_bundled_provider(
+    stage_root: Path,
+    consumer: str,
+    name: str,
+    candidates: set[Path],
+    search_dirs: list[Path],
+) -> Path:
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    relative_candidates = {
+        candidate.relative_to(stage_root).as_posix(): candidate for candidate in candidates
+    }
+    expected_libgcc = {
+        LIBGCC_RUNTIME_RELATIVE.as_posix(),
+        LIBGCC_COMPILER_PRIVATE_RELATIVE.as_posix(),
+    }
+    if name == "libgcc_s.so.1" and set(relative_candidates) == expected_libgcc:
+        # Preserve the dynamic loader's staged RPATH order.  This selects the
+        # top-level runtime provider for normal FEniCS consumers while a GCC
+        # toolchain object in the compiler-private directory keeps its local
+        # provider.  Any additional provider remains an ambiguity failure.
+        for directory in search_dirs:
+            matches = [
+                candidate
+                for candidate in candidates
+                if candidate.parent.resolve() == directory
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                break
+    raise SystemExit(
+        f"ambiguous bundled ELF provider: {consumer} -> {name}: "
+        f"{sorted(map(str, candidates))}"
+    )
+
+
 def audit_elf(
     stage_root: Path,
     private_prefix: Path,
@@ -1639,7 +1678,7 @@ def audit_elf(
         if not has_dynamic:
             continue
         rel = path.relative_to(stage_root).as_posix()
-        search_dirs: set[Path] = set()
+        search_dirs: list[Path] = []
         for packed in runpaths:
             for entry in packed.split(":"):
                 if not entry.startswith("$ORIGIN"):
@@ -1650,14 +1689,19 @@ def audit_elf(
                 target = (path.parent / suffix.lstrip("/")).resolve(strict=False)
                 if not under(target, stage_root):
                     raise SystemExit(f"ELF RUNPATH/RPATH escapes overlay: {rel}: {entry!r}")
-                search_dirs.add(target)
+                if target not in search_dirs:
+                    search_dirs.append(target)
         dependencies = []
         for name in needed:
             candidates = {candidate.resolve() for candidate in provider_index.get(name, [])}
             if candidates:
-                if len(candidates) != 1:
-                    raise SystemExit(f"ambiguous bundled ELF provider: {rel} -> {name}: {sorted(map(str, candidates))}")
-                provider = next(iter(candidates))
+                provider = _resolve_bundled_provider(
+                    stage_root,
+                    rel,
+                    name,
+                    candidates,
+                    search_dirs,
+                )
                 if provider.parent.resolve() not in search_dirs:
                     raise SystemExit(f"RUNPATH does not cover bundled dependency: {rel} -> {name} -> {provider}")
                 dependencies.append(
