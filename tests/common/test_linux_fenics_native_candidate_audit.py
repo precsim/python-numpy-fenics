@@ -325,6 +325,16 @@ class NativeCandidateAuditTests(unittest.TestCase):
             llvm["path"],
         )
 
+    def test_libgcc_runtime_provider_precedes_compiler_private_copy(self):
+        runtime = {"path": "lib/libgcc_s.so.1", "sha256": "a" * 64,
+                   "soname": "libgcc_s.so.1", "aliases": {"libgcc_s.so.1"}}
+        compiler = {"path": "lib/gcc/x86_64-conda-linux-gnu/16.2.0/libgcc_s.so.1",
+                    "sha256": "b" * 64, "soname": "libgcc_s.so.1", "aliases": {"libgcc_s.so.1"}}
+        index = audit._provider_index([compiler, runtime])
+        self.assertEqual(audit._resolve_provider("libgcc_s.so.1", index, "lib/libbasix.so")["path"], runtime["path"])
+        index["libgcc_s.so.1"].append(dict(compiler, path="other/libgcc_s.so.1"))
+        self.assertEqual(audit._resolve_provider("libgcc_s.so.1", index, "lib/libbasix.so")["path"], runtime["path"])
+
 
 if __name__ == "__main__":
     unittest.main()

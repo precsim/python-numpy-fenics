@@ -435,6 +435,12 @@ def _resolve_provider(
     consumer: str,
 ) -> dict[str, Any] | None:
     providers = index.get(name, [])
+    if name == "libgcc_s.so.1" and len(providers) > 1:
+        # The locked GCC package also ships a compiler-private libgcc_s.
+        # ELF runtime lookup uses the top-level lib/ provider in this prefix.
+        runtime = [item for item in providers if item["path"] == "lib/libgcc_s.so.1"]
+        if len(runtime) == 1:
+            return runtime[0]
     if len(providers) > 1:
         raise AuditError(
             f"ambiguous provider for {consumer} -> {name}: "
