@@ -402,8 +402,23 @@ def _provider_index(nodes: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
         if node["soname"]:
             names.add(node["soname"])
         for name in names:
-            if all(existing["path"] != node["path"] for existing in index[name]):
-                index[name].append(node)
+            existing = index[name]
+            if any(item["path"] == node["path"] for item in existing):
+                continue
+            identical = [item for item in existing if item["sha256"] == node["sha256"]]
+            conflicting = [item for item in existing if item["sha256"] != node["sha256"]]
+            if conflicting:
+                existing.append(node)
+                continue
+            if identical:
+                # A conda package may install both the SONAME filename and a
+                # versioned regular-file alias with identical bytes. Collapse
+                # that to one provider identity, preferring the path whose
+                # basename exactly matches the lookup name.
+                preferred = node if Path(node["path"]).name == name else identical[0]
+                index[name] = [preferred]
+                continue
+            existing.append(node)
     return index
 
 

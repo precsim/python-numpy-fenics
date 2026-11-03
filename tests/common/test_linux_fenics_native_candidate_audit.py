@@ -273,6 +273,27 @@ class NativeCandidateAuditTests(unittest.TestCase):
             self.assertEqual(record["soname"], "libsample.so.1")
             self.assertEqual(record["required_versions"], ["GLIBC_2.17"])
 
+    def test_provider_index_collapses_only_byte_identical_regular_soname_aliases(self):
+        first = {
+            "path": "lib/libsame.so.1",
+            "sha256": "a" * 64,
+            "soname": "libsame.so.1",
+            "aliases": {"libsame.so.1"},
+        }
+        versioned = {
+            "path": "lib/libsame.so.1.2.3",
+            "sha256": "a" * 64,
+            "soname": "libsame.so.1",
+            "aliases": {"libsame.so.1.2.3"},
+        }
+        index = audit._provider_index([versioned, first])
+        self.assertEqual([item["path"] for item in index["libsame.so.1"]], [first["path"]])
+
+        conflict = dict(versioned, sha256="b" * 64)
+        index = audit._provider_index([first, conflict])
+        with self.assertRaisesRegex(audit.AuditError, "ambiguous provider"):
+            audit._resolve_provider("libsame.so.1", index, "consumer.so")
+
 
 if __name__ == "__main__":
     unittest.main()
