@@ -530,7 +530,7 @@ jobs:
             /bin/bash -c '
               set -euo pipefail
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              /workspace/out/linux-x64/numpy/bin/python3.14 \
+              PYTHONDONTWRITEBYTECODE=1 /workspace/out/linux-x64/numpy/bin/python3.14 \
                 scripts/linux/build_fenics_cxx_provider.py \
                 --runtime-prefix "$1" \
                 --runtime-prefix-evidence "$2" \
