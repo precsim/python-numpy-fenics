@@ -728,6 +728,10 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
         "CPPFLAGS": f"-I{locked_prefix / 'include'}",
         "CFLAGS": "-O2 -fPIC",
         "LDFLAGS": f"-L{locked_prefix / 'lib'}",
+        # Keep the stock direct zlib provider edge while testing the isolated
+        # PSL omission. The conda compiler otherwise drops -lz with its
+        # default --as-needed behavior in this independent curl build.
+        "LIBS": "-Wl,--no-as-needed -lz -Wl,--as-needed",
         "LD_LIBRARY_PATH": str(locked_prefix / "lib"),
     }
     configure = [str(source_root / "configure"), f"--prefix={install_prefix}", f"--host={contract['probe']['host_triplet']}"]
