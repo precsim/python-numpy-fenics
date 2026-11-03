@@ -18,19 +18,33 @@ on:
       - "locks/core/**"
       - "contracts/**"
       - "config/runtime-matrix.json"
-      - "specs/02-core-numpy-profiles.md"
       - "tests/common/test_macos_*.py"
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: macos-core-numpy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect-runtime-changes-macos
+    runs-on: ubuntu-24.04
+    outputs:
+      qualify: ${{ steps.classify.outputs.qualify }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/common/qualify_pr_changes.py
+
   qualify:
     name: qualify-macos-core-numpy-${{ matrix.target_arch }}
+    needs: changes
+    if: needs.changes.outputs.qualify == 'true'
     runs-on: macos-15
     timeout-minutes: 75
     strategy:

@@ -28,6 +28,15 @@ qualifications from the chosen `main` SHA are required before publishing.
 Publishing a later documentation commit also requires qualifications at that
 exact later SHA.
 
+For routine documentation-only PRs, the qualification workflows use a small
+changed-file check and skip their expensive runtime jobs when every changed
+file is Markdown. The required qualification check names remain available to
+branch protection, and the fast repository validation checks still run.
+Workflow and runtime changes continue to run full qualification. Explicit
+manual qualification runs also always execute. Documentation-only merges do
+not automatically create promotable runtime artifacts; publication still
+requires successful qualifications for the exact `main` SHA selected above.
+
 When FEniCS work resumes, first migrate and qualify the retained cp312
 workflows against the corresponding cp314 NumPy base. Only then opt in with
 `include_fenics` and provide the three FEniCS workflow run IDs as well. That
