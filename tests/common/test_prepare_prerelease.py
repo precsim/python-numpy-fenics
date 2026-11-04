@@ -34,6 +34,15 @@ class PreparePrereleaseTests(unittest.TestCase):
         self.assertIn("$entries.Count -ne [int]$platformPins.numpy_entry_count", script)
         self.assertNotIn("$entries | Sort-Object relative", script)
 
+    def test_windows_overlay_runtime_test_uses_same_ordinal_base_identity(self) -> None:
+        script = (Path(__file__).resolve().parents[2] / "scripts/windows/test-fenics-overlay.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("[Array]::Sort($numpyPaths, [StringComparer]::Ordinal)", script)
+        self.assertIn("$baseTreeHash -ne [string]$basePlatformPins.numpy_tree_sha256", script)
+        self.assertIn("$numpyBefore.Count -ne [int]$basePlatformPins.numpy_entry_count", script)
+        self.assertNotIn("$numpyBefore.Keys | Sort-Object", script)
+
     @staticmethod
     def json_bytes(payload: dict[str, object]) -> bytes:
         return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")

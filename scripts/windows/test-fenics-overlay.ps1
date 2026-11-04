@@ -113,15 +113,21 @@ try {
     if ($numpyBefore.Count -eq 0) {
         throw "Qualified NumPy base runtime contains no NumPy distribution files"
     }
+    [string[]]$numpyPaths = @($numpyBefore.Keys)
+    [Array]::Sort($numpyPaths, [StringComparer]::Ordinal)
     $treeHasher = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
     try {
-        foreach ($relative in @($numpyBefore.Keys | Sort-Object)) {
+        foreach ($relative in $numpyPaths) {
             $treeHasher.AppendData($utf8NoBom.GetBytes("F`0$relative`0$($numpyBefore[$relative])`n"))
         }
         $baseTreeHash = ([BitConverter]::ToString($treeHasher.GetHashAndReset())).Replace("-", "").ToLowerInvariant()
     }
     finally {
         $treeHasher.Dispose()
+    }
+    if ($baseTreeHash -ne [string]$basePlatformPins.numpy_tree_sha256 -or
+        $numpyBefore.Count -ne [int]$basePlatformPins.numpy_entry_count) {
+        throw "Qualified NumPy base runtime tree differs from immutable release lock"
     }
 
     Expand-Archive -LiteralPath $zipPath -DestinationPath $runtimeRoot
