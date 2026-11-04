@@ -14,6 +14,12 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/linux/test-fenics-overla
 
 
 class NativeProviderResolutionTests(unittest.TestCase):
+    def test_inherited_base_audit_uses_staged_python_after_hostile_path(self) -> None:
+        shell = SCRIPT.read_text(encoding="utf-8")
+        function = shell.split("verify_inherited_base_tree() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('"$root/bin/python3.14" -B -I -S -', function)
+        self.assertNotIn("    python3 -", function)
+
     def run_audit(self, provider: str, *, alias_name: str | None = None) -> None:
         shell = SCRIPT.read_text(encoding="utf-8")
         marker = '"$staged_python" -B -I -S - "$runtime" "$overlay_manifest" <<\'PY\'\n'

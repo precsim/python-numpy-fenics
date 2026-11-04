@@ -49,7 +49,7 @@ done
 verify_inherited_base_tree() {
     local root="$1"
     local allow_extra="$2"
-    python3 - "$root" "$base_manifest" "$allow_extra" <<'PY'
+    "$root/bin/python3.14" -B -I -S - "$root" "$base_manifest" "$allow_extra" <<'PY'
 import hashlib
 import json
 import os
