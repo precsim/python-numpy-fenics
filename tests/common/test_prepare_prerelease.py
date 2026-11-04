@@ -17,6 +17,23 @@ from scripts.common import prepare_prerelease as prerelease
 
 
 class PreparePrereleaseTests(unittest.TestCase):
+    def test_linux_fenics_requires_pinned_patchelf_evidence(self) -> None:
+        identity = ("linux-x64", "fenics")
+        self.assertEqual(prerelease.EXPECTED_QUALIFICATION_CHECKS[identity]["pinned_patchelf"], "pass")
+        checks = dict(prerelease.EXPECTED_QUALIFICATION_CHECKS[identity])
+        checks.pop("pinned_patchelf")
+        with self.assertRaisesRegex(SystemExit, "check contract mismatch"):
+            prerelease.validate_qualification_checks(*identity, checks, Path("qualification.json"))
+
+    def test_windows_overlay_base_tree_uses_ordinal_sort_and_checks_release_lock(self) -> None:
+        script = (Path(__file__).resolve().parents[2] / "scripts/windows/package-fenics-overlay.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("[Array]::Sort($paths, [StringComparer]::Ordinal)", script)
+        self.assertIn("$treeHash -ne [string]$platformPins.numpy_tree_sha256", script)
+        self.assertIn("$entries.Count -ne [int]$platformPins.numpy_entry_count", script)
+        self.assertNotIn("$entries | Sort-Object relative", script)
+
     @staticmethod
     def json_bytes(payload: dict[str, object]) -> bytes:
         return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -222,6 +239,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                 archive.writestr("runtime/package.py", b"ok")
                 archive.writestr("runtime/src/public_header.cpp", b"public")
                 archive.writestr("fenics-runtime/conda/include/petsc/private/petscimpl.h", b"public dependency")
+                archive.writestr("fenics-runtime/conda/include/slepc/private", b"public dependency namespace")
                 archive.writestr("build/linux-fenics-overlay/native-rebuild-prototype/rebuild-candidate/src/libxml2-v2.15.4/include/private/lint.h", b"public upstream header")
             prerelease.validate_archive_members(good)
 

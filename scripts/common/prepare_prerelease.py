@@ -190,6 +190,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
     },
     ("linux-x64", "fenics"): {
         "pinned_manylinux": "pass",
+        "pinned_patchelf": "pass",
         "glibc_floor": "pass",
         "package_lock_replay": "pass",
         "package_hash_verification": "pass",
@@ -259,10 +260,11 @@ def is_forbidden_private_source_path(parts: tuple[str, ...]) -> bool:
     for index, part in enumerate(lowered):
         if part != "private":
             continue
-        # PETSc ships public package headers under include/petsc/private.
+        # PETSc and SLEPc ship public package headers under their respective
+        # include/<package>/private namespaces.
         # This is a third-party implementation namespace, not a private
         # downstream consumer source tree.
-        if index >= 2 and lowered[index - 2 : index] == ("include", "petsc"):
+        if index >= 2 and lowered[index - 2 : index] in {("include", "petsc"), ("include", "slepc")}:
             continue
         # The pinned public libxml2 source distribution contains internal
         # implementation headers at include/private.  The Linux qualification
