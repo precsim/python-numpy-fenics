@@ -884,7 +884,8 @@ for record in census.get("census", []):
         if actual != expected:
             raise SystemExit(
                 f"bundled dependency resolved outside overlay: {record['path']} -> "
-                f"{dependency['name']} -> {actual} != {expected}"
+                f"{dependency['name']} -> {actual} != {expected}\n"
+                f"raw ldd output for {path}:\n{completed.stdout}"
             )
 print("fenics_native_dependency_resolution=pass")
 PY
