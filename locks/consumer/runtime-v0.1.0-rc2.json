@@ -1,0 +1,77 @@
+{
+  "format_version": 1,
+  "platforms": {
+    "linux-x64": {
+      "fenics": {
+        "manifest_sha256": "1bc8b9cdee397614adb1ce889872d9551df3ca8ae330896079ee3f7bf5f0a738",
+        "name": "fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz",
+        "sha256": "535f761fe9e6b42b20422e64a3f8d4d5557eb2ef5bb0b5057c4ddf7d772c671d"
+      },
+      "numpy_base": {
+        "manifest_sha256": "619d276b6af1b805ccef9fd6dd4f42949638f6daf3408f18c6a9a825e0bc4b39",
+        "name": "python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz",
+        "numpy_entry_count": 1007,
+        "numpy_tree_sha256": "0dad7529b93ee5671d91a57ea1ebf203ca4b0b8b433bee0b16f30df5bd6c9a97",
+        "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_sha256": "e3169fbb7a15b7840a47f7d4b802e97b7f81a9bb0ec78b9b98b945ce6aad9347",
+        "sha256": "e4f116ebae105bc76afc204c32d8a94f7aecf3c929269d7a557c80f1af0a6ab6",
+        "tag": "runtime-v0.1.0-rc1"
+      }
+    },
+    "macos-arm64": {
+      "fenics": {
+        "manifest_sha256": "045a323ecfd1febc884efbcee83a468067698726fb8af1987d35f473e9858f43",
+        "name": "fenics-embed-runtime-v0.1.0-macos-arm64-cp314.zip",
+        "sha256": "144e4cf40a7db73aa7fb2014999d63bf74b021bc09825fa3e8f51b4ec4e1cbd8"
+      },
+      "numpy_base": {
+        "manifest_sha256": "08c697fd592684bb532efad8afa407bc845232bd15813814a09deeb482556414",
+        "name": "python-runtime-v0.1.0-macos-arm64-cp314-numpy.zip",
+        "numpy_entry_count": 923,
+        "numpy_tree_sha256": "0b0c57b2508d38a392efd5afbca249f82b4065aa3d993692103d5eeacad64ee8",
+        "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_sha256": "ad58496daa6ebd4153af5baec98b5e2dffad2f56b4e2e018c02545578913d03b",
+        "sha256": "5dee67bd1562efe3c4c012cc520af9771a4ca2bdf268c0cbdf275b3f95bbdcd9",
+        "tag": "runtime-v0.1.0-rc1"
+      }
+    },
+    "macos-x64": {
+      "fenics": {
+        "manifest_sha256": "da5b813d26c3af3e79686a168855e5420deb28576c34e8c09a9156a9e3124524",
+        "name": "fenics-embed-runtime-v0.1.0-macos-x64-cp314.zip",
+        "sha256": "3b5f895c4f0b081c367cb9810055a3af01c64f0d46a3f9220b1da6ce9ebdf9ec"
+      },
+      "numpy_base": {
+        "manifest_sha256": "9636f1943a5ca48d73283b669e551bb8591cc8c5af6020b84eb49cdd696a95aa",
+        "name": "python-runtime-v0.1.0-macos-x64-cp314-numpy.zip",
+        "numpy_entry_count": 923,
+        "numpy_tree_sha256": "88c38bbea3a34b9758f5ea2d99a61e3a94b82c31272644835399f68d9bccd15b",
+        "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_sha256": "f286c42f8ddc4a1f2492970f02b7f2e60d4a0f94c0e7ede0ad8ab702551fdca3",
+        "sha256": "317ed4ed01915c74e84e394386705157c0381084765c156a8bde24c9f85fbaf1",
+        "tag": "runtime-v0.1.0-rc1"
+      }
+    },
+    "win-x64": {
+      "fenics": {
+        "manifest_sha256": "adf7b7955febb99b518a06e8dd0c3069d7ceb5a95bda2ef9f53a7d58e6eb3f47",
+        "name": "fenics-embed-runtime-v0.1.0-win-x64-cp314.zip",
+        "sha256": "45193a8ac4e768c9ce75370e7bf72f35fe93316c5faf06cfbb76bcba49cba3e1"
+      },
+      "numpy_base": {
+        "manifest_sha256": "fd5fdb769f1d00b4c6709992e9428014f7d8880d9f180b52cdb1bc8aad5463a2",
+        "name": "python-runtime-v0.1.0-win-x64-cp314-numpy.zip",
+        "numpy_entry_count": 1027,
+        "numpy_tree_sha256": "eab9fa3ffdde979afcd8e64cb816f66fc77b93bd45c6260a35e9f0d7d1f7f6e3",
+        "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_sha256": "522d6be5e369a7472089c23e0265f037cf4abefd98fa53bd89c9e0d30117c56d",
+        "sha256": "eb0625045f1bf3c713f9705d0f95bd238e66954221d8430dbc1c2d10e4993ee1",
+        "tag": "runtime-v0.1.0-rc1"
+      }
+    }
+  },
+  "prerelease_manifest_sha256": "dff3909366f2c57e3765226399fb867282a3e253ac3ece065f28e26713489e29",
+  "producer_revision": "88f36aaa09fb8a84ea528d5823d9b0be043cfa3e",
+  "repository": "precsim/python-numpy-fenics",
+  "tag": "runtime-v0.1.0-rc2"
+}
