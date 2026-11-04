@@ -264,6 +264,17 @@ def is_forbidden_private_source_path(parts: tuple[str, ...]) -> bool:
         # downstream consumer source tree.
         if index >= 2 and lowered[index - 2 : index] == ("include", "petsc"):
             continue
+        # The pinned public libxml2 source distribution contains internal
+        # implementation headers at include/private.  The Linux qualification
+        # artifact retains its public native rebuild inputs as diagnostics.
+        # Recognize only that exact upstream source subtree; do not permit
+        # arbitrary include/private paths or private downstream sources.
+        if (
+            index >= 1
+            and lowered[index - 1] == "include"
+            and any(re.fullmatch(r"libxml2-v[0-9]+\.[0-9]+\.[0-9]+", segment) for segment in lowered[: index - 1])
+        ):
+            continue
         return True
     joined = "/".join(lowered)
     return any(marker in joined for marker in PRIVATE_SOURCE_MARKERS)

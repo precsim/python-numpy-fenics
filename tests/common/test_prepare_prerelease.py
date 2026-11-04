@@ -222,6 +222,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                 archive.writestr("runtime/package.py", b"ok")
                 archive.writestr("runtime/src/public_header.cpp", b"public")
                 archive.writestr("fenics-runtime/conda/include/petsc/private/petscimpl.h", b"public dependency")
+                archive.writestr("build/linux-fenics-overlay/native-rebuild-prototype/rebuild-candidate/src/libxml2-v2.15.4/include/private/lint.h", b"public upstream header")
             prerelease.validate_archive_members(good)
 
             forbidden_members = (
@@ -229,6 +230,9 @@ class PreparePrereleaseTests(unittest.TestCase):
                 "private/backend.cpp",
                 "fenics-runtime/private/backend.cpp",
                 "runtime/src/private/backend.cpp",
+                "runtime/libxml2-v2.15.4/src/private/backend.cpp",
+                "runtime/libxml2-v2.15.4/include/private_bridge/backend.cpp",
+                "runtime/include/private/backend.cpp",
                 "runtime/python-matlab-octave-bridge/backend.cpp",
                 "runtime/private_bridge.mexw64",
                 "../consumer-secret.txt",
