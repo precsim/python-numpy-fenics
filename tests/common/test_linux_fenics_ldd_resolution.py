@@ -49,7 +49,7 @@ class NativeProviderResolutionTests(unittest.TestCase):
         self.run_audit("{library}")
 
     def test_ldd_rejects_wrong_provider_even_with_spaces(self) -> None:
-        with self.assertRaisesRegex(SystemExit, "raw ldd output.*libcares.so.2"):
+        with self.assertRaisesRegex(SystemExit, "(?s)raw ldd output.*libcares.so.2"):
             self.run_audit("/tmp/ambient provider/libcares.so.2")
 
 
