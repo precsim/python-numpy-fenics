@@ -16,6 +16,12 @@ def sha256(data: bytes) -> str:
 
 
 class WindowsCoreLayerTests(unittest.TestCase):
+    def test_numpy_probe_does_not_write_into_sealed_core(self) -> None:
+        stage = (Path(__file__).resolve().parents[2] / "scripts/windows/stage-runtime.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("$probeScript | & (Join-Path $outputPath 'python.exe') -B -I -", stage)
+
     def make_runtime_pair(self, root: Path) -> tuple[Path, Path]:
         core = root / "core"
         numpy = root / "numpy"

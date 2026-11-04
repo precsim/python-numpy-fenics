@@ -524,7 +524,9 @@ if "openblas" not in text or "mkl" in text:
     raise SystemExit(f"unexpected BLAS provider: {cfg!r}")
 print(json.dumps({"version": numpy.__version__, "blas": "openblas"}))
 '@
-    $probe = ($probeScript | & (Join-Path $outputPath 'python.exe') -I -) | ConvertFrom-Json
+    # The core manifest has already been sealed. An import probe must not
+    # create __pycache__ files in its inherited standard library.
+    $probe = ($probeScript | & (Join-Path $outputPath 'python.exe') -B -I -) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) {
         throw 'Staged NumPy probe failed'
     }
