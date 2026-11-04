@@ -873,7 +873,7 @@ for record in census.get("census", []):
         raise SystemExit(f"runtime ELF dependency resolution failed for {path}:\n{completed.stdout}")
     resolved = {}
     for line in completed.stdout.splitlines():
-        match = re.match(r"\s*(\S+)\s+=>\s+(\S+)\s+\(", line)
+        match = re.match(r"^\s*(\S+)\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$", line)
         if match:
             resolved[match.group(1)] = Path(match.group(2)).resolve()
     for dependency in record.get("dependencies", []):
