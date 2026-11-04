@@ -787,7 +787,7 @@ if ((${#jit_modules[@]} == 0)); then
     echo "fresh FFCx JIT produced no native cache module" >&2
     exit 1
 fi
-python3 - "${jit_modules[@]}" <<'PY'
+"$staged_python" -B -S -P - "${jit_modules[@]}" <<'PY'
 import pathlib
 import re
 import subprocess
@@ -891,7 +891,7 @@ PY
 
 if [[ -n "$evidence" ]]; then
     mkdir -p "$(dirname "$evidence")"
-    python3 - "$archive" "$overlay_manifest" "$evidence" <<'PY'
+    "$staged_python" -B -S -P - "$archive" "$overlay_manifest" "$evidence" <<'PY'
 import hashlib
 import json
 from pathlib import Path
