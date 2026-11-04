@@ -190,6 +190,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
     },
     ("linux-x64", "fenics"): {
         "pinned_manylinux": "pass",
+        "pinned_patchelf": "pass",
         "glibc_floor": "pass",
         "package_lock_replay": "pass",
         "package_hash_verification": "pass",
@@ -259,10 +260,24 @@ def is_forbidden_private_source_path(parts: tuple[str, ...]) -> bool:
     for index, part in enumerate(lowered):
         if part != "private":
             continue
-        # PETSc ships public package headers under include/petsc/private.
+        # PETSc and SLEPc ship public package headers under their respective
+        # include/<package>/private namespaces.
         # This is a third-party implementation namespace, not a private
         # downstream consumer source tree.
-        if index >= 2 and lowered[index - 2 : index] == ("include", "petsc"):
+        if index >= 2 and lowered[index - 2 : index] in {("include", "petsc"), ("include", "slepc")}:
+            continue
+        # The pinned public libxml2 source distribution contains internal
+        # implementation headers at include/private.  The Linux qualification
+        # artifact retains its public native rebuild inputs as diagnostics.
+        # Recognize only that exact upstream source subtree; do not permit
+        # arbitrary include/private paths or private downstream sources.
+        if (
+            index >= 7
+            and lowered[index - 7 : index - 2]
+            == ("build", "linux-fenics-overlay", "native-rebuild-prototype", "rebuild-candidate", "src")
+            and re.fullmatch(r"libxml2-v[0-9]+\.[0-9]+\.[0-9]+", lowered[index - 2])
+            and lowered[index - 1] == "include"
+        ):
             continue
         return True
     joined = "/".join(lowered)

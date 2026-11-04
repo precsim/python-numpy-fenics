@@ -171,20 +171,33 @@ function Get-NumpyBaseIdentity {
             throw "Qualified NumPy base manifest has unsupported kind for $relative`: $kind"
         }
     }
-    $entries = @($entries | Sort-Object relative)
     if ($entries.Count -eq 0) {
         throw "Qualified NumPy base manifest contains no NumPy payload"
     }
 
+    # Python's release-lock tree identity uses Unicode ordinal path order.
+    # Sort-Object uses culture-sensitive ordering on Windows and silently
+    # produces a different hash for the same verified NumPy file inventory.
+    $records = @{}
+    foreach ($entry in $entries) {
+        $records[[string]$entry.relative] = [string]$entry.record
+    }
+    [string[]]$paths = @($records.Keys)
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+
     $hasher = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
     try {
-        foreach ($entry in $entries) {
-            $hasher.AppendData($utf8NoBom.GetBytes([string]$entry.record))
+        foreach ($path in $paths) {
+            $hasher.AppendData($utf8NoBom.GetBytes($records[$path]))
         }
         $treeHash = ([BitConverter]::ToString($hasher.GetHashAndReset())).Replace("-", "").ToLowerInvariant()
     }
     finally {
         $hasher.Dispose()
+    }
+    if ($treeHash -ne [string]$platformPins.numpy_tree_sha256 -or
+        $entries.Count -ne [int]$platformPins.numpy_entry_count) {
+        throw "Qualified NumPy base tree identity differs from immutable release lock"
     }
     [pscustomobject]@{
         manifest_sha256 = $manifestSha
