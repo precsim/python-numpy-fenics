@@ -21,6 +21,9 @@ class WindowsCoreLayerTests(unittest.TestCase):
             encoding="utf-8-sig"
         )
         self.assertIn("$probeScript | & (Join-Path $outputPath 'python.exe') -B -I -", stage)
+        self.assertIn("$infoScript | & $pythonPath -B -I -S -", stage)
+        self.assertIn("$extractScript | & $pythonPath -B -I -S -", stage)
+        self.assertIn("& $pythonPath -B -I -S $verifyLayer", stage)
 
     def make_runtime_pair(self, root: Path) -> tuple[Path, Path]:
         core = root / "core"
