@@ -270,9 +270,11 @@ def is_forbidden_private_source_path(parts: tuple[str, ...]) -> bool:
         # Recognize only that exact upstream source subtree; do not permit
         # arbitrary include/private paths or private downstream sources.
         if (
-            index >= 1
+            index >= 7
+            and lowered[index - 7 : index - 2]
+            == ("build", "linux-fenics-overlay", "native-rebuild-prototype", "rebuild-candidate", "src")
+            and re.fullmatch(r"libxml2-v[0-9]+\.[0-9]+\.[0-9]+", lowered[index - 2])
             and lowered[index - 1] == "include"
-            and any(re.fullmatch(r"libxml2-v[0-9]+\.[0-9]+\.[0-9]+", segment) for segment in lowered[: index - 1])
         ):
             continue
         return True

@@ -231,7 +231,7 @@ class PreparePrereleaseTests(unittest.TestCase):
                 "fenics-runtime/private/backend.cpp",
                 "runtime/src/private/backend.cpp",
                 "runtime/libxml2-v2.15.4/src/private/backend.cpp",
-                "runtime/libxml2-v2.15.4/include/private_bridge/backend.cpp",
+                "runtime/libxml2-v2.15.4/include/private/backend.cpp",
                 "runtime/include/private/backend.cpp",
                 "runtime/python-matlab-octave-bridge/backend.cpp",
                 "runtime/private_bridge.mexw64",
