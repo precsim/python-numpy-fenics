@@ -13,6 +13,10 @@ class QualificationGateTests(unittest.TestCase):
             )
         )
 
+    def test_license_only_or_with_documentation_is_skipped(self):
+        self.assertFalse(needs_qualification(["LICENSE.txt"]))
+        self.assertFalse(needs_qualification(["LICENSE.txt", "README.md"]))
+
     def test_runtime_or_workflow_changes_require_qualification(self):
         for path in (
             "scripts/linux/build-core-runtime.sh",
