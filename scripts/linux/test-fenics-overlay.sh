@@ -881,6 +881,12 @@ for record in census.get("census", []):
             continue
         actual = resolved.get(dependency["name"])
         expected = (root / dependency["provider"]).resolve()
+        # The loader can coalesce two DT_NEEDED names onto one ELF provider
+        # (e.g. libblas.so.3 and liblapack.so.3 both backed by OpenBLAS).
+        # ldd then lists that provider under only one of those names.  Do not
+        # accept an absent name unless its *exact* bundled provider was loaded.
+        if actual is None and expected in resolved.values():
+            continue
         if actual != expected:
             raise SystemExit(
                 f"bundled dependency resolved outside overlay: {record['path']} -> "

@@ -14,7 +14,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/linux/test-fenics-overla
 
 
 class NativeProviderResolutionTests(unittest.TestCase):
-    def run_audit(self, provider: str) -> None:
+    def run_audit(self, provider: str, *, alias_name: str | None = None) -> None:
         shell = SCRIPT.read_text(encoding="utf-8")
         marker = '"$staged_python" -B -I -S - "$runtime" "$overlay_manifest" <<\'PY\'\n'
         self.assertEqual(shell.count(marker), 1)
@@ -28,7 +28,7 @@ class NativeProviderResolutionTests(unittest.TestCase):
             census_path.write_text(json.dumps({"census": [{
                 "path": "fenics-runtime/conda/bin/adig",
                 "dependencies": [{
-                    "name": "libcares.so.2",
+                    "name": alias_name or "libcares.so.2",
                     "resolution": "bundled",
                     "provider": "fenics-runtime/conda/lib/libcares.so.2.19.8",
                 }],
@@ -51,6 +51,15 @@ class NativeProviderResolutionTests(unittest.TestCase):
     def test_ldd_rejects_wrong_provider_even_with_spaces(self) -> None:
         with self.assertRaisesRegex(SystemExit, "(?s)raw ldd output.*libcares.so.2"):
             self.run_audit("/tmp/ambient provider/libcares.so.2")
+
+    def test_ldd_accepts_two_needed_names_with_one_loaded_provider(self) -> None:
+        # In a real OpenBLAS installation both libblas and liblapack can
+        # resolve to the same ELF even though ldd displays only one alias.
+        self.run_audit("{library}", alias_name="libblas.so.3")
+
+    def test_ldd_rejects_absent_alias_without_expected_provider(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "libblas.so.3 -> None"):
+            self.run_audit("/tmp/ambient provider/libcares.so.2", alias_name="libblas.so.3")
 
 
 if __name__ == "__main__":
