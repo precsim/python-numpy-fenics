@@ -223,6 +223,18 @@ class ConsumerHandoffTests(unittest.TestCase):
                 {"profile": "numpy"},
             )
 
+    def test_tar_embedded_manifest_rejects_prefixed_alias_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "runtime.tar.gz"
+            payload = json.dumps({"profile": "numpy"}).encode()
+            with tarfile.open(archive, "w:gz") as opened:
+                for name in ("runtime-manifest.json", "./runtime-manifest.json"):
+                    member = tarfile.TarInfo(name)
+                    member.size = len(payload)
+                    opened.addfile(member, io.BytesIO(payload))
+            with self.assertRaisesRegex(ConsumerStageError, "missing or duplicate"):
+                embedded_manifest(archive, "runtime-manifest.json", digest(payload))
+
     def test_tar_rejects_escaping_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
