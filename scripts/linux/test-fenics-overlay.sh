@@ -386,6 +386,31 @@ for path, key in (
 package_provenance = json.loads(package_provenance_path.read_text(encoding="utf-8"))
 if package_provenance.get("solver_used_by_packager") is not False or package_provenance.get("source_rebuilds") != []:
     raise SystemExit("overlay provenance indicates solver use or source rebuilding")
+patchelf = package_provenance.get("packaging_tools", {}).get("patchelf", {})
+expected_patchelf = {
+    "version": "0.19.3",
+    "version_output": "patchelf 0.19.3",
+    "binary_sha256": "3acab15a88e5150b394a051fa573a0bc4faf354decfa8710c901bfa1a051ed56",
+    "archive_sha256": "38861b171079e440b25ac86483284f690d0ee7921dba98b0c8fe04a9b0a11667",
+}
+if any(patchelf.get(key) != value for key, value in expected_patchelf.items()):
+    raise SystemExit(f"overlay provenance has wrong pinned patchelf identity: {patchelf!r}")
+patchelf_evidence_rel = patchelf.get("evidence")
+if not isinstance(patchelf_evidence_rel, str) or not patchelf_evidence_rel:
+    raise SystemExit("overlay provenance is missing pinned patchelf evidence path")
+patchelf_evidence_path = root / patchelf_evidence_rel
+if (
+    not patchelf_evidence_path.is_file()
+    or sha(patchelf_evidence_path) != patchelf.get("evidence_sha256")
+):
+    raise SystemExit("overlay pinned patchelf evidence hash mismatch")
+patchelf_evidence = json.loads(patchelf_evidence_path.read_text(encoding="utf-8"))
+if (
+    patchelf_evidence.get("kind") != "linux-fenics-packaging-patchelf"
+    or any(patchelf_evidence.get("tool", {}).get(key) != value for key, value in expected_patchelf.items() if key != "archive_sha256")
+    or patchelf_evidence.get("archive", {}).get("sha256") != expected_patchelf["archive_sha256"]
+):
+    raise SystemExit("overlay embedded patchelf evidence does not match package provenance")
 if candidate is None:
     if package_provenance.get("native_rebuild_candidate") is not None or source_provenance.get("native_rebuild_candidate") is not None:
         raise SystemExit("stock overlay provenance unexpectedly contains a native rebuild candidate")

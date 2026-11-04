@@ -20,6 +20,47 @@ from scripts.linux.package_fenics_overlay import (
 
 
 class CondaPrefixRelocationTests(unittest.TestCase):
+    def test_elf_load_alignment_accepts_congruent_segments(self) -> None:
+        readelf = mock.Mock(
+            stdout=(
+                "  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x1000 0x1000 R E 0x200000\n"
+                "  LOAD           0x200000 0x0000000000200000 0x0000000000200000 0x1000 0x1000 RW  0x200000\n"
+            )
+        )
+        with mock.patch.object(overlay, "run", return_value=readelf):
+            overlay.validate_elf_load_alignment(Path("/tmp/libok.so"))
+
+    def test_elf_load_alignment_rejects_offset_vaddr_mismatch(self) -> None:
+        readelf = mock.Mock(
+            stdout=(
+                "  LOAD           0x0a6000 0x0000000000400000 0x0000000000400000 "
+                "0x1000 0x1000 RW  0x200000\n"
+            )
+        )
+        with mock.patch.object(overlay, "run", return_value=readelf):
+            with self.assertRaisesRegex(SystemExit, "invalid ELF PT_LOAD address/offset alignment"):
+                overlay.validate_elf_load_alignment(Path("/tmp/libbroken.so"))
+
+    def test_relative_runpath_rewrite_uses_pinned_patchelf_and_validates_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            private = stage / "fenics-runtime" / "conda"
+            elf = private / "lib" / "libexample.so"
+            elf.parent.mkdir(parents=True)
+            elf.write_bytes(b"\x7fELFpayload")
+            with (
+                mock.patch.object(overlay, "is_elf", side_effect=lambda path: path == elf),
+                mock.patch.object(overlay, "dynamic", return_value=([], "libexample.so", [], True)),
+                mock.patch.object(overlay, "run") as run,
+                mock.patch.object(overlay, "validate_elf_load_alignment") as validate,
+            ):
+                rewritten = overlay.set_relative_runpaths(stage, private, Path("/pinned/patchelf"))
+            self.assertEqual(rewritten, [elf])
+            run.assert_called_once_with(
+                str(Path("/pinned/patchelf")), "--force-rpath", "--set-rpath", "$ORIGIN", str(elf)
+            )
+            validate.assert_called_once_with(elf)
+
     def test_noarch_cache_paths_reconstruct_cp314_prefix(self) -> None:
         link = {"noarch": {"type": "python"}}
         self.assertEqual(

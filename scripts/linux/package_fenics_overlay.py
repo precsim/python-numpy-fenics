@@ -118,6 +118,10 @@ NATIVE_HANDOFF_WHEEL_ROOTS = {
     "fenics-dolfinx": ("dolfinx", "fenics_dolfinx-0.11.0.dist-info"),
 }
 NATIVE_HANDOFF_SOURCE_COMPONENTS = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
+PATCHELF_EVIDENCE_KIND = "linux-fenics-packaging-patchelf"
+REQUIRED_PATCHELF_VERSION = "0.19.3"
+REQUIRED_PATCHELF_ARCHIVE_SHA256 = "38861b171079e440b25ac86483284f690d0ee7921dba98b0c8fe04a9b0a11667"
+REQUIRED_PATCHELF_BINARY_SHA256 = "3acab15a88e5150b394a051fa573a0bc4faf354decfa8710c901bfa1a051ed56"
 NATIVE_HANDOFF_SOURCE_MANIFEST = "locks/linux/linux-x86_64-fenics-rebuild-sources.json"
 NATIVE_HANDOFF_EXPECTED_STOCK_VIOLATING_PACKAGES = (
     "fenics-basix",
@@ -1408,6 +1412,69 @@ def dynamic(path: Path) -> tuple[list[str], str | None, list[str], bool]:
     return needed, soname_match.group(1) if soname_match else None, runpaths, "Dynamic section" in text
 
 
+def validate_elf_load_alignment(path: Path) -> None:
+    """Reject ELF PT_LOAD layouts that older glibc loaders cannot map safely."""
+    text = run("readelf", "-lW", str(path)).stdout
+    load_count = 0
+    for raw in text.splitlines():
+        fields = raw.split()
+        if not fields or fields[0] != "LOAD":
+            continue
+        if len(fields) < 8:
+            raise SystemExit(f"cannot parse ELF PT_LOAD program header after RPATH relocation: {path}: {raw!r}")
+        try:
+            offset = int(fields[1], 16)
+            virtual_address = int(fields[2], 16)
+            alignment = int(fields[-1], 16)
+        except ValueError as exc:
+            raise SystemExit(
+                f"cannot parse ELF PT_LOAD numeric fields after RPATH relocation: {path}: {raw!r}"
+            ) from exc
+        load_count += 1
+        if alignment > 1 and offset % alignment != virtual_address % alignment:
+            raise SystemExit(
+                "invalid ELF PT_LOAD address/offset alignment after RPATH relocation: "
+                f"{path}: offset={offset:#x} vaddr={virtual_address:#x} align={alignment:#x}"
+            )
+    if load_count == 0:
+        raise SystemExit(f"dynamic ELF has no PT_LOAD program headers after RPATH relocation: {path}")
+
+
+def load_patchelf_evidence(path: Path) -> tuple[dict[str, Any], Path]:
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"pinned patchelf evidence is missing or unsafe: {path}")
+    payload = read_json(path)
+    if payload.get("format_version") != 1 or payload.get("kind") != PATCHELF_EVIDENCE_KIND:
+        raise SystemExit("pinned patchelf evidence identity is invalid")
+    tool = payload.get("tool")
+    archive = payload.get("archive")
+    if not isinstance(tool, dict) or not isinstance(archive, dict):
+        raise SystemExit("pinned patchelf evidence is incomplete")
+    if (
+        tool.get("name") != "patchelf"
+        or tool.get("version") != REQUIRED_PATCHELF_VERSION
+        or tool.get("version_output") != f"patchelf {REQUIRED_PATCHELF_VERSION}"
+        or tool.get("binary_sha256") != REQUIRED_PATCHELF_BINARY_SHA256
+        or archive.get("sha256") != REQUIRED_PATCHELF_ARCHIVE_SHA256
+    ):
+        raise SystemExit("pinned patchelf evidence does not match the required packaging tool")
+    binary_sha256 = require_sha256(tool.get("binary_sha256"), "pinned patchelf binary_sha256")
+    executable = shutil.which("patchelf")
+    if executable is None:
+        raise SystemExit("required pinned patchelf executable is unavailable")
+    executable_path = Path(executable).resolve()
+    if not executable_path.is_file() or executable_path.is_symlink():
+        raise SystemExit(f"pinned patchelf executable is missing or unsafe: {executable_path}")
+    if sha256_file(executable_path) != binary_sha256:
+        raise SystemExit("active patchelf executable does not match pinned tool evidence")
+    observed_version = run(str(executable_path), "--version").stdout.strip()
+    if observed_version != tool["version_output"]:
+        raise SystemExit(
+            f"active patchelf version does not match pinned tool evidence: {observed_version!r}"
+        )
+    return payload, executable_path
+
+
 def version_needs(path: Path) -> list[str]:
     text = run("readelf", "--version-info", "-W", str(path)).stdout
     marker = "Version needs section"
@@ -1518,7 +1585,7 @@ def write_stock_abi_preflight(
     return report
 
 
-def set_relative_runpaths(stage_root: Path, private_prefix: Path) -> list[Path]:
+def set_relative_runpaths(stage_root: Path, private_prefix: Path, patchelf: Path | str = "patchelf") -> list[Path]:
     sysroot = private_prefix / "x86_64-conda-linux-gnu" / "sysroot"
     dynamic_elfs: list[Path] = []
     provider_dirs: set[Path] = {private_prefix / "lib"}
@@ -1544,7 +1611,8 @@ def set_relative_runpaths(stage_root: Path, private_prefix: Path) -> list[Path]:
         # bootstrap also removes LD_LIBRARY_PATH before imports, but glibc may
         # cache the process-start search path; force-rpath makes the overlay's
         # bundled providers authoritative regardless.
-        run("patchelf", "--force-rpath", "--set-rpath", ":".join(entries), str(path))
+        run(str(patchelf), "--force-rpath", "--set-rpath", ":".join(entries), str(path))
+        validate_elf_load_alignment(path)
     return dynamic_elfs
 
 
@@ -2090,11 +2158,16 @@ def main() -> int:
         "--native-rebuild-handoff",
         help="validated unqualified native-rebuild candidate handoff produced by rebuild_fenics_native.py",
     )
+    parser.add_argument(
+        "--patchelf-evidence",
+        required=True,
+        help="verified immutable patchelf tool evidence produced by prepare_fenics_patchelf.py",
+    )
     parser.add_argument("--version", default="0.1.0")
     parser.add_argument("--producer-revision", default=os.environ.get("PRODUCER_REVISION", os.environ.get("GITHUB_SHA", "local")))
     args = parser.parse_args()
 
-    for tool in ("patchelf", "readelf"):
+    for tool in ("readelf",):
         if shutil.which(tool) is None:
             raise SystemExit(f"required Linux packaging tool is unavailable: {tool}")
 
@@ -2105,6 +2178,8 @@ def main() -> int:
     base = Path(args.base_runtime).resolve()
     base_qualification = Path(args.base_qualification).resolve()
     output = Path(args.output).resolve()
+    patchelf_evidence_path = Path(args.patchelf_evidence).resolve()
+    patchelf_evidence, patchelf_path = load_patchelf_evidence(patchelf_evidence_path)
     native_rebuild_handoff_path = (
         Path(args.native_rebuild_handoff).resolve() if args.native_rebuild_handoff else None
     )
@@ -2297,7 +2372,7 @@ def main() -> int:
         prefix_relocation_entries.append(gcc_specs)
 
         drop_prefix_bound_bin_scripts(stage_root, private_prefix, prefix, owners, excluded_owned_paths)
-        set_relative_runpaths(stage_root, private_prefix)
+        set_relative_runpaths(stage_root, private_prefix, patchelf_path)
         relocated_dolfinx = relocate_rebuilt_dolfinx_extension_prefix(stage_root, prefix)
         if relocated_dolfinx is not None:
             prefix_relocation_entries.append(relocated_dolfinx)
@@ -2336,6 +2411,9 @@ def main() -> int:
             )
         provenance_root = stage_root / "fenics-runtime" / "provenance"
         provenance_root.mkdir(parents=True, exist_ok=True)
+        patchelf_evidence_copy = provenance_root / "patchelf-packaging-tool.json"
+        shutil.copy2(patchelf_evidence_path, patchelf_evidence_copy)
+        owners[patchelf_evidence_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
         lock_copy = provenance_root / lock_path.name
         shutil.copy2(lock_path, lock_copy)
         owners[lock_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
@@ -2412,6 +2490,16 @@ def main() -> int:
             "packages": package_summary,
             "excluded_owned_paths": excluded_owned_paths,
             "prefix_relocation": prefix_relocation,
+            "packaging_tools": {
+                "patchelf": {
+                    "version": patchelf_evidence["tool"]["version"],
+                    "version_output": patchelf_evidence["tool"]["version_output"],
+                    "binary_sha256": patchelf_evidence["tool"]["binary_sha256"],
+                    "archive_sha256": patchelf_evidence["archive"]["sha256"],
+                    "evidence": patchelf_evidence_copy.relative_to(stage_root).as_posix(),
+                    "evidence_sha256": sha256_file(patchelf_evidence_copy),
+                }
+            },
         }
         if native_rebuild_candidate is not None:
             package_provenance["native_rebuild_candidate"] = native_rebuild_candidate

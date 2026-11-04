@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "target": {
+    "platform": "linux",
+    "architecture": "x86_64"
+  },
+  "tool": {
+    "name": "patchelf",
+    "version": "0.19.3",
+    "filename": "patchelf-0.19.3-x86_64.tar.gz",
+    "url": "https://github.com/NixOS/patchelf/releases/download/0.19.3/patchelf-0.19.3-x86_64.tar.gz",
+    "sha256": "38861b171079e440b25ac86483284f690d0ee7921dba98b0c8fe04a9b0a11667",
+    "archive_member": "bin/patchelf",
+    "binary_sha256": "3acab15a88e5150b394a051fa573a0bc4faf354decfa8710c901bfa1a051ed56"
+  }
+}

@@ -40,6 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest tests.common.test_linux_fenics_python_builder
+          python3 -m unittest tests.common.test_linux_fenics_patchelf
+          python3 -m unittest tests.common.test_linux_prefix_relocation
           python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
           python3 -m unittest tests.common.test_linux_fenics_native_handoff
           python3 -m unittest tests.common.test_linux_fenics_native_candidate_audit
@@ -71,13 +73,20 @@ jobs:
           } | tee ci-artifact/manylinux-identity.txt
           docker image inspect "$MANYLINUX_IMAGE" > ci-artifact/manylinux-image-inspect.json
 
-      - name: Install host packaging tools
+      - name: Prepare pinned Linux packaging patchelf
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends patchelf
-          patchelf --version | tee ci-artifact/patchelf-version.txt
+          patchelf_root="$RUNNER_TEMP/linux-fenics-patchelf"
+          patchelf_evidence="build/linux-fenics-overlay/patchelf-packaging-tool.json"
+          rm -rf "$patchelf_root"
+          python3 scripts/linux/prepare_fenics_patchelf.py \
+            --lock locks/linux/linux-x86_64-fenics-patchelf.json \
+            --output-dir "$patchelf_root" \
+            --evidence "$patchelf_evidence"
+          echo "$patchelf_root/bin" >> "$GITHUB_PATH"
+          echo "FENICS_PATCHELF_EVIDENCE=$patchelf_evidence" >> "$GITHUB_ENV"
+          "$patchelf_root/bin/patchelf" --version | tee ci-artifact/patchelf-version.txt
 
       - name: Restore immutable qualified NumPy base from published release
         shell: bash
@@ -201,6 +210,7 @@ jobs:
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
             --abi-preflight-evidence "$preflight" \
             --output dist \
             --version 0.1.0 \
@@ -744,6 +754,7 @@ jobs:
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
             --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
             --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
             --output dist \
@@ -787,6 +798,7 @@ jobs:
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
             --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
             --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
             --output dist-repeat \
@@ -814,6 +826,8 @@ jobs:
           cp locks/core/fenics-numpy-base-release.json "$evidence/numpy-base-release-lock.json"
           cp locks/linux/linux-x86_64-fenics-package-lock.json "$evidence/"
           cp locks/linux/linux-x86_64-fenics-explicit.txt "$evidence/"
+          cp locks/linux/linux-x86_64-fenics-patchelf.json "$evidence/"
+          cp ci-artifact/patchelf-version.txt "$evidence/"
           tar -xOf "dist/$OVERLAY_ASSET" fenics-embed-manifest.json \
             > "$evidence/fenics-embed-manifest.json"
           tar -xOf "dist/$OVERLAY_ASSET" fenics-runtime/provenance/package-provenance.json \
@@ -844,6 +858,9 @@ jobs:
             "$evidence/numpy-base-release-lock.json" \
             "$evidence/linux-x86_64-fenics-package-lock.json" \
             "$evidence/linux-x86_64-fenics-explicit.txt" \
+            "$evidence/linux-x86_64-fenics-patchelf.json" \
+            "$evidence/patchelf-packaging-tool.json" \
+            "$evidence/patchelf-version.txt" \
             "$evidence/manylinux-identity.txt" \
             > "$evidence/overlay-evidence-sha256.txt"
 
@@ -857,6 +874,7 @@ jobs:
             --artifact "dist/$OVERLAY_ASSET" \
             --output "$FENICS_OVERLAY_EVIDENCE/qualification-linux-x64-fenics.json" \
             --check pinned_manylinux=pass \
+            --check pinned_patchelf=pass \
             --check glibc_floor=pass \
             --check package_lock_replay=pass \
             --check package_hash_verification=pass \
