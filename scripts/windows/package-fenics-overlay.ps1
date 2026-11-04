@@ -1,10 +1,18 @@
-# Package a relocatable FEniCS Windows runtime overlay for an embedded CPython 3.12 host.
+# Package a relocatable FEniCS Windows runtime overlay for an embedded CPython 3.14 host.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$Prefix,
     [Parameter(Mandatory = $true)]
     [string]$BaseRuntime,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseQualification,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseArchive,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseReleaseTag,
+    [Parameter(Mandatory = $true)]
+    [string]$BaseReleaseLock,
     [string]$Output = "dist",
     [string]$Version = "0.1.0"
 )
@@ -28,25 +36,91 @@ function Get-NumpyBaseIdentity {
         [Parameter(Mandatory = $true)]
         [string]$Runtime,
         [Parameter(Mandatory = $true)]
-        [string]$ExpectedRevision,
+        [string]$Qualification,
+        [Parameter(Mandatory = $true)]
+        [string]$Archive,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseTag,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseLock,
         [Parameter(Mandatory = $true)]
         [string]$ExpectedVersion
     )
 
     $runtimePath = (Resolve-Path -LiteralPath $Runtime -ErrorAction Stop).Path
+    $qualificationPath = (Resolve-Path -LiteralPath $Qualification -ErrorAction Stop).Path
+    $archivePath = (Resolve-Path -LiteralPath $Archive -ErrorAction Stop).Path
+    $releaseLockPath = (Resolve-Path -LiteralPath $ReleaseLock -ErrorAction Stop).Path
+    if ($ReleaseTag -notmatch '^runtime-v(?<version>\d+\.\d+\.\d+)-rc[1-9]\d*$' -or $Matches.version -ne $ExpectedVersion) {
+        throw "Qualified NumPy base release tag is invalid for version $ExpectedVersion`: $ReleaseTag"
+    }
+    $releaseLockRecord = Get-Content -LiteralPath $releaseLockPath -Raw | ConvertFrom-Json
+    $platformPins = $releaseLockRecord.platforms.'win-x64'
+    $ExpectedRevision = [string]$releaseLockRecord.producer_revision
+    if ($releaseLockRecord.format_version -ne 1 -or
+        $releaseLockRecord.repository -ne "precsim/python-numpy-fenics" -or
+        $releaseLockRecord.tag -ne $ReleaseTag -or
+        $null -eq $platformPins) {
+        throw "Qualified NumPy base release lock is invalid for win-x64"
+    }
+    if ($ExpectedRevision -notmatch '^[0-9a-f]{40}$') {
+        throw "Qualified NumPy base revision must be a full lowercase Git SHA: $ExpectedRevision"
+    }
     $manifestPath = Join-Path $runtimePath "runtime-manifest.json"
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
         throw "Qualified NumPy base runtime manifest is missing: $manifestPath"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.format_version -ne 1 -or
+        $manifest.artifact -ne "python-runtime-win-x64-cp314-numpy" -or
         $manifest.platform -ne "win-x64" -or
         $manifest.profile -ne "numpy" -or
-        $manifest.python_abi -ne "cp312" -or
+        $manifest.python_abi -ne "cp314" -or
         $manifest.version -ne $ExpectedVersion -or
+        $manifest.python.implementation -ne "CPython" -or
+        $manifest.python.version -ne "3.14.10" -or
+        $manifest.tcl_tk.version -ne "8.6.18" -or
+        $manifest.tcl_tk.ownership -ne "producer" -or
+        $manifest.numpy.version -ne "2.5.2" -or
+        -not $manifest.base_core -or
         $manifest.producer.repository -ne "precsim/python-numpy-fenics" -or
         $manifest.producer.revision -ne $ExpectedRevision) {
         throw "FEniCS overlay NumPy base runtime identity is invalid"
+    }
+
+    $qualificationRecord = Get-Content -LiteralPath $qualificationPath -Raw | ConvertFrom-Json
+    $archiveSha = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $qualificationSha = (Get-FileHash -LiteralPath $qualificationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $manifestSha = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $releaseLockSha = (Get-FileHash -LiteralPath $releaseLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($archiveSha -ne [string]$platformPins.archive_sha256 -or
+        $qualificationSha -ne [string]$platformPins.qualification_sha256 -or
+        $manifestSha -ne [string]$platformPins.manifest_sha256) {
+        throw "Qualified NumPy base files do not match the immutable release lock"
+    }
+    $requiredPassChecks = @(
+        "inherited_core_identity",
+        "pinned_numpy_wheel",
+        "openblas",
+        "blas_lapack_functional",
+        "pe_native_closure",
+        "relocation"
+    )
+    if ($qualificationRecord.format_version -ne 1 -or
+        $qualificationRecord.producer_repository -ne "precsim/python-numpy-fenics" -or
+        $qualificationRecord.producer_revision -ne $ExpectedRevision -or
+        $qualificationRecord.platform -ne "win-x64" -or
+        $qualificationRecord.profile -ne "numpy" -or
+        $qualificationRecord.artifact -ne [IO.Path]::GetFileName($archivePath) -or
+        ([string]$qualificationRecord.artifact_sha256).ToLowerInvariant() -ne $archiveSha -or
+        $qualificationRecord.checks.private_consumer_checkout -ne "not-applicable") {
+        throw "Qualified NumPy base qualification evidence is invalid"
+    }
+    foreach ($check in $requiredPassChecks) {
+        $property = $qualificationRecord.checks.PSObject.Properties[$check]
+        if ($null -eq $property -or [string]$property.Value -ne "pass") {
+            throw "Qualified NumPy base qualification check is not pass: $check"
+        }
     }
 
     $entries = @()
@@ -77,6 +151,14 @@ function Get-NumpyBaseIdentity {
             if ($sha -notmatch '^[0-9a-f]{64}$') {
                 throw "Qualified NumPy base manifest has invalid SHA-256 for $relative"
             }
+            $runtimeFile = Join-Path $runtimePath ($normalized -replace '/', '\')
+            if (-not (Test-Path -LiteralPath $runtimeFile -PathType Leaf)) {
+                throw "Qualified NumPy base runtime is missing manifest file: $normalized"
+            }
+            $runtimeSha = (Get-FileHash -LiteralPath $runtimeFile -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($runtimeSha -ne $sha) {
+                throw "Qualified NumPy base runtime file hash differs from manifest: $normalized"
+            }
             $entries += [pscustomobject]@{ relative = $relative; record = "F`0$relative`0$sha`n" }
         } elseif ($kind -eq "symlink") {
             $targetProperty = $entry.PSObject.Properties["target"]
@@ -105,9 +187,15 @@ function Get-NumpyBaseIdentity {
         $hasher.Dispose()
     }
     [pscustomobject]@{
-        manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        manifest_sha256 = $manifestSha
         tree_sha256 = $treeHash
         entry_count = $entries.Count
+        tcl_tk = $manifest.tcl_tk
+        release_tag = $ReleaseTag
+        producer_revision = $ExpectedRevision
+        release_lock_sha256 = $releaseLockSha
+        archive_sha256 = $archiveSha
+        qualification_sha256 = $qualificationSha
     }
 }
 
@@ -131,7 +219,7 @@ $producerRevision = if ($env:PRODUCER_REVISION) {
 } else {
     "local"
 }
-$baseIdentity = Get-NumpyBaseIdentity -Runtime $BaseRuntime -ExpectedRevision $producerRevision -ExpectedVersion $Version
+$baseIdentity = Get-NumpyBaseIdentity -Runtime $BaseRuntime -Qualification $BaseQualification -Archive $BaseArchive -ReleaseTag $BaseReleaseTag -ReleaseLock $BaseReleaseLock -ExpectedVersion $Version
 
 $records = @(
     Get-ChildItem -LiteralPath $condaMeta -Filter "*.json" -File |
@@ -157,6 +245,7 @@ foreach ($record in $records) {
 
 foreach ($required in @(
     "python",
+    "python_abi",
     "numpy",
     "fenics-dolfinx",
     "fenics-libdolfinx",
@@ -182,8 +271,11 @@ foreach ($forbidden in @("fenics-jit-llvm-mingw", "fenics-jit-tinycc", "vs2022_w
         throw "FEniCS embedded runtime unexpectedly contains forbidden package: $forbidden"
     }
 }
-if ($recordByName["python"].version -ne "3.12.10") {
-    throw "FEniCS embedded runtime requires CPython 3.12.10, got $($recordByName["python"].version)"
+if ($recordByName["python"].version -ne "3.14.10") {
+    throw "FEniCS embedded runtime requires CPython 3.14.10, got $($recordByName["python"].version)"
+}
+if ($recordByName["python_abi"].version -ne "3.14" -or $recordByName["python_abi"].build -notmatch '(^|_)cp314($|_)') {
+    throw "FEniCS embedded runtime requires the cp314 Python ABI package"
 }
 if ($recordByName["numpy"].version -ne "2.5.2") {
     throw "FEniCS embedded runtime is pinned to NumPy 2.5.2, got $($recordByName["numpy"].version)"
@@ -224,8 +316,8 @@ finally {
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }
 $probe = ($probeText | Select-Object -Last 1) | ConvertFrom-Json
-if ($probe.implementation -ne "CPython" -or $probe.pointer_bits -ne 64 -or $probe.python -ne "3.12.10") {
-    throw "FEniCS prefix does not provide 64-bit CPython 3.12.10: $($probeText -join [Environment]::NewLine)"
+if ($probe.implementation -ne "CPython" -or $probe.pointer_bits -ne 64 -or $probe.python -ne "3.14.10") {
+    throw "FEniCS prefix does not provide 64-bit CPython 3.14.10: $($probeText -join [Environment]::NewLine)"
 }
 if ($probe.numpy -ne "2.5.2") {
     throw "Imported NumPy version differs from package pin: $($probe.numpy)"
@@ -255,7 +347,7 @@ $allowedPrefixes = @(
 $owners = @{}
 try {
     foreach ($record in $records) {
-        if ($record.name -in @("python", "numpy")) {
+        if ($record.name -in @("python", "numpy", "tcl", "tk")) {
             continue
         }
         foreach ($rawRelative in @($record.files)) {
@@ -345,7 +437,9 @@ try {
             Where-Object {
                 $_.path -match '^(?i)Lib/site-packages/(numpy/|numpy\.libs/|numpy-[^/]+\.dist-info/)' -or
                 $_.owners -contains "python" -or
-                $_.owners -contains "numpy"
+                $_.owners -contains "numpy" -or
+                $_.owners -contains "tcl" -or
+                $_.owners -contains "tk"
             }
     )
     if ($forbiddenPayload.Count -ne 0) {
@@ -354,10 +448,10 @@ try {
 
     $manifest = [ordered]@{
         format_version = 1
-        artifact = "fenics-embed-runtime-win-x64-cp312"
+        artifact = "fenics-embed-runtime-win-x64-cp314"
         version = $Version
         platform = "win-x64"
-        python_abi = "cp312"
+        python_abi = "cp314"
         profile = "fenics"
         producer = [ordered]@{
             repository = "precsim/python-numpy-fenics"
@@ -366,8 +460,14 @@ try {
         python = [ordered]@{
             version = $probe.python
         }
+        tcl_tk = $baseIdentity.tcl_tk
         numpy = [ordered]@{
             version = $probe.numpy
+            base_release_tag = $baseIdentity.release_tag
+            base_producer_revision = $baseIdentity.producer_revision
+            base_release_lock_sha256 = $baseIdentity.release_lock_sha256
+            base_archive_sha256 = $baseIdentity.archive_sha256
+            base_qualification_sha256 = $baseIdentity.qualification_sha256
             base_manifest_sha256 = $baseIdentity.manifest_sha256
             base_tree_sha256 = $baseIdentity.tree_sha256
             base_entry_count = $baseIdentity.entry_count
@@ -376,6 +476,7 @@ try {
             base_profile = "numpy"
             producer_python_included = $false
             producer_numpy_included = $false
+            producer_tcl_tk_included = $false
         }
         dolfinx = [ordered]@{ version = $probe.dolfinx }
         petsc4py = [ordered]@{ version = $probe.petsc4py }
@@ -399,7 +500,7 @@ try {
     $manifestPath = Join-Path $stageRoot "fenics-embed-manifest.json"
     Write-Utf8NoBom -Path $manifestPath -Text (($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
 
-    $assetName = "fenics-embed-runtime-v$Version-win-x64-cp312.zip"
+    $assetName = "fenics-embed-runtime-v$Version-win-x64-cp314.zip"
     $zipPath = Join-Path $outputPath $assetName
     Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $stageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal

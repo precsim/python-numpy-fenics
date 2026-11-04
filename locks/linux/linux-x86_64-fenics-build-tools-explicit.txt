@@ -1,4 +1,4 @@
-# Build-only Linux x86_64 C++20 toolchain transaction; never merge into the 128-record FEniCS runtime lock.
+# Build-only Linux x86_64 C++20 toolchain transaction; never merge into the 124-record FEniCS runtime lock.
 # Roots: gcc_linux-64=14.4.0 gxx_linux-64=14.4.0 sysroot_linux-64=2.17 cmake=4.4.2 ninja=1.13.2 pkg-config=0.29.2 make=4.4.1
 # Derived from the preserved /tmp/worker10-build-env conda-meta dependency closure and verified cached archive SHA-256 bytes.
 # Replay with dependency solving disabled using the exact URL+SHA256 records below.

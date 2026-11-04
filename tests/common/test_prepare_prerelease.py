@@ -148,10 +148,7 @@ class PreparePrereleaseTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # The deferred Linux FEniCS packager still targets its existing cp312
-            # lock. Its tree identity is prefix-independent, so compare that
-            # historical base tree with the active cp314 manifest normalization.
-            site = root / "lib" / "python3.12" / "site-packages"
+            site = root / "lib" / "python3.14" / "site-packages"
             payloads = {
                 "numpy/__init__.py": b"numpy\n",
                 "numpy.libs/libopenblas.so": b"openblas\n",

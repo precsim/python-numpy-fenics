@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import ctypes
 import os
 from pathlib import Path
@@ -19,16 +18,18 @@ _GCC_SPECS_PREFIX_TOKEN = "@FENICS_PRIVATE_PREFIX@"
 
 def _runtime_root() -> Path:
     here = Path(__file__).resolve()
-    # <runtime>/lib/python3.12/site-packages/fenics_embed_runtime.py
+    # <runtime>/lib/python3.14/site-packages/fenics_embed_runtime.py
     if len(here.parents) < 4 or here.parents[2].name != "lib":
         raise RuntimeError(f"cannot derive embedded runtime root from bootstrap location: {here}")
     root = here.parents[3]
-    if not (root / "bin" / "python3.12").exists():
+    if not (root / "bin" / "python3.14").exists():
         raise RuntimeError(f"derived runtime root has no CPython executable: {root}")
     return root.resolve()
 
 
 def _wrapper_root(runtime_root: Path) -> Path:
+    import hashlib
+
     candidates: list[Path] = []
     for raw in (os.environ.get("RUNNER_TEMP"), tempfile.gettempdir(), "/tmp"):
         if not raw:
@@ -76,10 +77,13 @@ def _mapped_soname_paths(soname: str) -> set[Path]:
         raise RuntimeError("Linux FEniCS activation requires /proc/self/maps for provider isolation")
     result: set[Path] = set()
     for line in maps.read_text(errors="replace").splitlines():
-        fields = line.split()
-        if not fields or not fields[-1].startswith("/"):
+        # /proc/self/maps has five fixed columns followed by an optional
+        # pathname. The relocated runtime is intentionally tested in a path
+        # containing spaces; unrestricted split() truncates that pathname.
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6 or not fields[5].startswith("/"):
             continue
-        path = Path(fields[-1])
+        path = Path(fields[5])
         if path.name != soname and not path.name.startswith(soname + "."):
             continue
         try:
@@ -112,7 +116,47 @@ def _activate_toolchain_runtime(private_prefix: Path) -> None:
             )
 
 
+def _activate_openssl_runtime(private_prefix: Path) -> None:
+    # Python's _hashlib loads the public base libcrypto.so.3 on first import.
+    # FEniCS's locked libssl requires newer OPENSSL_3.6.0 symbols from the
+    # matching private libcrypto. Bind that pair before importing hashlib or
+    # anything else that could load the public SONAME into this process.
+    openssl_conf = (private_prefix / "ssl" / "openssl.cnf").resolve()
+    if not openssl_conf.is_file():
+        raise RuntimeError(f"private OpenSSL configuration is missing: {openssl_conf}")
+    openssl_modules = (private_prefix / "lib" / "ossl-modules").resolve()
+    providers = [
+        (soname, (private_prefix / "lib" / soname).resolve())
+        for soname in ("libcrypto.so.3", "libssl.so.3")
+    ]
+    for soname, provider in providers:
+        if not provider.is_file():
+            raise RuntimeError(f"private OpenSSL provider is missing: {provider}")
+        mapped = _mapped_soname_paths(soname)
+        competing = mapped - {provider}
+        if competing:
+            raise RuntimeError(
+                f"competing {soname} provider was loaded before FEniCS activation: {sorted(map(str, competing))}"
+            )
+
+    os.environ["OPENSSL_CONF"] = str(openssl_conf)
+    if openssl_modules.is_dir():
+        os.environ["OPENSSL_MODULES"] = str(openssl_modules)
+    else:
+        os.environ.pop("OPENSSL_MODULES", None)
+
+    for soname, provider in providers:
+        ctypes.CDLL(str(provider), mode=os.RTLD_NOW | os.RTLD_GLOBAL)
+        mapped = _mapped_soname_paths(soname)
+        if mapped != {provider}:
+            raise RuntimeError(
+                f"private {soname} provider did not become authoritative: {sorted(map(str, mapped))}"
+            )
+
+
 def _write_jit_wrapper(runtime_root: Path) -> Path:
+    import subprocess
+
     global _JIT_WRAPPER
     if _JIT_WRAPPER is not None and _JIT_WRAPPER.exists():
         return _JIT_WRAPPER
@@ -120,7 +164,7 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
     private_prefix = runtime_root / "fenics-runtime" / "conda"
     compiler = _private_compiler(private_prefix)
     sysroot = private_prefix / "x86_64-conda-linux-gnu" / "sysroot"
-    python_include = runtime_root / "include" / "python3.12"
+    python_include = runtime_root / "include" / "python3.14"
     private_include = private_prefix / "include"
     for required, label in (
         (sysroot, "bundled glibc-2.17 sysroot"),
@@ -132,6 +176,21 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
 
     wrapper_root = _wrapper_root(runtime_root)
     wrapper_root.mkdir(parents=True, exist_ok=True)
+    # The conda GCC driver loads conda.specs implicitly during linking. Its
+    # retained relocation token would otherwise enter every fresh JIT ELF's
+    # DT_RPATH. Override it with this same compiler's built-in default specs,
+    # as the qualified native-source builder does for its offline links.
+    default_specs_text = subprocess.check_output(
+        [str(compiler), "-dumpspecs"], text=True
+    )
+    if (
+        "*link_command:" not in default_specs_text
+        or _GCC_SPECS_PREFIX_TOKEN in default_specs_text
+        or str(private_prefix) in default_specs_text
+    ):
+        raise RuntimeError("bundled GCC default specs are not safe for relocatable FFCx JIT")
+    default_specs = wrapper_root / "fenics-gcc-default.specs"
+    default_specs.write_text(default_specs_text, encoding="utf-8")
     wrapper = wrapper_root / "fenics-gcc"
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -140,8 +199,10 @@ private_prefix={shlex.quote(str(private_prefix))}
 sysroot={shlex.quote(str(sysroot))}
 python_include={shlex.quote(str(python_include))}
 private_include={shlex.quote(str(private_include))}
+default_specs={shlex.quote(str(default_specs))}
 
 args=(
+  "-specs=$default_specs"
   "--sysroot=$sysroot"
   "-B$private_prefix/libexec/gcc/x86_64-conda-linux-gnu/16.2.0/"
   "-B$private_prefix/lib/gcc/x86_64-conda-linux-gnu/16.2.0/"
@@ -191,9 +252,10 @@ def activate() -> Path:
     global _ACTIVATED_ROOT
     if not sys.platform.startswith("linux"):
         raise RuntimeError("fenics_embed_runtime Linux overlay requires Linux")
-    if sys.version_info[:2] != (3, 12):
+    if sys.version_info[:3] != (3, 14, 10):
         raise RuntimeError(
-            f"FEnICS embedded runtime requires CPython 3.12, got {sys.version_info.major}.{sys.version_info.minor}"
+            "FEnICS embedded runtime requires CPython 3.14.10, "
+            f"got {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
 
     root = _runtime_root()
@@ -205,8 +267,8 @@ def activate() -> Path:
         return root
 
     private_prefix = root / "fenics-runtime" / "conda"
-    private_site = private_prefix / "lib" / "python3.12" / "site-packages"
-    public_site = root / "lib" / "python3.12" / "site-packages"
+    private_site = private_prefix / "lib" / "python3.14" / "site-packages"
+    public_site = root / "lib" / "python3.14" / "site-packages"
     gcc_specs_template = (
         private_prefix / "lib" / "gcc" / "x86_64-conda-linux-gnu" / "16.2.0" / "conda.specs"
     )
@@ -230,6 +292,7 @@ def activate() -> Path:
     ]
     sys.path[:0] = authoritative_sites
 
+    _activate_openssl_runtime(private_prefix)
     _activate_toolchain_runtime(private_prefix)
     wrapper = _write_jit_wrapper(root)
     private_bin = private_prefix / "bin"

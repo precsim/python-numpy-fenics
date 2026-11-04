@@ -13,7 +13,9 @@ concurrency:
 env:
   MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
   MANYLINUX_DIGEST: sha256:296069bc05d85275248f168f6e3b34ba8aa06181b67e40cd7447c64d56d3a851
-  OVERLAY_ASSET: fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz
+  NUMPY_BASE_TAG: runtime-v0.1.0-rc1
+  NUMPY_BASE_ARCHIVE: dist/python-runtime-v0.1.0-linux-x64-cp314-numpy.tar.gz
+  OVERLAY_ASSET: fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz
 
 jobs:
   qualify-overlay:
@@ -38,10 +40,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest tests.common.test_linux_fenics_python_builder
+          python3 -m unittest tests.common.test_linux_fenics_patchelf
+          python3 -m unittest tests.common.test_linux_prefix_relocation
+          python3 -m unittest tests.common.test_linux_fenics_runtime_activation
           python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
           python3 -m unittest tests.common.test_linux_fenics_native_handoff
+          python3 -m unittest tests.common.test_linux_fenics_native_candidate_audit
           python3 -m unittest discover -s tests -p 'test_linux_fenics_native_rebuild.py'
           python3 -m unittest discover -s tests/common -p 'test_linux_fenics_icu_edge.py'
+
+      - name: Enforce cp314 FEniCS native package identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/linux/check_fenics_cp314_lock.py \
+            --lock locks/linux/linux-x86_64-fenics-package-lock.json
 
       - name: Pull and verify pinned manylinux2014 image
         shell: bash
@@ -61,276 +74,72 @@ jobs:
           } | tee ci-artifact/manylinux-identity.txt
           docker image inspect "$MANYLINUX_IMAGE" > ci-artifact/manylinux-image-inspect.json
 
-      - name: Install host packaging and headless-test tools
+      - name: Prepare pinned Linux packaging patchelf
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends patchelf xvfb
-          patchelf --version | tee ci-artifact/patchelf-version.txt
-          dpkg-query -W -f='headless_x_package=${Package} version=${Version}\n' xvfb \
-            | tee ci-artifact/xvfb-package.txt
+          patchelf_root="$RUNNER_TEMP/linux-fenics-patchelf"
+          patchelf_evidence="build/linux-fenics-overlay/patchelf-packaging-tool.json"
+          rm -rf "$patchelf_root"
+          python3 scripts/linux/prepare_fenics_patchelf.py \
+            --lock locks/linux/linux-x86_64-fenics-patchelf.json \
+            --output-dir "$patchelf_root" \
+            --evidence "$patchelf_evidence"
+          echo "$patchelf_root/bin" >> "$GITHUB_PATH"
+          echo "FENICS_PATCHELF_EVIDENCE=$patchelf_evidence" >> "$GITHUB_ENV"
+          "$patchelf_root/bin/patchelf" --version | tee ci-artifact/patchelf-version.txt
 
-      - name: Fetch and verify exact core runtime source inputs
+      - name: Restore immutable qualified NumPy base from published release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          input_dir="$RUNNER_TEMP/linux-glibc217-inputs"
-          mkdir -p "$input_dir"
-
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/Python-3.12.10.tar.xz" \
-            https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/openssl-3.5.9.tar.gz" \
-            https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libxcrypt-4.5.2.tar.xz" \
-            https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/bzip2-devel-1.0.6-13.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-devel-1.0.6-13.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/bzip2-libs-1.0.6-13.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/bzip2-libs-1.0.6-13.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/gdbm-devel-1.10-8.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/gdbm-devel-1.10-8.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/gdbm-1.10-8.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/gdbm-1.10-8.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libffi-devel-3.0.13-19.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/libffi-devel-3.0.13-19.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libffi-3.0.13-19.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/libffi-3.0.13-19.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/libuuid-2.23.2-65.el7_9.1.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/libuuid-2.23.2-65.el7_9.1.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/ncurses-5.9-14.20130511.el7_4.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/ncurses-5.9-14.20130511.el7_4.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/readline-devel-6.2-11.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/readline-devel-6.2-11.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/readline-6.2-11.el7.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/os/x86_64/Packages/readline-6.2-11.el7.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/xz-devel-5.2.2-2.el7_9.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/xz-devel-5.2.2-2.el7_9.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/xz-libs-5.2.2-2.el7_9.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/xz-libs-5.2.2-2.el7_9.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/zlib-1.2.7-21.el7_9.x86_64.rpm" \
-            https://vault.centos.org/7.9.2009/updates/x86_64/Packages/zlib-1.2.7-21.el7_9.x86_64.rpm
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/tcl8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tcl8.6.12-src.tar.gz
-          curl --fail --location --retry 3 --retry-all-errors --output "$input_dir/tk8.6.12-src.tar.gz" \
-            https://prdownloads.sourceforge.net/tcl/tk8.6.12-src.tar.gz
-
-          (
-            cd "$input_dir"
-            cat <<'EOF' | sha256sum -c -
-          07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea  Python-3.12.10.tar.xz
-          603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz
-          71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071  libxcrypt-4.5.2.tar.xz
-          28e0eef4dfa7e5a79bd4e46a5174091c87027a2b2e33e1e9e19958bcc1ac6700  bzip2-devel-1.0.6-13.el7.x86_64.rpm
-          1fd32866a2a82f5abc19142b59dce8fd961bc1d32e3bedfa0de7a950066fdaa5  bzip2-libs-1.0.6-13.el7.x86_64.rpm
-          fc02a803f89c0d68de96bcc7a46d7cdf8768e62577b27aed9c531e6fb2818c30  gdbm-devel-1.10-8.el7.x86_64.rpm
-          65f28fdefa291bfe53e9c8646ce0f7510f312a4fee232af36e3d4fe678b60591  gdbm-1.10-8.el7.x86_64.rpm
-          a31ba33f74252929d396e4d8557fe1c40be95d777aad0660771b14f1187b3b2e  libffi-devel-3.0.13-19.el7.x86_64.rpm
-          670463ed744b7243cfe32f0c4aa6676657a6078a6e2009a51fdb7b907b98ef71  libffi-3.0.13-19.el7.x86_64.rpm
-          edc0594488f23ae7a46857065d3cd4d74e61a711b96dd5b99713419b033816a4  libuuid-devel-2.23.2-65.el7_9.1.x86_64.rpm
-          f530a65c0efca53f618f63e02801129283b12266fbf21ac221e35617a45b0d4b  libuuid-2.23.2-65.el7_9.1.x86_64.rpm
-          1c93fc77242cf1129f1aa44a8e31fa118511681776d17f0ffb2c3e84bb811a6d  ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm
-          59773dff8c5aa8f084fd2edc88b5dc34f574f254ec98280fc2b0adafe07f85a2  ncurses-5.9-14.20130511.el7_4.x86_64.rpm
-          dd4f93b315f8a2facdd3508ac5b7fe070d663d4ebf70cdfa2781ffb6abd25160  readline-devel-6.2-11.el7.x86_64.rpm
-          d9e52b61beb1ac9c3006604d9ebd4f930f667b64478a61fd78de7ed74922f52e  readline-6.2-11.el7.x86_64.rpm
-          8c62263350421e7c3081b4a531f8e15ef5bfb5e410a34687ca4a799ff23362ef  xz-devel-5.2.2-2.el7_9.x86_64.rpm
-          4b698de5fd7e0a64306106f3018e9d00dedc1f7a46d354339f012c97d004bd0c  xz-libs-5.2.2-2.el7_9.x86_64.rpm
-          2bee86d12902723756eafa82ba6cc322136c4a67a78e0104ac988e14eb7fb5a1  zlib-1.2.7-21.el7_9.x86_64.rpm
-          26c995dd0f167e48b11961d891ee555f680c175f7173ff8cb829f4ebcde4c1a6  tcl8.6.12-src.tar.gz
-          12395c1f3fcb6bed2938689f797ea3cdf41ed5cb6c4766eec8ac949560310630  tk8.6.12-src.tar.gz
-          EOF
-          ) | tee ci-artifact/core-source-inputs.sha256
-
-      - name: Build controlled core runtime in pinned glibc 2.17 container
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm --network none \
-            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --volume "$RUNNER_TEMP/linux-glibc217-inputs:/inputs:ro" \
-            --workdir /workspace \
-            "$MANYLINUX_IMAGE" \
-            /bin/bash -c '
-              set -euo pipefail
-              test "$(uname -m)" = x86_64
-              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              exec bash scripts/linux/build-core-runtime.sh \
-                --python-source /inputs/Python-3.12.10.tar.xz \
-                --openssl-source /inputs/openssl-3.5.9.tar.gz \
-                --libxcrypt-source /inputs/libxcrypt-4.5.2.tar.xz \
-                --dev-rpm-dir /inputs \
-                --tcl-source /inputs/tcl8.6.12-src.tar.gz \
-                --tk-source /inputs/tk8.6.12-src.tar.gz
-            ' 2>&1 | tee ci-artifact/linux-glibc217-core-build.log
-
-      - name: Start host Xvfb for inherited core qualification
-        shell: bash
-        run: |
-          set -euo pipefail
-          display=:99
-          socket=/tmp/.X11-unix/X99
-          echo "DISPLAY=$display" >> "$GITHUB_ENV"
-          nohup Xvfb "$display" -screen 0 1024x768x24 -nolisten tcp -ac \
-            >ci-artifact/xvfb.log 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/linux-fenics-xvfb.pid"
-          for _ in {1..100}; do
-            [[ -S "$socket" ]] && exit 0
-            sleep 0.1
-          done
-          cat ci-artifact/xvfb.log >&2 || true
-          exit 1
-
-      - name: Qualify inherited core runtime offline in pinned container
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -S "/tmp/.X11-unix/X${DISPLAY#:}"
-          docker run --rm --network none \
-            --env "DISPLAY=$DISPLAY" \
-            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --volume /tmp/.X11-unix:/tmp/.X11-unix:ro \
-            --workdir /workspace \
-            "$MANYLINUX_IMAGE" \
-            bash scripts/linux/test-core-runtime.sh --image "$MANYLINUX_IMAGE" \
-            2>&1 | tee ci-artifact/linux-glibc217-core-test.log
-
-      - name: Fetch and verify exact NumPy build inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          manifest=locks/linux/linux-glibc217-numpy-sources.json
-          input_root="$RUNNER_TEMP/linux-glibc217-numpy-inputs"
-          rm -rf "$input_root"
-          mkdir -p "$input_root"
-          python3 - "$manifest" "$RUNNER_TEMP/numpy-download-inputs.tsv" <<'PY'
+          python3 scripts/common/restore_qualified_numpy_base.py \
+            --tag "$NUMPY_BASE_TAG" \
+            --platform linux-x64 \
+            --output out/linux-x64/numpy \
+            --qualification-output dist/qualification-linux-x64-numpy-base.json \
+            --archive-output "$NUMPY_BASE_ARCHIVE"
+          python3 - locks/core/fenics-numpy-base-release.json \
+            out/linux-x64/numpy/runtime-manifest.json \
+            dist/qualification-linux-x64-numpy-base.json \
+            "$NUMPY_BASE_TAG" <<'PY'
           import json
+          import os
           import pathlib
-          import re
           import sys
 
-          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          output = pathlib.Path(sys.argv[2])
-          sha_re = re.compile(r"^[0-9a-fA-F]{64}$")
-          inputs = {}
-
-          def visit(node, path="$"):
-              if isinstance(node, dict):
-                  url = node.get("url")
-                  sha256 = node.get("sha256")
-                  filename = node.get("filename")
-                  if isinstance(url, str) and isinstance(sha256, str):
-                      if not isinstance(filename, str) or not filename:
-                          filename = pathlib.PurePosixPath(url.split("?", 1)[0]).name
-                      if not filename or pathlib.PurePath(filename).name != filename:
-                          raise SystemExit(f"invalid pinned input filename at {path}: {filename!r}")
-                      if not url.startswith("https://") or not sha_re.fullmatch(sha256):
-                          raise SystemExit(f"invalid pinned input at {path}: {url!r} {sha256!r}")
-                      previous = inputs.setdefault(filename, (url, sha256.lower()))
-                      if previous != (url, sha256.lower()):
-                          raise SystemExit(f"conflicting pinned inputs use filename {filename!r}")
-                  for key, value in node.items():
-                      visit(value, f"{path}.{key}")
-              elif isinstance(node, list):
-                  for index, value in enumerate(node):
-                      visit(value, f"{path}[{index}]")
-
-          visit(data)
-          if not inputs:
-              raise SystemExit("NumPy source manifest contains no pinned downloads")
-          output.write_text(
-              "".join(f"{name}\t{url}\t{sha}\n" for name, (url, sha) in sorted(inputs.items())),
-              encoding="utf-8",
-          )
+          pin_path = pathlib.Path(sys.argv[1])
+          manifest_path = pathlib.Path(sys.argv[2])
+          qualification_path = pathlib.Path(sys.argv[3])
+          expected_tag = sys.argv[4]
+          pin = json.loads(pin_path.read_text(encoding="utf-8-sig"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+          qualification = json.loads(qualification_path.read_text(encoding="utf-8-sig"))
+          if pin.get("repository") != "precsim/python-numpy-fenics" or pin.get("tag") != expected_tag:
+              raise SystemExit(f"NumPy base release pin does not match requested release: {pin_path}")
+          expected_revision = pin.get("producer_revision")
+          manifest_revision = manifest.get("producer", {}).get("revision")
+          qualification_revision = qualification.get("producer_revision")
+          if manifest_revision != expected_revision or qualification_revision != expected_revision:
+              raise SystemExit(
+                  "restored NumPy base revision mismatch: "
+                  f"manifest={manifest_revision!r} qualification={qualification_revision!r} "
+                  f"expected={expected_revision!r}"
+              )
+          if qualification.get("platform") != "linux-x64" or qualification.get("profile") != "numpy":
+              raise SystemExit("restored NumPy base qualification identity is invalid")
+          with pathlib.Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+              stream.write(f"NUMPY_BASE_REVISION={expected_revision}\n")
+          print(f"numpy_base_revision={expected_revision}")
           PY
-          while IFS=$'\t' read -r filename url expected_sha; do
-            destination="$input_root/$filename"
-            curl --fail --location --retry 3 --retry-all-errors --output "$destination" "$url"
-            actual_sha="$(sha256sum "$destination" | awk '{print $1}')"
-            test "$actual_sha" = "$expected_sha"
-            printf '%s  %s\n' "$actual_sha" "$filename"
-          done < "$RUNNER_TEMP/numpy-download-inputs.tsv" | tee ci-artifact/numpy-download-inputs.sha256
-          cp "$manifest" "$input_root/linux-glibc217-numpy-sources.json"
-          echo "NUMPY_INPUT_ROOT=$input_root" >> "$GITHUB_ENV"
-
-      - name: Build controlled NumPy runtime offline in pinned glibc 2.17 container
-        shell: bash
-        run: |
-          set -euo pipefail
-          core_before="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
-          docker run --rm --network none \
-            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --volume "$NUMPY_INPUT_ROOT:/inputs:ro" \
-            --workdir /workspace \
-            "$MANYLINUX_IMAGE" \
-            bash scripts/linux/build-numpy-runtime.sh \
-              --core-runtime /workspace/out/linux-x64/core \
-              --input-root /inputs \
-              --sources-manifest /workspace/locks/linux/linux-glibc217-numpy-sources.json \
-              --output-runtime /workspace/out/linux-x64/numpy \
-            2>&1 | tee ci-artifact/linux-glibc217-numpy-build.log
-          core_after="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
-          test "$core_after" = "$core_before"
-
-      - name: Qualify controlled NumPy runtime offline in pinned glibc 2.17 container
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm --network none \
-            --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --volume "$NUMPY_INPUT_ROOT:/inputs:ro" \
-            --workdir /workspace \
-            "$MANYLINUX_IMAGE" \
-            bash scripts/linux/test-numpy-runtime.sh \
-              --core-runtime /workspace/out/linux-x64/core \
-              --runtime /workspace/out/linux-x64/numpy \
-              --sources-manifest /workspace/locks/linux/linux-glibc217-numpy-sources.json \
-              --input-root /inputs \
-              --image "$MANYLINUX_IMAGE" \
-            2>&1 | tee ci-artifact/linux-glibc217-numpy-test.log
-          sudo chown -R "$(id -u):$(id -g)" out build 2>/dev/null || true
-
-      - name: Freeze qualified public NumPy base handoff
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/common/write_runtime_manifest.py \
-            --root out/linux-x64/numpy \
-            --platform linux-x64 \
-            --profile numpy
-          python3 scripts/common/archive_runtime.py \
-            --root out/linux-x64/numpy \
-            --output dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
-            --format tar.gz
-          sha256sum dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
-            > dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz.sha256
-          python3 scripts/common/write_qualification.py \
-            --platform linux-x64 \
-            --profile numpy \
-            --artifact dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
-            --output dist/qualification-linux-x64-numpy-base.json \
-            --check pinned_manylinux=pass \
-            --check glibc_floor=pass \
-            --check inherited_core_identity=pass \
-            --check numpy_source_build=pass \
-            --check private_openblas=pass \
-            --check blas_lapack_functional=pass \
-            --check native_closure=pass \
-            --check private_consumer_checkout=not-applicable
-
       - name: Install pinned micromamba
         uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3
         with:
           micromamba-version: '2.10.0-0'
 
-      - name: Replay and verify exact 128-record FEniCS lock without solving
+      - name: Replay and verify exact 124-record FEniCS lock without solving
         shell: bash
         run: |
           set -euo pipefail
@@ -374,12 +183,12 @@ jobs:
           import sys
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           assert data["solver_used"] is False
-          assert data["lock_record_count"] == 128
-          assert data["installed_record_count"] == 128
-          assert data["verified_package_archive_count"] == 128
+          assert data["lock_record_count"] == 124
+          assert data["installed_record_count"] == 124
+          assert data["verified_package_archive_count"] == 124
           assert data["package_hash_verification"] == "cached-package-sha256-plus-installed-record-match"
           assert data["replay_input_format"] == "@EXPLICIT-url-plus-sha256"
-          assert len(data["packages"]) == 128
+          assert len(data["packages"]) == 124
           print("exact_lock_replay=pass")
           PY
           echo "FENICS_LOCK_FILE=$lock" >> "$GITHUB_ENV"
@@ -401,6 +210,8 @@ jobs:
             --lock "$FENICS_LOCK_FILE" \
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
             --abi-preflight-evidence "$preflight" \
             --output dist \
             --version 0.1.0 \
@@ -437,7 +248,9 @@ jobs:
           assert data["stage"] == "stock-binary-closure-before-selective-rebuild"
           assert data["status"] == "fail"
           assert data["source_rebuilds_authorized"] is False
-          assert data["violation_count"] == 164
+          # The stock closure keeps its ABI failures, with ICU's two unused
+          # data-build executables now excluded from the shipped runtime.
+          assert data["violation_count"] == 158
           assert data["violating_packages"] == expected_packages
           assert re.fullmatch(r"[0-9a-f]{64}", data["selection_fingerprint_sha256"])
           print(f"stock_abi_violation_count={data['violation_count']}")
@@ -503,13 +316,13 @@ jobs:
             --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
             --workdir /workspace \
             "$MANYLINUX_IMAGE" \
-            /opt/python/cp312-cp312/bin/python \
+            /opt/python/cp314-cp314/bin/python \
               scripts/linux/prepare_fenics_python_builder.py prepare \
               --lock locks/linux/linux-x86_64-fenics-python-builder-wheels.json \
               --numpy-source-manifest locks/linux/linux-glibc217-numpy-sources.json \
               --fenics-package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
               --base-runtime out/linux-x64/numpy \
-              --base-archive dist/python-runtime-v0.1.0-linux-x64-cp312-numpy.tar.gz \
+              --base-archive "$NUMPY_BASE_ARCHIVE" \
               --base-qualification dist/qualification-linux-x64-numpy-base.json \
               --wheel-dir "$FENICS_PYTHON_BUILDER_WHEELS" \
               --output-dir "$builder" \
@@ -637,7 +450,7 @@ jobs:
             --volume "$RUNNER_TEMP:$RUNNER_TEMP" \
             --workdir /workspace \
             "$MANYLINUX_IMAGE" \
-            /opt/python/cp312-cp312/bin/python3 scripts/linux/probe_fenics_icu_edge.py probe \
+            /opt/python/cp314-cp314/bin/python3 scripts/linux/probe_fenics_icu_edge.py probe \
               --contract /workspace/locks/linux/linux-x86_64-fenics-icu-edge-probe.json \
               --input-dir "$FENICS_ICU_EDGE_INPUT_DIR" \
               --runtime-lock /workspace/locks/linux/linux-x86_64-fenics-package-lock.json \
@@ -663,7 +476,7 @@ jobs:
               "glibc": "glibc 2.17",
               "non_loopback_default_routes": [],
           }
-          assert data["runtime_lock"]["record_count"] == 128
+          assert data["runtime_lock"]["record_count"] == 124
           assert data["dt_needed_delta"]["added"] == []
           assert data["dt_needed_delta"]["removed"] and all(
               item.startswith("libpsl.so") for item in data["dt_needed_delta"]["removed"]
@@ -730,7 +543,7 @@ jobs:
             /bin/bash -c '
               set -euo pipefail
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              /workspace/out/linux-x64/numpy/bin/python3.12 \
+              PYTHONDONTWRITEBYTECODE=1 /workspace/out/linux-x64/numpy/bin/python3.14 \
                 scripts/linux/build_fenics_cxx_provider.py \
                 --runtime-prefix "$1" \
                 --runtime-prefix-evidence "$2" \
@@ -764,7 +577,7 @@ jobs:
               set -euo pipefail
               test "$(uname -m)" = x86_64
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
-              exec /opt/python/cp312-cp312/bin/python scripts/linux/rebuild_fenics_native.py \
+              exec /opt/python/cp314-cp314/bin/python scripts/linux/rebuild_fenics_native.py \
                 --source-manifest locks/linux/linux-x86_64-fenics-rebuild-sources.json \
                 --source-dir "$1" \
                 --package-lock locks/linux/linux-x86_64-fenics-package-lock.json \
@@ -798,11 +611,17 @@ jobs:
           import sys
 
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          assert data["format_version"] == 1
+          assert data["format_version"] == 2
           assert data["kind"] == "linux-fenics-native-build-candidate-handoff"
           assert data["status"] == "candidate-built-unqualified"
           assert data["source_rebuild_provenance_eligible"] is False
           assert re.fullmatch(r"[0-9a-f]{64}", data["candidate_output_binding_sha256"])
+          build_configuration = data["inputs"]["dolfinx_build_configuration"]
+          assert build_configuration["flags"] == {
+              "DOLFINX_ENABLE_ADIOS2": "OFF",
+              "DOLFINX_ENABLE_KAHIP": "OFF",
+          }
+          assert re.fullmatch(r"[0-9a-f]{64}", build_configuration["cmake_cache"]["sha256"])
           assert data["qualification"] == {
               "full_native_closure": "not-run",
               "hosted_linux_glibc217": "not-run",
@@ -812,32 +631,145 @@ jobs:
           }
           print(f"candidate_output_binding_sha256={data['candidate_output_binding_sha256']}")
           PY
-          sha256sum "$handoff" > "$scratch/evidence/native-build-handoff.sha256"
+          sha256sum "$handoff" > "$prototype/native-build-handoff.sha256"
           echo "FENICS_NATIVE_BUILD_HANDOFF=$handoff" >> "$GITHUB_ENV"
 
-      - name: Keep Linux FEniCS release gate closed pending independent candidate qualification
+      - name: Record cp314 stable-ABI package boundary
         shell: bash
         run: |
           set -euo pipefail
-          blocker="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/release-blockers.txt"
-          cat > "$blocker" <<'EOF'
-          Linux FEniCS selective native rebuild remains unqualified.
-          Required before the release path can proceed:
-          - independently audit the exact native-build-handoff candidate and bind its candidate_output_binding_sha256 to a post-rebuild native-closure report
-          - prove KaHIP/ADIOS2/ZeroMQ omission and complete ICU resolution, including the independent MPICH -> hwloc -> libxml2 branch
-          - finalize the candidate into the strict package_fenics_overlay.py native-rebuild handoff only after that closure proof passes
-          - package the finalized candidate and pass standalone glibc 2.17 ABI/relocation/fresh-FFCx-JIT/PETSc/Poisson qualification
-          - promote source-rebuild provenance/release eligibility only from those positive, artifact-bound qualification results
-          EOF
-          cat "$blocker" >&2
-          exit 1
+          prototype="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype"
+          python3 - \
+            "$FENICS_LOCKED_PREFIX" \
+            "$FENICS_NATIVE_BUILD_HANDOFF" \
+            "$FENICS_LOCK_FILE" \
+            "$prototype/cp314-stable-abi-boundary.json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          prefix = pathlib.Path(sys.argv[1])
+          handoff_path = pathlib.Path(sys.argv[2])
+          lock_path = pathlib.Path(sys.argv[3])
+          output = pathlib.Path(sys.argv[4])
+          handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+          replacement_owners = {
+              str(item["owner"])
+              for item in handoff["candidate_output_binding"]["replacements"]
+              if item.get("owner") != "fenics-private-cxx-runtime"
+          }
+          excluded = {
+              "_python_abi3_support", "libpython-static", "numpy", "pip", "python",
+              "python-gil", "python_abi", "setuptools", "wheel",
+          }
+          unresolved = []
+          for metadata_path in sorted((prefix / "conda-meta").glob("*.json")):
+              record = json.loads(metadata_path.read_text(encoding="utf-8"))
+              name = str(record.get("name", ""))
+              if not name or name in excluded or name in replacement_owners:
+                  continue
+              paths = record.get("paths_data", {}).get("paths")
+              if isinstance(paths, list) and paths:
+                  owned = [str(item.get("_path", "")) for item in paths if isinstance(item, dict)]
+              else:
+                  owned = [str(item) for item in record.get("files", [])]
+              legacy_python_paths = sorted(
+                  path
+                  for path in owned
+                  if path.startswith(("lib/python3.11/site-packages/", "lib/python3.12/site-packages/"))
+              )
+              if not legacy_python_paths:
+                  continue
+              unresolved.append({
+                  "name": name,
+                  "version": record.get("version"),
+                  "build": record.get("build"),
+                  "legacy_python_path_count": len(legacy_python_paths),
+              })
+
+          payload = {
+              "format_version": 1,
+              "target": {"python_version": "3.14.10", "python_abi": "cp314"},
+              "locked_prefix_python_abi": "cp314",
+              "runtime_lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+              "candidate_handoff_sha256": hashlib.sha256(handoff_path.read_bytes()).hexdigest(),
+              "candidate_replacement_owners": sorted(replacement_owners),
+              "unresolved_legacy_python_site_packages": unresolved,
+              "stable_abi_relocation_verified": not unresolved,
+          }
+          output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if unresolved:
+              raise SystemExit(f"cp314 replay retained legacy Python site paths: {unresolved}")
+          PY
+
+      - name: Audit and finalize exact native candidate on glibc 2.17
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/rebuild-candidate"
+          closure="$scratch/evidence/native-closure.json"
+          final_handoff="$scratch/evidence/package-handoff/native-rebuild-handoff.json"
+          rm -f "$closure"
+          rm -rf "$(dirname "$final_handoff")"
+          docker run --rm --network none \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$RUNNER_TEMP:$RUNNER_TEMP:ro" \
+            --workdir /workspace \
+            "$MANYLINUX_IMAGE" \
+            /bin/bash -c '
+              set -euo pipefail
+              test "$(uname -m)" = x86_64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.17"
+              /opt/python/cp314-cp314/bin/python scripts/linux/audit_fenics_native_candidate.py \
+                --candidate-build-handoff "$1" \
+                --output "$2" \
+                --readelf "$3"
+              /opt/python/cp314-cp314/bin/python scripts/linux/finalize_fenics_native.py \
+                --candidate-build-handoff "$1" \
+                --native-closure-report "$2" \
+                --output "$4"
+            ' -- \
+              "/workspace/$FENICS_NATIVE_BUILD_HANDOFF" \
+              "/workspace/$closure" \
+              "$FENICS_BUILD_TOOL_PREFIX/bin/x86_64-conda-linux-gnu-readelf" \
+              "/workspace/$final_handoff" \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/native-candidate-audit.log"
+          test -f "$closure"
+          test -f "$final_handoff"
+          sha256sum "$closure" "$final_handoff" \
+            > "$FENICS_OVERLAY_EVIDENCE/native-rebuild-prototype/native-candidate-finalization.sha256"
+          echo "FENICS_NATIVE_CLOSURE_REPORT=$closure" >> "$GITHUB_ENV"
+          echo "FENICS_NATIVE_REBUILD_HANDOFF=$final_handoff" >> "$GITHUB_ENV"
+
+      - name: Package independently qualified native candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/linux/package_fenics_overlay.py \
+            --prefix "$FENICS_LOCKED_PREFIX" \
+            --prefix-evidence "$FENICS_OVERLAY_EVIDENCE/package-lock-verification.json" \
+            --package-cache "$FENICS_PACKAGE_CACHE" \
+            --lock "$FENICS_LOCK_FILE" \
+            --base-runtime out/linux-x64/numpy \
+            --base-qualification dist/qualification-linux-x64-numpy-base.json \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
+            --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
+            --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
+            --output dist \
+            --version 0.1.0 \
+            --producer-revision "$PRODUCER_REVISION" \
+            | tee "$FENICS_OVERLAY_EVIDENCE/package-qualified-candidate.log"
+          test -f "dist/$OVERLAY_ASSET"
 
       - name: Qualify overlay offline inside pinned glibc 2.17 container
         shell: bash
         run: |
           set -euo pipefail
           docker run --rm --network none \
-            --env PATH=/opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin \
+            --env PATH=/opt/python/cp314-cp314/bin:/usr/local/bin:/usr/bin:/bin \
             --env "OVERLAY_ASSET=$OVERLAY_ASSET" \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
@@ -866,6 +798,10 @@ jobs:
             --lock "$FENICS_LOCK_FILE" \
             --base-runtime out/linux-x64/numpy \
             --base-qualification dist/qualification-linux-x64-numpy-base.json \
+            --base-producer-revision "$NUMPY_BASE_REVISION" \
+            --patchelf-evidence "$FENICS_PATCHELF_EVIDENCE" \
+            --abi-preflight-evidence "$FENICS_STOCK_ABI_PREFLIGHT" \
+            --native-rebuild-handoff "$FENICS_NATIVE_REBUILD_HANDOFF" \
             --output dist-repeat \
             --version 0.1.0 \
             --producer-revision "$PRODUCER_REVISION" \
@@ -888,8 +824,11 @@ jobs:
           cp out/linux-x64/numpy/build-provenance-linux.json "$evidence/numpy-base-core-provenance.json"
           cp out/linux-x64/numpy/build-provenance-linux-numpy.json "$evidence/numpy-base-build-provenance.json"
           cp out/linux-x64/numpy/numpy-payload-manifest-linux.json "$evidence/numpy-base-payload-manifest.json"
+          cp locks/core/fenics-numpy-base-release.json "$evidence/numpy-base-release-lock.json"
           cp locks/linux/linux-x86_64-fenics-package-lock.json "$evidence/"
           cp locks/linux/linux-x86_64-fenics-explicit.txt "$evidence/"
+          cp locks/linux/linux-x86_64-fenics-patchelf.json "$evidence/"
+          cp ci-artifact/patchelf-version.txt "$evidence/"
           tar -xOf "dist/$OVERLAY_ASSET" fenics-embed-manifest.json \
             > "$evidence/fenics-embed-manifest.json"
           tar -xOf "dist/$OVERLAY_ASSET" fenics-runtime/provenance/package-provenance.json \
@@ -908,6 +847,8 @@ jobs:
             "$evidence/source-provenance.json" \
             "$evidence/native-dependency-census.json" \
             "$evidence/stock-native-abi-preflight.json" \
+            "$FENICS_NATIVE_CLOSURE_REPORT" \
+            "$FENICS_NATIVE_REBUILD_HANDOFF" \
             "$evidence/license-inventory.json" \
             "$evidence/package-lock-verification.json" \
             "$evidence/numpy-base-qualification.json" \
@@ -915,8 +856,12 @@ jobs:
             "$evidence/numpy-base-core-provenance.json" \
             "$evidence/numpy-base-build-provenance.json" \
             "$evidence/numpy-base-payload-manifest.json" \
+            "$evidence/numpy-base-release-lock.json" \
             "$evidence/linux-x86_64-fenics-package-lock.json" \
             "$evidence/linux-x86_64-fenics-explicit.txt" \
+            "$evidence/linux-x86_64-fenics-patchelf.json" \
+            "$evidence/patchelf-packaging-tool.json" \
+            "$evidence/patchelf-version.txt" \
             "$evidence/manylinux-identity.txt" \
             > "$evidence/overlay-evidence-sha256.txt"
 
@@ -930,6 +875,7 @@ jobs:
             --artifact "dist/$OVERLAY_ASSET" \
             --output "$FENICS_OVERLAY_EVIDENCE/qualification-linux-x64-fenics.json" \
             --check pinned_manylinux=pass \
+            --check pinned_patchelf=pass \
             --check glibc_floor=pass \
             --check package_lock_replay=pass \
             --check package_hash_verification=pass \
@@ -963,11 +909,11 @@ jobs:
       - name: Upload qualified Linux FEniCS overlay
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: fenics-embed-runtime-linux-x64-cp312
+          name: fenics-embed-runtime-linux-x64-cp314
           path: |
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz.json
-            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp312.tar.gz.sha256
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz.json
+            dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz.sha256
             build/linux-fenics-overlay/
           if-no-files-found: error
           retention-days: 30
@@ -995,12 +941,3 @@ jobs:
           path: ci-artifact/
           if-no-files-found: warn
           retention-days: 1
-
-      - name: Stop host Xvfb
-        if: always()
-        shell: bash
-        run: |
-          pid_file="$RUNNER_TEMP/linux-fenics-xvfb.pid"
-          if [[ -f "$pid_file" ]]; then
-            kill "$(cat "$pid_file")" 2>/dev/null || true
-          fi

@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 
+env:
+  NUMPY_BASE_TAG: runtime-v0.1.0-rc1
+  NUMPY_BASE_ARCHIVE: dist/python-runtime-v0.1.0-win-x64-cp314-numpy.zip
+  NUMPY_BASE_QUALIFICATION: dist/qualification-win-x64-numpy-base.json
+  NUMPY_BASE_RELEASE_LOCK: locks/core/fenics-numpy-base-release.json
+
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('windows-fenics-pr-{0}', github.event.pull_request.number) || 'windows-fenics-main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -18,18 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install reference CPython 3.12.10
+      - name: Install workflow Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12.10"
+          python-version: "3.12"
           architecture: x64
-
-      - name: Capture non-conda Python
-        shell: pwsh
-        run: |
-          $python = (Get-Command python.exe -ErrorAction Stop).Source
-          "REFERENCE_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          python -c "import platform,sys; print(sys.executable); print(platform.python_version())"
 
       - name: Install and verify pinned micromamba
         shell: pwsh
@@ -49,8 +48,9 @@ jobs:
         run: |
           python -m py_compile runtime/windows/fenics_embed_runtime.py
           python -m py_compile scripts/windows/package_lock.py
+          python -m py_compile scripts/common/restore_qualified_numpy_base.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($Path in @('scripts/windows/package-fenics-overlay.ps1','scripts/windows/test-fenics-overlay.ps1','scripts/windows/stage-runtime.ps1','scripts/windows/test-runtime.ps1')) {
+          foreach ($Path in @('scripts/windows/package-fenics-overlay.ps1','scripts/windows/test-fenics-overlay.ps1')) {
             $Tokens = $null
             $Errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
@@ -64,24 +64,26 @@ jobs:
             }
           }
 
-      - name: Fetch and verify public NumPy base wheel
+      - name: Restore qualified public NumPy base runtime
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $input = Join-Path $env:RUNNER_TEMP "numpy-wheel"
-          New-Item -ItemType Directory -Force -Path $input | Out-Null
-          & $env:REFERENCE_PYTHON -m pip download --disable-pip-version-check --no-deps --only-binary=:all: --dest $input numpy==2.5.2
-          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel download failed" }
-          $wheel = Join-Path $input "numpy-2.5.2-cp312-cp312-win_amd64.whl"
-          if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw "Pinned public NumPy wheel is missing" }
-          $sha = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($sha -ne "28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4") { throw "Pinned public NumPy wheel SHA-256 mismatch: $sha" }
-          "NUMPY_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Stage and qualify public NumPy base runtime
-        shell: pwsh
-        run: |
-          .\scripts\windows\stage-runtime.ps1 -Python $env:REFERENCE_PYTHON -RuntimeProfile numpy -NumpyWheel $env:NUMPY_WHEEL -Output .\out\win-x64\numpy
-          .\scripts\windows\test-runtime.ps1 -Runtime .\out\win-x64\numpy -RuntimeProfile numpy
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path .\build\windows-fenics-qualification | Out-Null
+          python scripts/common/restore_qualified_numpy_base.py --tag $env:NUMPY_BASE_TAG --platform win-x64 --output .\out\win-x64\numpy --qualification-output $env:NUMPY_BASE_QUALIFICATION --archive-output $env:NUMPY_BASE_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "Qualified NumPy base restore failed" }
+          Copy-Item -LiteralPath $env:NUMPY_BASE_QUALIFICATION -Destination .\build\windows-fenics-qualification\numpy-base-qualification.json
+          Copy-Item -LiteralPath .\out\win-x64\numpy\runtime-manifest.json -Destination .\build\windows-fenics-qualification\numpy-base-runtime-manifest.json
+          $releaseLock = Get-Content -LiteralPath $env:NUMPY_BASE_RELEASE_LOCK -Raw | ConvertFrom-Json
+          $archiveSha = (Get-FileHash -LiteralPath $env:NUMPY_BASE_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $releaseLockSha = (Get-FileHash -LiteralPath $env:NUMPY_BASE_RELEASE_LOCK -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "release_tag=$env:NUMPY_BASE_TAG",
+            "producer_revision=$($releaseLock.producer_revision)",
+            "archive_sha256=$archiveSha",
+            "release_lock_sha256=$releaseLockSha"
+          ) | Set-Content -LiteralPath .\build\windows-fenics-qualification\numpy-base-release.txt -Encoding utf8NoBOM
 
       - name: Replay exact locked FEniCS source prefix
         shell: pwsh
@@ -105,30 +107,32 @@ jobs:
       - name: Package embedded-runtime overlay
         shell: pwsh
         run: |
-          .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -BaseRuntime .\out\win-x64\numpy -Output .\dist -Version 0.1.0
-          $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
+          .\scripts\windows\package-fenics-overlay.ps1 -Prefix $env:FENICS_SOURCE_PREFIX -BaseRuntime .\out\win-x64\numpy -BaseQualification $env:NUMPY_BASE_QUALIFICATION -BaseArchive $env:NUMPY_BASE_ARCHIVE -BaseReleaseTag $env:NUMPY_BASE_TAG -BaseReleaseLock $env:NUMPY_BASE_RELEASE_LOCK -Output .\dist -Version 0.1.0
+          $zip = ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp314.zip"
           $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$zip.sha256" -Value "$sha  $([IO.Path]::GetFileName($zip))" -Encoding utf8NoBOM
 
       - name: Qualify exact overlay against public NumPy base runtime
         shell: pwsh
         run: |
-          $zip = Resolve-Path ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp312.zip"
-          .\scripts\windows\test-fenics-overlay.ps1 -Zip $zip -BaseRuntime .\out\win-x64\numpy
+          $zip = Resolve-Path ".\dist\fenics-embed-runtime-v0.1.0-win-x64-cp314.zip"
+          .\scripts\windows\test-fenics-overlay.ps1 -Zip $zip -BaseRuntime .\out\win-x64\numpy -BaseQualification $env:NUMPY_BASE_QUALIFICATION -BaseArchive $env:NUMPY_BASE_ARCHIVE -BaseReleaseTag $env:NUMPY_BASE_TAG -BaseReleaseLock $env:NUMPY_BASE_RELEASE_LOCK
 
       - name: Write producer qualification evidence
         shell: pwsh
-        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check package_hash_verification=pass --check dependency_solver=not-applicable --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
+        run: python scripts/common/write_qualification.py --platform win-x64 --profile fenics --artifact dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip --output dist/qualification-win-x64-fenics.json --check package_lock_replay=pass --check package_hash_verification=pass --check dependency_solver=not-applicable --check public_numpy_base=pass --check producer_python_excluded=pass --check producer_numpy_excluded=pass --check inherited_numpy_identity=pass --check relocation=pass --check isolated_cpython=pass --check fresh_ffcx_jit=pass --check serial_petsc_solve=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified overlay
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: fenics-embed-runtime-win-x64-cp312
+          name: fenics-embed-runtime-win-x64-cp314
           path: |
-            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip
-            dist/fenics-embed-runtime-v0.1.0-win-x64-cp312.zip.sha256
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip
+            dist/fenics-embed-runtime-v0.1.0-win-x64-cp314.zip.sha256
             dist/SHA256SUMS-embedded-runtime.txt
             dist/qualification-win-x64-fenics.json
+            build/windows-fenics-qualification/
+            out/win-x64/numpy/runtime-manifest.json
             locks/windows/windows-x64-fenics-explicit.txt
             locks/windows/windows-x64-fenics-package-lock.json
             fenics-package-lock-evidence.json

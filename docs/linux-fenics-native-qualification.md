@@ -5,36 +5,56 @@ releasable Linux producer overlay. Nothing described as a prototype here
 authorizes `source_rebuilds` provenance, a hosted qualification result, or a
 public prerelease.
 
-**Historical cp312 evidence:** The experiments and frozen compatibility
-contract below use the earlier CPython 3.12.10 / NumPy 2.5.2 base. Core and
-NumPy have since moved to CPython 3.14.10 / cp314 on all producer targets.
-These experiments have not been repeated or qualified against that new base.
-The retained FEniCS workflow also still uses legacy cp312 and Tcl/Tk 8.6.12
-inputs; migrating that workflow and independently qualifying its results are
-separate, deferred work. See [the migration record](cp314-core-numpy-qualification.md).
+**Current cp314 package contract (2026-11-03):** Linux now has a fresh
+124-record conda-forge x86_64 transaction anchored to CPython 3.14.10 / cp314,
+NumPy 2.5.2 and MPICH 5.0.1. The exact transaction is replayed without solving
+and is the current package identity contract for Linux FEniCS work. It retains
+a reviewed set of older `py311`/`py312` build labels for FEniCS/PETSc
+stable-ABI extensions and native/data companions. Those labels remain part of
+the immutable package identities; the producer does not relabel them as cp314.
+The workflow separately verifies that installed Python payload is staged under
+the cp314 site-packages boundary.
+
+The fresh transaction is input evidence, not a qualification result. The exact
+cp314 selective-rebuild candidate still needs an independent post-build native
+closure audit and standalone glibc-2.17 ABI, relocation, fresh-FFCx-JIT, PETSc
+and Poisson qualification before any Linux FEniCS artifact can be release
+eligible. See [the migration record](cp314-core-numpy-qualification.md) for the
+already-qualified core and NumPy base.
+
+**Historical cp312 evidence:** Earlier feasibility work used CPython 3.12.10 /
+NumPy 2.5.2 and a separate 128-record cp312 FEniCS transaction. Its stock ABI
+failures, native-rebuild experiments, closure measurements and private-provider
+proofs remain useful provenance for selecting what the cp314 path must test,
+but they are not qualification evidence for the fresh 124-record transaction.
 
 ## Frozen compatibility contract
 
-- Consumer-owned CPython 3.12 and NumPy 2.5.2 remain outside the FEniCS
+- Consumer-owned CPython 3.14.10 and NumPy 2.5.2 remain outside the FEniCS
   overlay. The FEniCS overlay layers cumulatively on that same NumPy base.
 - Linux host version needs must not exceed `GLIBC_2.17`, `GLIBCXX_3.4.19`,
   `CXXABI_1.3.7`, and `GCC_4.8.0`.
 - `GLIBC_PRIVATE` needs are accepted only for `sysroot_linux-64`-owned files
   in the bundled JIT sysroot, never for consumer-loaded ELF objects.
-- The 128-record FEniCS runtime package lock is immutable. The separate
+- The 124-record cp314 FEniCS runtime package lock is immutable. The separate
   41-record `linux-x86_64-fenics-build-tools-explicit.txt` is a **build-only**
   solver-free closure and does not modify or replace the runtime lock.
 
 ## Stock package audit and relocation
 
-The stock overlay fails the strict `GLIBCXX`/`CXXABI` audit after the proven
-unused native extras are pruned. Required symbols from stock components such
-as Basix, DOLFINx, fmt, spdlog, pugixml, ICU, KaHIP, ADIOS2 and ZeroMQ exceed
-the fixed host ceilings. This failure is **required** until the smallest
-validated replacement/omission set is implemented. The packaging workflow
-writes `stock-native-abi-preflight.json`, containing package- and file-owned
-stock violations, SHA-256 identities, maximum versions and a deterministic
-selection fingerprint, before it rejects the stock overlay.
+The concrete stock-closure counts and relocation measurements in this section
+come from the historical cp312 feasibility run. They remain diagnostic evidence,
+not proof that the fresh 124-record cp314 transaction or its candidate has passed
+the same gates. The current release path must re-establish the required results
+against the exact cp314 candidate before promotion.
+
+In the historical cp312 run, the stock overlay failed the strict
+`GLIBCXX`/`CXXABI` audit after the proven unused native extras were pruned.
+Required symbols from stock components such as Basix, DOLFINx, fmt, spdlog,
+pugixml, ICU, KaHIP, ADIOS2 and ZeroMQ exceeded the fixed host ceilings. That
+failure supplied the executable evidence for the historical selective-rebuild
+scope. The current cp314 path must bind its own preflight to the exact fresh
+transaction and candidate before promotion.
 
 Conda text and binary prefix substitution is reconstructed from exact cached
 package `info/paths.json` and installed prefix metadata. Cache payload bytes,
@@ -89,18 +109,18 @@ require adding a pinned curl/libcurl rebuild to a future handoff revision. The
 current schema rejects such an unknown replacement owner until its source and
 ownership evidence are defined explicitly.
 
-The hosted ICU-edge experiment isolates the first ICU branch without rebuilding
-HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with a fully
-pinned, independent configure argument list containing `--without-libpsl`, then
-requires the libcurl-rooted closure to lose both libpsl and ICU while HDF5
-still resolves to that rebuilt libcurl and an independent MPICH-rooted control
-still reaches hwloc, libxml2 and ICU. The
-experiment keeps HDF5 ROS3 enabled, but it deliberately removes libcurl's
-Public Suffix List feature; cookie-domain PSL validation is therefore outside
-the capability of that candidate. This result is closure evidence only and
-cannot authorize ICU omission until the separately pinned libxml2 ICU-off
-rebuild also makes the final post-rebuild closure ICU-free. The hosted probe
-also rechecks the exact 128-record runtime replay, the exact 41-record GCC 14
+The hosted ICU-edge probe contract isolates the first ICU branch without
+rebuilding HDF5 or ICU. It rebuilds only the locked `libcurl` 8.23.0 source with
+a fully pinned, independent configure argument list containing
+`--without-libpsl`, then requires the libcurl-rooted closure to lose both libpsl
+and ICU while HDF5 still resolves to that rebuilt libcurl and an independent
+MPICH-rooted control still reaches hwloc, libxml2 and ICU. The experiment keeps
+HDF5 ROS3 enabled, but it deliberately removes libcurl's Public Suffix List
+feature; cookie-domain PSL validation is therefore outside the capability of
+that candidate. A successful probe is closure evidence only and cannot
+authorize ICU omission until the separately pinned libxml2 ICU-off rebuild also
+makes the final post-rebuild closure ICU-free. The current probe contract
+rechecks the exact 124-record cp314 runtime replay, the exact 41-record GCC 14
 build-only replay, the stock ICU ABI failure, x86_64/glibc 2.17, and absence of
 a non-loopback default route before building from the pinned public inputs.
 The pinned feedstock is source/configuration evidence. The independent probe
@@ -109,7 +129,7 @@ recipe by only one flag, or that it reproduces every feedstock environment
 helper. It uses the producer's frozen GCC 14/make/pkg-config transaction and
 records its full configure arguments as experimental provenance.
 
-## Controlled C++20 runtime feasibility, not production evidence
+## Historical controlled C++20 runtime feasibility, not production evidence
 
 The initial rebuilt Basix/DOLFINx prototype used a versioned private static
 libstdc++ provider, but mesh construction crashed inside `std::codecvt` when
@@ -125,7 +145,7 @@ Two independent scratch links and transformations produced identical bytes.
 The provider requires no host `GLIBCXX`, `CXXABI` or `GLIBC_PRIVATE` versions;
 its maximum numeric requirements are `GLIBC_2.17` and `GCC_4.3.0`.
 
-Under the controlled rebuild, NumPy 2.5.2 loaded first and a full
+Under the historical controlled rebuild, NumPy 2.5.2 loaded first and a full
 `tests/fenics/test_poisson.py` solve passed with L2 error
 `0.009053553714814033` (tolerance `0.05`). A separate scratch test loaded
 the corrected provider through ordinary dependencies from a copied overlay,
@@ -134,8 +154,9 @@ overlay-relative locations; Poisson passed again. That scratch test still
 had an absolute fallback search path into the stock conda prefix, so it is
 **not** a standalone relocatable qualification.
 
-The same copied-overlay Poisson test also passed on the **qualified public
-consumer CPython 3.12.10 / NumPy 2.5.2 base**, with an explicit assertion
+As a historical cp312 result, the same copied-overlay Poisson test also passed
+on the **qualified public consumer CPython 3.12.10 / NumPy 2.5.2 base**, with
+an explicit assertion
 that NumPy came from the public base and Basix/DOLFINx came from the copied
 private overlay. No external private-provider preload was used. The stock
 conda fallback search path and external PETSc/MPI dependencies still prevent
@@ -148,8 +169,8 @@ provider alone does not qualify the surrounding Basix/DOLFINx binaries.
 
 `locks/linux/linux-x86_64-fenics-cxx-provider.json` and
 `scripts/linux/build_fenics_cxx_provider.py` turn that proof into a fail-closed
-public reproduction contract. The recipe binds the immutable 128-record
-runtime package lock, the companion 41-record build-tool lock, the public
+public reproduction contract. The current recipe binds the immutable 124-record
+cp314 runtime package lock, the companion 41-record build-tool lock, the public
 GCC/binutils/sysroot package archive identities, the exact GCC 16.2 driver and
 static `libstdc++.a` file hashes, the version script, link argv and environment,
 and both sides of the GNU-unique transform. The builder also requires the
@@ -170,7 +191,7 @@ used in a deterministic, independently audited full native rebuild.
 
 ### Hosted runner bootstrap for the provider
 
-The provider reproduction belongs after the existing exact 128-record runtime
+The provider reproduction belongs after the exact 124-record cp314 runtime
 replay and 41-record build-tool replay. Run it inside the workflow's pinned
 glibc 2.17 manylinux container with networking disabled and with the workspace,
 runner temp directory and micromamba package cache mounted. The invocation is:

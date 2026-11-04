@@ -3,16 +3,55 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 from scripts.linux import package_fenics_overlay as mod
 from scripts.linux import rebuild_fenics_native as producer
 
 
 class NativeRebuildHandoffTests(unittest.TestCase):
+    def test_libxml2_build_helper_is_excluded_from_runtime_handoff(self) -> None:
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("bin/xml2-config")))
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("lib/dolfinx/dolfinx.conf")))
+        self.assertTrue(producer.ignored_build_install_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
+        self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("include/libxml2/libxml/HTMLparser.h")))
+        self.assertFalse(producer.ignored_build_install_path(PurePosixPath("bin/dolfinx")))
+        self.assertFalse(producer.handoff_runtime_prefix_path(PurePosixPath("bin/xml2-config")))
+
+    def test_libxml2_headers_remain_owned_by_separate_locked_development_package(self) -> None:
+        header = PurePosixPath("include/libxml2/libxml/HTMLparser.h")
+        metadata = {"libxml2": {"paths_data": {"paths": [{"_path": header.as_posix()}]}}}
+        self.assertTrue(producer.retained_libxml2_development_header(header, "libxml2-16", metadata))
+        self.assertFalse(producer.retained_libxml2_development_header(header, "fenics-libbasix", metadata))
+        self.assertFalse(producer.retained_libxml2_development_header(header, "libxml2-16", {}))
+        self.assertFalse(producer.retained_libxml2_development_header(PurePosixPath("include/libxml2/unknown.h"), "libxml2-16", metadata))
+
+    def test_relocated_wheel_rewrites_extension_and_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            wheel = Path(raw) / "test.whl"
+            original = b"\x7fELFold"
+            extension = "basix/_basixcpp.so"
+            record = "fenics_basix-0.11.0.dist-info/RECORD"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(extension, original)
+                archive.writestr("basix/__init__.py", b"# import\n")
+                archive.writestr(record, f"{extension},sha256=old,{len(original)}\n{record},,\n")
+            replacement = b"\x7fELFrelocated"
+            producer.rewrite_relocated_wheel(wheel, {extension: replacement})
+            with zipfile.ZipFile(wheel) as archive:
+                self.assertEqual(archive.read(extension), replacement)
+                self.assertEqual(archive.read("basix/__init__.py"), b"# import\n")
+                digest = base64.urlsafe_b64encode(hashlib.sha256(replacement).digest()).rstrip(b"=").decode("ascii")
+                self.assertIn(f"{extension},sha256={digest},{len(replacement)}", archive.read(record).decode())
+            with self.assertRaisesRegex(producer.InputError, "duplicate or missing"):
+                producer.rewrite_relocated_wheel(wheel, {"missing.so": replacement})
+
     def make_fixture(
         self, root: Path, *, stale_candidate: bool = False
     ) -> tuple[Path, Path, Path, Path, dict[str, dict]]:
@@ -76,6 +115,11 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             (build_dir / "install_manifest.txt").write_text(
                 str(installed.resolve()) + "\n", encoding="utf-8"
             )
+        (candidate_build / "dolfinx" / "CMakeCache.txt").write_text(
+            "DOLFINX_ENABLE_ADIOS2:BOOL=OFF\n"
+            "DOLFINX_ENABLE_KAHIP:BOOL=OFF\n",
+            encoding="utf-8",
+        )
 
         candidate_output_binding = {
             "replacements": [
@@ -226,7 +270,7 @@ class NativeRebuildHandoffTests(unittest.TestCase):
             ("traversal", lambda data: data["replacements"][0].update(destination="../escape"), "canonical POSIX"),
             (
                 "numpy",
-                lambda data: data["replacements"][0].update(destination="lib/python3.12/site-packages/numpy/core.so"),
+                lambda data: data["replacements"][0].update(destination="lib/python3.14/site-packages/numpy/core.so"),
                 "CPython/NumPy ownership",
             ),
             ("unsorted", lambda data: data["replacements"].reverse(), "uniquely sorted"),
@@ -319,6 +363,10 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 validated["candidate_output_binding_sha256"],
                 payload["candidate_output_binding_sha256"],
             )
+            self.assertEqual(
+                validated["dolfinx_build_configuration"]["flags"],
+                producer.DOLFINX_OMISSION_BUILD_FLAGS,
+            )
 
             closure = {
                 "dolfinx_build_flags": {
@@ -351,6 +399,53 @@ class NativeRebuildHandoffTests(unittest.TestCase):
                 final_payload["inputs"]["native_closure"]["candidate_output_binding_sha256"],
                 payload["candidate_output_binding_sha256"],
             )
+
+    def test_candidate_build_handoff_rejects_changed_dolfinx_build_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _, prefix, lock, prefix_evidence, extra = self.make_fixture(root)
+            candidate_root = extra["candidate_root"]
+            roots = {
+                name: candidate_root / name
+                for name in ("inputs", "src", "build", "prefix", "wheels", "audit", "evidence")
+            }
+            source_manifest = extra["source_manifest_data"]
+            candidate_handoff = roots["evidence"] / "native-build-handoff.json"
+            producer.write_candidate_build_handoff(
+                candidate_handoff,
+                roots=roots,
+                locked_prefix=prefix,
+                package_lock=lock,
+                prefix_verification={
+                    "verification": {"path": str(prefix_evidence), "sha256": producer.sha256(prefix_evidence)}
+                },
+                stock_abi_preflight={
+                    "path": str(extra["preflight"]),
+                    "sha256": producer.sha256(extra["preflight"]),
+                    "selection_fingerprint_sha256": json.loads(extra["preflight"].read_text())["selection_fingerprint_sha256"],
+                },
+                source_manifest=extra["source_manifest"],
+                source_evidence=[
+                    {"component": name, "sha256": source_manifest["sources"][name]["sha256"]}
+                    for name in producer.REQUIRED_SOURCES
+                ],
+                build_tool_explicit=extra["build_tool_explicit"],
+                python_builder_manifest=extra["python_builder_manifest"],
+                libxml2_build_deps_manifest=extra["libxml2_build_deps_manifest"],
+                private_provider_manifest=extra["private_provider_manifest"],
+                wheels=[],
+                elf_records=[
+                    {"path": str(extra["provider_candidate"]), "sha256": producer.sha256(extra["provider_candidate"])},
+                    {"path": str(extra["fmt_candidate"]), "sha256": producer.sha256(extra["fmt_candidate"])},
+                ],
+                wheel_records=[],
+            )
+            (roots["build"] / "dolfinx" / "CMakeCache.txt").write_text(
+                "DOLFINX_ENABLE_ADIOS2:BOOL=ON\nDOLFINX_ENABLE_KAHIP:BOOL=OFF\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(producer.InputError, "DOLFINx build cache does not prove"):
+                producer.validate_candidate_build_handoff(candidate_handoff)
 
     def test_candidate_build_handoff_rejects_changed_live_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

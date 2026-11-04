@@ -184,7 +184,7 @@ if ($RuntimeProfile -eq 'core') {
     }
 }
 
-$info = ($infoScript | & $pythonPath -I -S -) | ConvertFrom-Json
+$info = ($infoScript | & $pythonPath -B -I -S -) | ConvertFrom-Json
 if ($info.implementation -ne 'CPython' -or $info.version -ne $ExpectedPython -or $info.pointer_bits -ne 64) {
     throw "Expected 64-bit CPython $ExpectedPython, got $($info.implementation) $($info.version)"
 }
@@ -510,7 +510,7 @@ with zipfile.ZipFile(wheel) as zf:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
 '@
-    $extractScript | & $pythonPath -I -S - $wheel $sitePackages
+    $extractScript | & $pythonPath -B -I -S - $wheel $sitePackages
     if ($LASTEXITCODE -ne 0) {
         throw 'NumPy wheel extraction/RECORD verification failed'
     }
@@ -524,7 +524,9 @@ if "openblas" not in text or "mkl" in text:
     raise SystemExit(f"unexpected BLAS provider: {cfg!r}")
 print(json.dumps({"version": numpy.__version__, "blas": "openblas"}))
 '@
-    $probe = ($probeScript | & (Join-Path $outputPath 'python.exe') -I -) | ConvertFrom-Json
+    # The core manifest has already been sealed. An import probe must not
+    # create __pycache__ files in its inherited standard library.
+    $probe = ($probeScript | & (Join-Path $outputPath 'python.exe') -B -I -) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) {
         throw 'Staged NumPy probe failed'
     }
@@ -548,7 +550,7 @@ if ($RuntimeProfile -eq 'numpy') {
         "$outputPath.core-layer.json"
     }
     $verifyLayer = Join-Path $PSScriptRoot 'verify_core_layer.py'
-    & $pythonPath -I -S $verifyLayer --core $corePath --numpy $outputPath --output $layerEvidencePath
+    & $pythonPath -B -I -S $verifyLayer --core $corePath --numpy $outputPath --output $layerEvidencePath
     if ($LASTEXITCODE -ne 0) {
         throw 'NumPy runtime does not preserve the qualified core identity'
     }

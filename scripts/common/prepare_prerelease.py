@@ -87,6 +87,7 @@ EXPECTED_QUALIFICATION_CHECKS = {
         "package_lock_replay": "pass",
         "package_hash_verification": "pass",
         "dependency_solver": "not-applicable",
+        "public_numpy_base": "pass",
         "producer_python_excluded": "pass",
         "producer_numpy_excluded": "pass",
         "inherited_numpy_identity": "pass",
@@ -419,6 +420,8 @@ def validate_cross_profile_base_identities(
     records: dict[tuple[str, str], dict[str, object]],
 ) -> list[dict[str, object]]:
     bindings: list[dict[str, object]] = []
+    pin_path = Path(__file__).resolve().parents[2] / "locks/core/fenics-numpy-base-release.json"
+    release_pin = json.loads(pin_path.read_text(encoding="utf-8")) if pin_path.is_file() else None
     for platform in sorted(NUMPY_SITE_PREFIXES):
         numpy_record = records.get((platform, "numpy"))
         fenics_record = records.get((platform, "fenics"))
@@ -428,13 +431,49 @@ def validate_cross_profile_base_identities(
         fenics_manifest = fenics_record["manifest"]
         if not isinstance(numpy_manifest, dict) or not isinstance(fenics_manifest, dict):
             raise SystemExit(f"invalid stored manifest pair for {platform}")
-        expected_tree = numpy_tree_identity_from_manifest(
-            numpy_manifest,
-            context=str(numpy_record["artifact"]),
-        )
         fenics_numpy = fenics_manifest.get("numpy")
         if not isinstance(fenics_numpy, dict):
             raise SystemExit(f"FEniCS manifest has no NumPy base identity: {fenics_record['artifact']}")
+        base_revision = fenics_numpy.get("base_producer_revision")
+        if base_revision is None:
+            # Historical same-revision FEniCS source profiles.
+            expected_tree = numpy_tree_identity_from_manifest(
+                numpy_manifest,
+                context=str(numpy_record["artifact"]),
+            )
+            expected_manifest_sha = str(numpy_record["manifest_sha256"])
+            base_artifact = numpy_record["artifact"]
+            base_artifact_sha = numpy_record["artifact_sha256"]
+            release_tag = None
+        else:
+            # A FEniCS overlay may intentionally inherit an *older* released
+            # NumPy profile, but only when its complete NumPy payload tree and
+            # manifest resolve to a separately pinned, immutable release.
+            if not isinstance(release_pin, dict):
+                raise SystemExit("cross-revision FEniCS base requires an immutable release lock")
+            pins = release_pin.get("platforms", {}).get(platform)
+            if (
+                not isinstance(pins, dict)
+                or release_pin.get("repository") != "precsim/python-numpy-fenics"
+                or release_pin.get("producer_revision") != base_revision
+                or SHA256_RE.fullmatch(str(pins.get("archive_sha256", ""))) is None
+                or SHA256_RE.fullmatch(str(pins.get("manifest_sha256", ""))) is None
+                or SHA256_RE.fullmatch(str(pins.get("numpy_tree_sha256", ""))) is None
+                or not isinstance(pins.get("numpy_entry_count"), int)
+            ):
+                raise SystemExit(f"unqualified external NumPy base release pin for {platform}")
+            expected_tree = {
+                "tree_sha256": pins["numpy_tree_sha256"],
+                "entry_count": pins["numpy_entry_count"],
+            }
+            expected_manifest_sha = pins["manifest_sha256"]
+            extension = ".tar.gz" if platform == "linux-x64" else ".zip"
+            base_artifact = f"python-runtime-v{release_pin['tag'].split('-v', 1)[1].split('-rc', 1)[0]}-{platform}-cp314-numpy{extension}"
+            base_artifact_sha = pins["archive_sha256"]
+            release_tag = release_pin["tag"]
+            embedded_archive_sha = fenics_numpy.get("base_archive_sha256")
+            if embedded_archive_sha is not None and embedded_archive_sha != base_artifact_sha:
+                raise SystemExit(f"FEniCS external NumPy archive SHA-256 mismatch for {platform}")
         actual_tree_sha = str(fenics_numpy.get("base_tree_sha256", "")).lower()
         actual_entry_count = fenics_numpy.get("base_entry_count")
         if (
@@ -447,7 +486,6 @@ def validate_cross_profile_base_identities(
                 f"entries={actual_entry_count!r}/{expected_tree['entry_count']!r}"
             )
 
-        expected_manifest_sha = str(numpy_record["manifest_sha256"])
         actual_manifest_sha = str(fenics_numpy.get("base_manifest_sha256", "")).lower()
         if not actual_manifest_sha and platform == "linux-x64":
             source_provenance = fenics_record.get("source_provenance")
@@ -461,18 +499,20 @@ def validate_cross_profile_base_identities(
                 f"{actual_manifest_sha!r} != {expected_manifest_sha!r}"
             )
 
-        bindings.append(
-            {
-                "platform": platform,
-                "fenics_artifact": fenics_record["artifact"],
-                "fenics_artifact_sha256": fenics_record["artifact_sha256"],
-                "numpy_artifact": numpy_record["artifact"],
-                "numpy_artifact_sha256": numpy_record["artifact_sha256"],
-                "numpy_manifest_sha256": expected_manifest_sha,
-                "numpy_tree_sha256": expected_tree["tree_sha256"],
-                "numpy_entry_count": expected_tree["entry_count"],
-            }
-        )
+        binding = {
+            "platform": platform,
+            "fenics_artifact": fenics_record["artifact"],
+            "fenics_artifact_sha256": fenics_record["artifact_sha256"],
+            "numpy_artifact": base_artifact,
+            "numpy_artifact_sha256": base_artifact_sha,
+            "numpy_manifest_sha256": expected_manifest_sha,
+            "numpy_tree_sha256": expected_tree["tree_sha256"],
+            "numpy_entry_count": expected_tree["entry_count"],
+        }
+        if release_tag is not None:
+            binding["numpy_base_release_tag"] = release_tag
+            binding["numpy_base_producer_revision"] = base_revision
+        bindings.append(binding)
     return bindings
 
 

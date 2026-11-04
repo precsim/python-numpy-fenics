@@ -35,7 +35,11 @@ class FenicsNativeRebuildTests(unittest.TestCase):
             root = Path(raw)
             source = root / "src"
             source.mkdir()
-            manifest = {"schema_version": 1, "sources": {}}
+            manifest = {
+                "schema_version": 1,
+                "target": {"architecture": "x86_64", "python_abi": "cp314", "glibc_floor": "2.17"},
+                "sources": {},
+            }
             for key in mod.REQUIRED_SOURCES:
                 name = f"{key}.tar.gz"
                 payload = key.encode()
@@ -59,8 +63,8 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                 "kind": "fenics-python-wheel-builder",
                 "target": {
                     "architecture": "x86_64",
-                    "python_version": "3.12.10",
-                    "python_abi": "cp312",
+                    "python_version": "3.14.10",
+                    "python_abi": "cp314",
                     "glibc_floor": "2.17",
                 },
                 "policy": {
@@ -136,7 +140,7 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                     "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
                     "wheels": [
                         {
-                            "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                            "path": "wheels/fenics_basix-0.11.0-cp314-cp314-linux_x86_64.whl",
                             "sha256": "2" * 64,
                             "bytes": 456,
                         }
@@ -207,7 +211,7 @@ class FenicsNativeRebuildTests(unittest.TestCase):
             "elf": [{"path": "prefix/lib/libfmt.so.12", "sha256": "1" * 64}],
             "wheels": [
                 {
-                    "path": "wheels/fenics_basix-0.11.0-cp312-cp312-linux_x86_64.whl",
+                    "path": "wheels/fenics_basix-0.11.0-cp314-cp314-linux_x86_64.whl",
                     "sha256": "2" * 64,
                     "bytes": 456,
                 }
@@ -303,7 +307,7 @@ class FenicsNativeRebuildTests(unittest.TestCase):
                     "build_deps_lock_sha256": digest(deps_lock_path.read_bytes()),
                     "fenics_package_lock_sha256": digest(package_lock.read_bytes()),
                     "fenics_prefix_verification_sha256": "1" * 64,
-                    "fenics_prefix_verified_package_count": 128,
+                    "fenics_prefix_verified_package_count": 124,
                     "development_replay_input_format": "@EXPLICIT-url-plus-sha256",
                     "dependency_solver_used": False,
                     "development_archives": [

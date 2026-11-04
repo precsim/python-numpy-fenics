@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
+import struct
 
 from scripts.linux.build_fenics_cxx_provider import (
     DEFAULT_RECIPE,
@@ -16,6 +19,7 @@ from scripts.linux.build_fenics_cxx_provider import (
     deterministic_link_environment,
     load_recipe,
     render_link_argv,
+    relocate_provider_rpath,
     transform_contract,
     validate_checked_in_locks,
     validate_prefix_evidence,
@@ -31,18 +35,18 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
 
     def test_checked_in_recipe_binds_runtime_and_build_tool_locks(self) -> None:
         locks = validate_checked_in_locks(self.recipe)
-        self.assertEqual(locks["runtime_package_lock"]["record_count"], 128)
+        self.assertEqual(locks["runtime_package_lock"]["record_count"], 124)
         self.assertEqual(
             locks["runtime_package_lock"]["sha256"],
-            "fb5d53e3ea6b060763de137d9b5425c7fb702eeff10c35dffc512190e212794f",
+            "ac633e9aa4d23c83af79d078958eec75ff6ab5b08786d25c75c8a21d33123380",
         )
         self.assertEqual(
             locks["runtime_source_explicit"]["canonical_sha256"],
-            "945ad865b5f9404354a5c87bf4db9c93e97da54b77d734780ad3524296277a27",
+            "739bd3ca25ff63eff57f95291f41871465789e2340bfd984b237702f08fc14b5",
         )
         self.assertEqual(
             locks["native_build_tool_explicit"]["canonical_sha256"],
-            "763466504eb4af7a1ac9948269d8b228b6df683df5e5d0f30c434249e8529690",
+            "1f4a80d51a0fb1dc4a0ed91c76cfc9927aad9ffd456bf3c127b54e18f042ed4b",
         )
         self.assertFalse(locks["native_build_tool_explicit"]["used_for_provider_link"])
         self.assertEqual(
@@ -59,7 +63,7 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
             },
         )
 
-    def test_recipe_pins_known_gcc16_provider_proof(self) -> None:
+    def test_recipe_pins_cp314_hosted_gcc16_provider_candidate(self) -> None:
         self.assertEqual(
             self.recipe["link_inputs"]["gcc_driver"]["sha256"],
             "1b866d8450249db5231194834ff440ad20b1f5e9316c94cd6b59c2da575545e0",
@@ -71,18 +75,18 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         contract = transform_contract(self.recipe)
         self.assertEqual(
             contract.input_sha256,
-            "c7a9a4e04b175b3cd60c9a0a30e9168f9032822c6b4a1cfe737a89d190f3cd58",
+            "1670dd51ae0dd8852b8efdb14fb57ffb9d02801f1eb9f4155c7cd8492f471edb",
         )
         self.assertEqual(
             contract.output_sha256,
-            "39473bb7046bd62af7fbafda82c18d6f755de28a9e32ec65734985d72ff71cb4",
+            "43ae5b863ef35269e022559019d54c621868fb135c44d4fb52fd9920cc8533ef",
         )
         self.assertEqual(contract.expected_unique_count, 146)
-        self.assertEqual(contract.expected_dynsym_count, 7261)
+        self.assertEqual(contract.expected_dynsym_count, 7253)
         self.assertEqual(contract.expected_soname, "libfenics_cxxrt.so.1")
         self.assertEqual(
             contract.expected_version_max,
-            {"GLIBC": (2, 17), "GLIBCXX": None, "CXXABI": None, "GCC": (4, 3, 0)},
+            {"GLIBC": (2, 17), "GLIBCXX": None, "CXXABI": None, "GCC": (4, 2, 0)},
         )
 
         evidence = json.loads(
@@ -90,7 +94,12 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        proof = next(item for item in evidence["providers"] if item["id"] == "locked-gcc16-linker-proof")
+        # Keep the earlier Poisson-qualified cp312 proof intact.  The cp314
+        # candidate is a separately observed hosted link pending the complete
+        # overlay and Poisson qualification run.
+        historical = next(item for item in evidence["providers"] if item["id"] == "locked-gcc16-linker-proof")
+        self.assertEqual(historical["expected_dynsym_count"], 7261)
+        proof = next(item for item in evidence["providers"] if item["id"] == "cp314-hosted-gcc16-link-candidate")
         self.assertEqual(contract.input_sha256, proof["transform_input_sha256"])
         self.assertEqual(contract.output_sha256, proof["transformed_sha256"])
         self.assertEqual(contract.expected_unique_count, proof["expected_unique_count"])
@@ -146,14 +155,14 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
         self.assertEqual(env["LC_ALL"], "C")
 
     def test_prefix_evidence_must_bind_exact_runtime_lock(self) -> None:
-        lock_sha = self.recipe["runtime_package_lock"]["sha256"]
+        lock_sha = self.recipe["runtime_package_lock"]["canonical_sha256"]
         payload = {
             "format_version": 1,
             "architecture": "x86_64",
             "lock_sha256": lock_sha,
-            "lock_record_count": 128,
-            "installed_record_count": 128,
-            "verified_package_archive_count": 128,
+            "lock_record_count": 124,
+            "installed_record_count": 124,
+            "verified_package_archive_count": 124,
             "package_hash_verification": "cached-package-sha256-plus-installed-record-match",
             "solver_used": False,
         }
@@ -166,6 +175,24 @@ class LinuxFenicsCxxProviderTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ProviderBuildError, "pinned runtime lock"):
                 validate_prefix_evidence(path, lock_sha)
+
+    def test_relocation_rewrites_only_the_pinned_provider_rpath(self) -> None:
+        prefix = Path("/locked-prefix")
+        old = b"/locked-prefix/lib"
+        data = bytearray(128)
+        struct.pack_into("<qQ", data, 0, 15, 0)
+        struct.pack_into("<qQ", data, 16, 0, 0)
+        data[32:32 + len(old) + 1] = old + b"\0"
+        image = SimpleNamespace(
+            dynamic=SimpleNamespace(offset=0, size=32, entsize=16, link=1),
+            sections=[None, SimpleNamespace(offset=32, size=64, sh_type=3)],
+        )
+        with mock.patch("scripts.linux.build_fenics_cxx_provider.Elf64Image", return_value=image):
+            result = relocate_provider_rpath(bytes(data), prefix)
+            self.assertEqual(result[32:32 + len(old)], b"$ORIGIN" + b"\0" * (len(old) - 7))
+            self.assertEqual(result[:32], data[:32])
+            with self.assertRaisesRegex(ProviderBuildError, "differs from locked prefix"):
+                relocate_provider_rpath(bytes(data), Path("/different-prefix"))
 
     def test_manifest_remains_explicitly_unqualified(self) -> None:
         provider_bytes = b"provider"

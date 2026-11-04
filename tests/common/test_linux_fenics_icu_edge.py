@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts.linux import probe_fenics_icu_edge as mod
 
@@ -32,7 +33,7 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             mod.EXPECTED_FEEDSTOCK_SHA256,
         )
         lock = mod.verify_runtime_lock(contract, RUNTIME_LOCK)
-        self.assertEqual(lock["record_count"], 128)
+        self.assertEqual(lock["record_count"], 124)
         self.assertEqual(lock["packages"]["libcurl"]["version"], "8.23.0")
         self.assertEqual(lock["packages"]["icu"]["version"], "78.3")
         self.assertIn("disabled", contract["capability_impact"]["libcurl_public_suffix_list"])
@@ -83,6 +84,81 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.ProbeError, "remove only a libpsl"):
             mod.validate_needed_delta(stock, {"needed": ["libc.so.6", "libssl.so.3"]})
 
+    def test_provider_index_accepts_byte_identical_regular_soname_aliases_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw)
+            library_root = prefix / "lib"
+            library_root.mkdir()
+            soname = library_root / "libsame.so.1"
+            versioned = library_root / "libsame.so.1.2.3"
+            soname.write_bytes(b"\x7fELFsame-provider")
+            versioned.write_bytes(soname.read_bytes())
+
+            def fake_read_elf(path, _readelf, strict_abi=False):
+                return {
+                    "path": str(path),
+                    "sha256": mod.sha256_file(path),
+                    "soname": "libsame.so.1",
+                    "needed": [],
+                    "rpath": [],
+                    "required_versions": [],
+                    "version_max": {},
+                }
+
+            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
+                providers, _ = mod.build_provider_index(prefix, Path("readelf"))
+            self.assertEqual(providers["libsame.so.1"], soname.resolve())
+
+            versioned.write_bytes(b"\x7fELFdifferent-provider")
+            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
+                with self.assertRaisesRegex(mod.ProbeError, "multiple locked providers"):
+                    mod.build_provider_index(prefix, Path("readelf"))
+
+    def test_provider_index_exact_symlink_overrides_soname_only_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw)
+            library_root = prefix / "lib"
+            library_root.mkdir()
+            exact = library_root / "libsame.so.1"
+            versioned = library_root / "libsame.so.1.2.3"
+            exact.write_bytes(b"\x7fELFsame-provider")
+            versioned.write_bytes(exact.read_bytes())
+            alias = library_root / "libalias.so.1"
+            try:
+                alias.symlink_to(versioned.name)
+            except OSError as exc:
+                self.skipTest(f"host cannot create symlinks: {exc}")
+
+            def fake_read_elf(path, _readelf, strict_abi=False):
+                return {
+                    "path": str(path),
+                    "sha256": mod.sha256_file(path),
+                    "soname": "libsame.so.1",
+                    "needed": [],
+                    "rpath": [],
+                    "required_versions": [],
+                    "version_max": {},
+                }
+
+            with mock.patch.object(mod, "read_elf", side_effect=fake_read_elf):
+                providers, _ = mod.build_provider_index(prefix, Path("readelf"))
+            self.assertEqual(providers["libalias.so.1"], versioned.resolve())
+
+    def test_find_root_collapses_only_byte_identical_regular_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw)
+            library_root = prefix / "lib"
+            library_root.mkdir()
+            soname = library_root / "libroot.so.1"
+            versioned = library_root / "libroot.so.1.2.3"
+            soname.write_bytes(b"\x7fELFroot")
+            versioned.write_bytes(soname.read_bytes())
+            self.assertEqual(mod.find_root(prefix, "libroot.so.*"), soname.resolve())
+
+            versioned.write_bytes(b"\x7fELFdifferent-root")
+            with self.assertRaisesRegex(mod.ProbeError, "expected one ELF root identity"):
+                mod.find_root(prefix, "libroot.so.*")
+
     def test_strict_abi_and_rpath_checks_fail_closed(self) -> None:
         maxima = mod.audit_version_tokens(
             ["GLIBC_2.17", "GLIBCXX_3.4.19", "CXXABI_1.3.7", "GCC_4.8.0"], strict=True
@@ -96,6 +172,44 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
             mod.audit_version_tokens(["GLIBC_PRIVATE"], strict=True)
         with self.assertRaisesRegex(mod.ProbeError, "absolute/non-relative RPATH"):
             mod.audit_rpaths(["/tmp/build/lib:$ORIGIN"], strict=True)
+
+    def test_curl_probe_relocation_removes_only_known_build_tool_rpath(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            install = root / "install"
+            (install / "lib").mkdir(parents=True)
+            (install / "bin").mkdir()
+            library = install / "lib" / "libcurl.so.4.8.0"
+            binary = install / "bin" / "curl"
+            for path in (library, binary):
+                path.write_bytes(b"\x7fELFtest")
+            # Use a drive-free path so the POSIX RPATH separator is not
+            # confused with a Windows drive letter during local tests.
+            tools = Path("build-tools")
+            bad_path = str(tools / "lib")
+            calls = []
+
+            def fake_read_elf(path, _readelf, strict_abi=False):
+                return {
+                    "path": str(path), "rpath": ["$ORIGIN"] if strict_abi else [f"{bad_path}:$ORIGIN"],
+                    "sha256": mod.sha256_file(path),
+                }
+
+            with mock.patch.object(mod.shutil, "which", return_value="/usr/bin/patchelf"), \
+                 mock.patch.object(mod, "read_elf", side_effect=fake_read_elf), \
+                 mock.patch.object(mod, "run", side_effect=lambda argv: calls.append(argv)):
+                records = mod.relocate_curl_probe(install, tools)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual({argv[2] for argv in calls}, {"$ORIGIN", "$ORIGIN/../lib"})
+
+            def unexpected_read_elf(path, _readelf, strict_abi=False):
+                return {"rpath": ["/unexpected/lib"]}
+
+            with mock.patch.object(mod.shutil, "which", return_value="/usr/bin/patchelf"), \
+                 mock.patch.object(mod, "read_elf", side_effect=unexpected_read_elf):
+                with self.assertRaisesRegex(mod.ProbeError, "unexpected curl probe build RPATH"):
+                    mod.relocate_curl_probe(install, tools)
 
     def test_curl_edge_and_independent_mpich_icu_control_are_both_required(self) -> None:
         contract = mod.load_contract(CONTRACT)
@@ -223,12 +337,12 @@ class LinuxFenicsIcuEdgeProbeTests(unittest.TestCase):
     def test_hosted_evidence_binds_verified_runtime_build_tools_and_stock_failure(self) -> None:
         prefix = {
             "solver_used": False,
-            "lock_record_count": 128,
-            "installed_record_count": 128,
-            "verified_package_archive_count": 128,
+            "lock_record_count": 124,
+            "installed_record_count": 124,
+            "verified_package_archive_count": 124,
             "package_hash_verification": "cached-package-sha256-plus-installed-record-match",
             "replay_input_format": "@EXPLICIT-url-plus-sha256",
-            "packages": [{} for _ in range(128)],
+            "packages": [{} for _ in range(124)],
         }
         build_tools = {
             "purpose": "linux-fenics-cxx20-build-toolchain-only",

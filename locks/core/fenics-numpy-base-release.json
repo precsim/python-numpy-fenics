@@ -1,0 +1,36 @@
+{
+  "format_version": 1,
+  "repository": "precsim/python-numpy-fenics",
+  "tag": "runtime-v0.1.0-rc1",
+  "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+  "platforms": {
+    "win-x64": {
+      "archive_sha256": "eb0625045f1bf3c713f9705d0f95bd238e66954221d8430dbc1c2d10e4993ee1",
+      "manifest_sha256": "fd5fdb769f1d00b4c6709992e9428014f7d8880d9f180b52cdb1bc8aad5463a2",
+      "qualification_sha256": "522d6be5e369a7472089c23e0265f037cf4abefd98fa53bd89c9e0d30117c56d",
+      "numpy_tree_sha256": "eab9fa3ffdde979afcd8e64cb816f66fc77b93bd45c6260a35e9f0d7d1f7f6e3",
+      "numpy_entry_count": 1027
+    },
+    "macos-arm64": {
+      "archive_sha256": "5dee67bd1562efe3c4c012cc520af9771a4ca2bdf268c0cbdf275b3f95bbdcd9",
+      "manifest_sha256": "08c697fd592684bb532efad8afa407bc845232bd15813814a09deeb482556414",
+      "qualification_sha256": "ad58496daa6ebd4153af5baec98b5e2dffad2f56b4e2e018c02545578913d03b",
+      "numpy_tree_sha256": "0b0c57b2508d38a392efd5afbca249f82b4065aa3d993692103d5eeacad64ee8",
+      "numpy_entry_count": 923
+    },
+    "macos-x64": {
+      "archive_sha256": "317ed4ed01915c74e84e394386705157c0381084765c156a8bde24c9f85fbaf1",
+      "manifest_sha256": "9636f1943a5ca48d73283b669e551bb8591cc8c5af6020b84eb49cdd696a95aa",
+      "qualification_sha256": "f286c42f8ddc4a1f2492970f02b7f2e60d4a0f94c0e7ede0ad8ab702551fdca3",
+      "numpy_tree_sha256": "88c38bbea3a34b9758f5ea2d99a61e3a94b82c31272644835399f68d9bccd15b",
+      "numpy_entry_count": 923
+    },
+    "linux-x64": {
+      "archive_sha256": "e4f116ebae105bc76afc204c32d8a94f7aecf3c929269d7a557c80f1af0a6ab6",
+      "manifest_sha256": "619d276b6af1b805ccef9fd6dd4f42949638f6daf3408f18c6a9a825e0bc4b39",
+      "qualification_sha256": "e3169fbb7a15b7840a47f7d4b802e97b7f81a9bb0ec78b9b98b945ce6aad9347",
+      "numpy_tree_sha256": "0dad7529b93ee5671d91a57ea1ebf203ca4b0b8b433bee0b16f30df5bd6c9a97",
+      "numpy_entry_count": 1007
+    }
+  }
+}

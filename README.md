@@ -58,8 +58,14 @@ The active producer pre-release scope is `core` + `numpy`. FEniCS qualification
 workflows and packaging code are retained for future use but are not required to
 publish a producer pre-release. The manual pre-release workflow can explicitly
 opt into the complete FEniCS matrix when that work resumes.
-The retained FEniCS workflows and Linux experiment notes still contain legacy
-cp312 inputs and are not qualified for the new cp314 baseline.
+The retained FEniCS workflows now target the qualified cp314 / Tcl/Tk 8.6.18
+core and NumPy inputs. Linux has a fresh 124-record cp314 x86_64 transaction
+using MPICH 5.0.1. Some FEniCS/PETSc packages retain reviewed older Python build
+labels under the conda-forge stable-ABI contract; those immutable package
+identities are replayed as-is rather than relabeled. The Linux transaction and
+selective-rebuild candidate still require independent glibc-2.17 native-closure,
+relocation, fresh-FFCx-JIT, PETSc and Poisson qualification, so FEniCS remains
+manual and outside the active pre-release scope.
 
 ## Producer artifact contract
 
@@ -84,26 +90,29 @@ The default path is exact package reuse:
 
 A blanket FEniCS stack rebuild is not an acceptable fallback.
 
-The Linux workflow also exercises a hosted selective-rebuild prototype after
-capturing the required stock ABI failure. The prototype binds that immutable
-preflight evidence, fetches the pinned public Basix/DOLFINx dependency sources
-by SHA-256, prepares the Python wheel builder from a fixed seven-wheel public
-closure on the already qualified NumPy CPython 3.14 runtime, replays the separate
-41-record build-only toolchain lock, prepares the libxml2 zlib/liblzma build-only
-inputs from a two-record `@EXPLICIT` development-header transaction plus the
-already verified runtime `libzlib`/`liblzma` packages, compiles a C++20 probe
-offline in the pinned glibc 2.17 image, and records a fail-closed public-input
-provenance skeleton.
+The Linux workflow also exercises a hosted selective-rebuild candidate after
+capturing the required stock ABI failure. It starts from the exact solver-free
+124-record cp314 MPICH transaction, binds that immutable preflight evidence,
+fetches the pinned public Basix/DOLFINx dependency sources by SHA-256, prepares
+the Python wheel builder from a fixed seven-wheel public closure on the already
+qualified NumPy CPython 3.14 runtime, replays the separate 41-record build-only
+toolchain lock, prepares the libxml2 zlib/liblzma build-only inputs from a
+two-record `@EXPLICIT` development-header transaction plus the already verified
+runtime `libzlib`/`liblzma` packages, and builds the candidate offline in the
+pinned glibc 2.17 image.
 The builder reuses the existing NumPy-profile `pip` and `packaging` pins, uses
 only SHA-bound pure wheels, performs no dependency solve, and is validated with
 networking disabled. The libxml2 build-dependency producer similarly uses exact
 conda-forge package URLs and SHA-256 digests with no channel/index solve, hashes
 the downloaded development archives, and copies only the pinned regular headers
-and versioned shared libraries. That skeleton is not a qualified source rebuild.
-Full execution still requires separately reproducible private C++ provider and
-native-closure evidence inputs. ICU remains live in the stock native closure,
-and the overlay packager does not yet accept rebuilt native outputs, so the
-hosted release path fails closed after recording the prototype evidence.
+and versioned shared libraries. The workflow records a cp314 stable-ABI boundary
+for the reviewed older-label packages and keeps the release gate closed after
+candidate construction. Historical 128-record cp312 replay and rebuild evidence
+remains useful as provenance for the earlier feasibility work, but it is not the
+current Linux package contract. Release eligibility still requires an independent
+audit of the exact candidate output binding, complete ICU/optional-provider
+closure proof, and standalone glibc-2.17 relocation/JIT/PETSc/Poisson
+qualification.
 
 ## CI
 

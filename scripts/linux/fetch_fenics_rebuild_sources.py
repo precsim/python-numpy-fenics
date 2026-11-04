@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
-EXPECTED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+EXPECTED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
 PUBLIC_SOURCE_HOSTS = {"github.com", "gitlab.gnome.org"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -38,6 +38,12 @@ def load_manifest(path: Path) -> dict:
         raise SourceFetchError(f"cannot read source manifest {path}: {exc}") from exc
     if not isinstance(data, dict) or data.get("schema_version") != 1:
         raise SourceFetchError("unsupported FEniCS rebuild source manifest")
+    if data.get("target") != {
+        "architecture": "x86_64",
+        "python_abi": "cp314",
+        "glibc_floor": "2.17",
+    }:
+        raise SourceFetchError("FEniCS rebuild source manifest target must be x86_64/cp314/glibc-2.17")
     sources = data.get("sources")
     if not isinstance(sources, dict) or tuple(sources) != EXPECTED_SOURCES:
         raise SourceFetchError(f"source manifest keys must be exactly {EXPECTED_SOURCES!r}")

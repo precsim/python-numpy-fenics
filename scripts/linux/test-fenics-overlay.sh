@@ -43,13 +43,13 @@ base_manifest="$base_runtime/runtime-manifest.json"
 base_core_provenance="$base_runtime/build-provenance-linux.json"
 base_provenance="$base_runtime/build-provenance-linux-numpy.json"
 base_numpy_payload="$base_runtime/numpy-payload-manifest-linux.json"
-for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.12"; do
+for required in "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_numpy_payload" "$base_runtime/bin/python3.14"; do
     [[ -e "$required" ]] || { echo "qualified NumPy base input is missing: $required" >&2; exit 1; }
 done
 verify_inherited_base_tree() {
     local root="$1"
     local allow_extra="$2"
-    python3 - "$root" "$base_manifest" "$allow_extra" <<'PY'
+    "$root/bin/python3.14" -B -I -S - "$root" "$base_manifest" "$allow_extra" <<'PY'
 import hashlib
 import json
 import os
@@ -113,6 +113,7 @@ print("inherited_base_manifest_identity=pass")
 PY
 }
 python3 - "$base_manifest" "$base_core_provenance" "$base_provenance" "$base_qualification" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
@@ -125,10 +126,25 @@ if (
     manifest.get("format_version") != 1
     or manifest.get("platform") != "linux-x64"
     or manifest.get("profile") != "numpy"
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
     or manifest.get("producer", {}).get("repository") != "precsim/python-numpy-fenics"
 ):
     raise SystemExit(f"invalid public NumPy base manifest: {manifest!r}")
+tcl_tk = manifest.get("tcl_tk")
+if (
+    not isinstance(tcl_tk, dict)
+    or tcl_tk.get("version") != "8.6.18"
+    or tcl_tk.get("ownership") != "producer"
+    or not isinstance(tcl_tk.get("provenance_path"), str)
+):
+    raise SystemExit(f"invalid public NumPy Tcl/Tk contract: {tcl_tk!r}")
+tcl_tk_path = pathlib.Path(sys.argv[1]).parent.joinpath(*pathlib.PurePosixPath(tcl_tk["provenance_path"]).parts)
+if (
+    not tcl_tk_path.is_file()
+    or tcl_tk_path.is_symlink()
+    or hashlib.sha256(tcl_tk_path.read_bytes()).hexdigest() != tcl_tk.get("provenance_sha256")
+):
+    raise SystemExit("public NumPy Tcl/Tk provenance identity mismatch")
 baseline = provenance.get("baseline", {})
 if baseline.get("architecture") != "x86_64" or str(baseline.get("glibc")) != "2.17":
     raise SystemExit(f"invalid public NumPy base ABI baseline: {baseline!r}")
@@ -154,8 +170,8 @@ if (
     raise SystemExit(f"invalid public NumPy qualification: {qualification!r}")
 if provenance.get("numpy", {}).get("version") != "2.5.2":
     raise SystemExit("public NumPy base provenance does not identify NumPy 2.5.2")
-if core_provenance.get("python", {}).get("version") != "3.12.10":
-    raise SystemExit("public NumPy base provenance does not identify CPython 3.12.10")
+if core_provenance.get("python", {}).get("version") != "3.14.10":
+    raise SystemExit("public NumPy base provenance does not identify CPython 3.14.10")
 PY
 
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/fenics linux overlay test.XXXXXX")"
@@ -167,15 +183,19 @@ trap 'rm -rf "$work"' EXIT
 cp -a "$base_runtime"/. "$runtime"/
 verify_inherited_base_tree "$runtime" no
 
-site_packages="$runtime/lib/python3.12/site-packages"
-staged_python="$runtime/bin/python3.12"
+site_packages="$runtime/lib/python3.14/site-packages"
+staged_python="$runtime/bin/python3.14"
 [[ -x "$staged_python" && -d "$site_packages/numpy" ]] || {
     echo "public NumPy base runtime is incomplete" >&2
     exit 1
 }
 
+# Qualification must not mutate the inherited CPython/NumPy runtime while
+# importing its standard library or public NumPy payload.
+export PYTHONDONTWRITEBYTECODE=1
+
 hash_numpy() {
-    "$staged_python" -I -S - "$site_packages" "$1" <<'PY'
+    "$staged_python" -B -I -S - "$site_packages" "$1" <<'PY'
 import hashlib
 import json
 import os
@@ -224,6 +244,7 @@ base_core_provenance = pathlib.Path(sys.argv[5])
 base_provenance = pathlib.Path(sys.argv[6])
 base_numpy_payload = pathlib.Path(sys.argv[7])
 base_qualification = pathlib.Path(sys.argv[8])
+base_manifest_data = json.loads(base_manifest.read_text(encoding="utf-8"))
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -247,7 +268,10 @@ if (
     or manifest.get("platform") != "linux-x64"
     or manifest.get("profile") != "fenics"
     or manifest.get("architecture") != "x86_64"
-    or manifest.get("python_abi") != "cp312"
+    or manifest.get("python_abi") != "cp314"
+    or manifest.get("consumer_python") != "3.14.10"
+    or manifest.get("locked_package_python_abi") != "cp314"
+    or manifest.get("tcl_tk") != base_manifest_data.get("tcl_tk")
     or producer.get("repository") != "precsim/python-numpy-fenics"
     or manifest.get("numpy", {}).get("version") != "2.5.2"
     or manifest.get("numpy", {}).get("producer_payload_excluded") is not True
@@ -260,7 +284,7 @@ if (
     or manifest.get("native", {}).get("mpi", {}).get("provider_count") != 1
     or producer.get("source_rebuilds") != []
 ):
-    raise SystemExit(f"invalid Linux FEniCS overlay manifest: {manifest!r}")
+    raise SystemExit("invalid Linux FEniCS overlay manifest core/ABI contract")
 if candidate is None:
     if producer.get("omitted_packages") not in (None, []):
         raise SystemExit("stock overlay unexpectedly declares native-rebuild omissions")
@@ -362,6 +386,31 @@ for path, key in (
 package_provenance = json.loads(package_provenance_path.read_text(encoding="utf-8"))
 if package_provenance.get("solver_used_by_packager") is not False or package_provenance.get("source_rebuilds") != []:
     raise SystemExit("overlay provenance indicates solver use or source rebuilding")
+patchelf = package_provenance.get("packaging_tools", {}).get("patchelf", {})
+expected_patchelf = {
+    "version": "0.19.3",
+    "version_output": "patchelf 0.19.3",
+    "binary_sha256": "3acab15a88e5150b394a051fa573a0bc4faf354decfa8710c901bfa1a051ed56",
+    "archive_sha256": "38861b171079e440b25ac86483284f690d0ee7921dba98b0c8fe04a9b0a11667",
+}
+if any(patchelf.get(key) != value for key, value in expected_patchelf.items()):
+    raise SystemExit(f"overlay provenance has wrong pinned patchelf identity: {patchelf!r}")
+patchelf_evidence_rel = patchelf.get("evidence")
+if not isinstance(patchelf_evidence_rel, str) or not patchelf_evidence_rel:
+    raise SystemExit("overlay provenance is missing pinned patchelf evidence path")
+patchelf_evidence_path = root / patchelf_evidence_rel
+if (
+    not patchelf_evidence_path.is_file()
+    or sha(patchelf_evidence_path) != patchelf.get("evidence_sha256")
+):
+    raise SystemExit("overlay pinned patchelf evidence hash mismatch")
+patchelf_evidence = json.loads(patchelf_evidence_path.read_text(encoding="utf-8"))
+if (
+    patchelf_evidence.get("kind") != "linux-fenics-packaging-patchelf"
+    or any(patchelf_evidence.get("tool", {}).get(key) != value for key, value in expected_patchelf.items() if key != "archive_sha256")
+    or patchelf_evidence.get("archive", {}).get("sha256") != expected_patchelf["archive_sha256"]
+):
+    raise SystemExit("overlay embedded patchelf evidence does not match package provenance")
 if candidate is None:
     if package_provenance.get("native_rebuild_candidate") is not None or source_provenance.get("native_rebuild_candidate") is not None:
         raise SystemExit("stock overlay provenance unexpectedly contains a native rebuild candidate")
@@ -399,14 +448,37 @@ if candidate is not None:
         for item in candidate["replacements"]
     }
     overlap = sorted(replacement_paths.intersection(by_path))
-    if overlap:
-        raise SystemExit(f"rebuilt replacement paths were also prefix-relocated from stock metadata: {overlap!r}")
+    dolfinx_extension = (
+        "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/"
+        "cpp.cpython-314-x86_64-linux-gnu.so"
+    )
+    for relative in overlap:
+        # The rebuilt DOLFINx extension embeds the producer's build prefix.
+        # Its prefix relocation is independently recorded after the replacement
+        # is staged, and both records must identify the same final ELF bytes.
+        replacement = next(
+            item for item in replacements
+            if "fenics-runtime/conda/" + item["destination"] == relative
+        )
+        relocation = by_path[relative]
+        if (
+            relative != dolfinx_extension
+            or replacement.get("owner") != "fenics-dolfinx"
+            or relocation.get("package") != "fenics-dolfinx"
+            or relocation.get("mode") != "binary"
+            or relocation.get("replacement") != "@FENICS_RUNTIME_PREFIX@"
+            or replacement.get("sha256") != relocation.get("final_sha256")
+        ):
+            raise SystemExit(f"inconsistent rebuilt replacement and prefix relocation: {relative}")
 required_relocations = {
     "fenics-runtime/conda/bin/x86_64-conda-linux-gnu.cfg": ("sysroot_linux-64", "text", "@FENICS_RUNTIME_PREFIX@"),
     "fenics-runtime/conda/lib/gcc/x86_64-conda-linux-gnu/16.2.0/conda.specs": ("conda-gcc-specs", "text", "@FENICS_PRIVATE_PREFIX@"),
-    "fenics-runtime/conda/lib/python3.12/site-packages/dolfinx/cpp.abi3.so": ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@"),
-    "fenics-runtime/conda/lib/python3.12/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
+    "fenics-runtime/conda/lib/python3.14/site-packages/slepc4py/lib/slepc.cfg": ("slepc4py", "text", "@FENICS_RUNTIME_PREFIX@"),
 }
+required_relocations[
+    dolfinx_extension if candidate is not None
+    else "fenics-runtime/conda/lib/python3.14/site-packages/dolfinx/cpp.abi3.so"
+] = ("fenics-dolfinx", "binary", "@FENICS_RUNTIME_PREFIX@")
 for relative, expected in required_relocations.items():
     if relative in replacement_paths:
         continue
@@ -420,7 +492,13 @@ for relative, entry in by_path.items():
         raise SystemExit(f"prefix relocation final hash mismatch: {relative}")
     if not entry.get("occurrences") or not entry.get("placeholder_bytes"):
         raise SystemExit(f"prefix relocation evidence is incomplete: {relative}: {entry!r}")
-    for key in ("cache_sha256", "installed_sha256_in_prefix", "prefix_relocated_sha256", "final_sha256"):
+    # Native rebuilds have no conda package-cache payload to authenticate.
+    # Their staged input is authenticated by the native rebuild handoff and
+    # the final file identity is independently checked above.
+    keys = ("installed_sha256_in_prefix", "prefix_relocated_sha256", "final_sha256")
+    if relative not in replacement_paths:
+        keys = ("cache_sha256",) + keys
+    for key in keys:
         if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get(key, ""))):
             raise SystemExit(f"prefix relocation evidence has invalid {key}: {relative}: {entry!r}")
 cfg = root / "fenics-runtime" / "conda" / "bin" / "x86_64-conda-linux-gnu.cfg"
@@ -473,6 +551,10 @@ PY
 cat > "$poison/python/sitecustomize.py" <<'PY'
 raise RuntimeError("ambient sitecustomize poison imported")
 PY
+mkdir -p "$poison/openssl-modules"
+cat > "$poison/openssl.cnf" <<'EOF'
+# hostile ambient OpenSSL configuration: activation must replace this path
+EOF
 for compiler in gcc g++ cc c++ x86_64-conda-linux-gnu-gcc pkg-config ld as ar ranlib; do
     cat > "$poison/bin/$compiler" <<'SH'
 #!/usr/bin/env bash
@@ -490,6 +572,8 @@ export XDG_CACHE_HOME="$cache"
 export HOME="$poison/home"
 export PATH="$poison/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="$poison/native"
+export OPENSSL_CONF="$poison/openssl.cnf"
+export OPENSSL_MODULES="$poison/openssl-modules"
 export CC="$poison/bin/gcc"
 export CXX="$poison/bin/g++"
 export CPP="$poison/bin/gcc -E"
@@ -509,7 +593,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 mode = sys.argv[2]
-bootstrap = root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
+bootstrap = root / "lib" / "python3.14" / "site-packages" / "fenics_embed_runtime.py"
 spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
 if spec is None or spec.loader is None:
     raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
@@ -521,8 +605,22 @@ if activated != root:
     raise SystemExit(f"unexpected activated runtime root: {activated} != {root}")
 
 private = root / "fenics-runtime" / "conda"
-public_site = root / "lib" / "python3.12" / "site-packages"
-private_site = private / "lib" / "python3.12" / "site-packages"
+import hashlib
+import ssl
+if hashlib.sha256(b"fenics-openssl-provider").hexdigest() != "e5eb9e99a3c007176477157cd50ee1d0d97ca52c249d0a69a67413686b1a7af2":
+    raise SystemExit("public Python hashlib failed after FEniCS OpenSSL activation")
+if not ssl.OPENSSL_VERSION.startswith("OpenSSL 3.6.5 "):
+    raise SystemExit(f"public Python ssl did not select locked FEniCS OpenSSL 3.6.5: {ssl.OPENSSL_VERSION}")
+expected_openssl_conf = (private / "ssl" / "openssl.cnf").resolve()
+if Path(os.environ.get("OPENSSL_CONF", "")).resolve() != expected_openssl_conf:
+    raise SystemExit(f"FEniCS activation did not bind private OPENSSL_CONF: {os.environ.get('OPENSSL_CONF')!r}")
+expected_openssl_modules = private / "lib" / "ossl-modules"
+if expected_openssl_modules.is_dir() and Path(os.environ.get("OPENSSL_MODULES", "")).resolve() != expected_openssl_modules.resolve():
+    raise SystemExit(f"FEniCS activation did not bind private OPENSSL_MODULES: {os.environ.get('OPENSSL_MODULES')!r}")
+if not expected_openssl_modules.is_dir() and "OPENSSL_MODULES" in os.environ:
+    raise SystemExit(f"FEniCS activation retained ambient OPENSSL_MODULES: {os.environ['OPENSSL_MODULES']!r}")
+public_site = root / "lib" / "python3.14" / "site-packages"
+private_site = private / "lib" / "python3.14" / "site-packages"
 if [Path(p).resolve() for p in sys.path[:2]] != [private_site.resolve(), public_site.resolve()]:
     raise SystemExit(f"authoritative Python sites are not first: {sys.path[:4]}")
 
@@ -616,12 +714,19 @@ if "MPICH" not in library_version.upper():
 
 mapped = set()
 for line in Path("/proc/self/maps").read_text(errors="replace").splitlines():
-    fields = line.split()
-    if fields and fields[-1].startswith("/"):
+    fields = line.split(maxsplit=5)
+    if len(fields) == 6 and fields[5].startswith("/"):
         try:
-            mapped.add(Path(fields[-1]).resolve())
+            mapped.add(Path(fields[5]).resolve())
         except OSError:
             pass
+for soname in ("libcrypto.so.3", "libssl.so.3"):
+    providers = {path for path in mapped if path.name == soname}
+    expected = (private / "lib" / soname).resolve()
+    if providers != {expected}:
+        raise SystemExit(
+            f"expected one authoritative private {soname} provider: {sorted(map(str, providers))}"
+        )
 mpi = {path for path in mapped if path.name.startswith("libmpi.so")}
 if len(mpi) != 1 or not all(private in path.parents for path in mpi):
     raise SystemExit(f"expected exactly one mapped private MPICH provider: {sorted(map(str, mpi))}")
@@ -652,8 +757,8 @@ if not numpy_blas or not fenics_blas:
 print(f"fenics_import_order_{mode}=pass")
 PY
 
-"$staged_python" -S -P "$probe" "$runtime" numpy-first
-"$staged_python" -S -P "$probe" "$runtime" petsc-first
+"$staged_python" -B -S -P "$probe" "$runtime" numpy-first
+"$staged_python" -B -S -P "$probe" "$runtime" petsc-first
 
 poisson_runner="$work/poisson-runner.py"
 cat > "$poisson_runner" <<'PY'
@@ -663,7 +768,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 script = Path(sys.argv[2]).resolve()
-bootstrap = root / "lib" / "python3.12" / "site-packages" / "fenics_embed_runtime.py"
+bootstrap = root / "lib" / "python3.14" / "site-packages" / "fenics_embed_runtime.py"
 spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
 if spec is None or spec.loader is None:
     raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
@@ -675,14 +780,14 @@ code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 PY
 rm -rf "$cache"/*
-"$staged_python" -S -P "$poisson_runner" "$runtime" "$repo_root/tests/fenics/test_poisson.py"
+"$staged_python" -B -S -P "$poisson_runner" "$runtime" "$repo_root/tests/fenics/test_poisson.py"
 
 mapfile -t jit_modules < <(find "$cache" -type f -name '*.so' -print | LC_ALL=C sort)
 if ((${#jit_modules[@]} == 0)); then
     echo "fresh FFCx JIT produced no native cache module" >&2
     exit 1
 fi
-python3 - "${jit_modules[@]}" <<'PY'
+"$staged_python" -B -S -P - "${jit_modules[@]}" <<'PY'
 import pathlib
 import re
 import subprocess
@@ -747,7 +852,7 @@ if nonnumeric:
     print("fresh_ffcx_jit_allowed_nonnumeric_versions=" + ",".join(sorted(nonnumeric)))
 PY
 
-"$staged_python" -I -S - "$runtime" "$overlay_manifest" <<'PY'
+"$staged_python" -B -I -S - "$runtime" "$overlay_manifest" <<'PY'
 import json
 from pathlib import Path
 import re
@@ -768,7 +873,7 @@ for record in census.get("census", []):
         raise SystemExit(f"runtime ELF dependency resolution failed for {path}:\n{completed.stdout}")
     resolved = {}
     for line in completed.stdout.splitlines():
-        match = re.match(r"\s*(\S+)\s+=>\s+(\S+)\s+\(", line)
+        match = re.match(r"^\s*(\S+)\s+=>\s+(.+?)\s+\(0x[0-9a-fA-F]+\)\s*$", line)
         if match:
             resolved[match.group(1)] = Path(match.group(2)).resolve()
     for dependency in record.get("dependencies", []):
@@ -776,17 +881,24 @@ for record in census.get("census", []):
             continue
         actual = resolved.get(dependency["name"])
         expected = (root / dependency["provider"]).resolve()
+        # The loader can coalesce two DT_NEEDED names onto one ELF provider
+        # (e.g. libblas.so.3 and liblapack.so.3 both backed by OpenBLAS).
+        # ldd then lists that provider under only one of those names.  Do not
+        # accept an absent name unless its *exact* bundled provider was loaded.
+        if actual is None and expected in resolved.values():
+            continue
         if actual != expected:
             raise SystemExit(
                 f"bundled dependency resolved outside overlay: {record['path']} -> "
-                f"{dependency['name']} -> {actual} != {expected}"
+                f"{dependency['name']} -> {actual} != {expected}\n"
+                f"raw ldd output for {path}:\n{completed.stdout}"
             )
 print("fenics_native_dependency_resolution=pass")
 PY
 
 if [[ -n "$evidence" ]]; then
     mkdir -p "$(dirname "$evidence")"
-    python3 - "$archive" "$overlay_manifest" "$evidence" <<'PY'
+    "$staged_python" -B -S -P - "$archive" "$overlay_manifest" "$evidence" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -853,6 +965,8 @@ print(f"standalone_runtime_qualified={str(payload['standalone_runtime_qualified'
 print(f"release_eligible={str(payload['release_eligible']).lower()}")
 PY
 fi
+
+verify_inherited_base_tree "$runtime" yes
 
 echo "fenics_public_overlay_test=pass"
 echo "fenics_numpy_base_identity=pass"

@@ -13,7 +13,10 @@ provenance.  Qualification remains a separate hosted-runtime gate.
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -27,7 +30,7 @@ from urllib.parse import urlparse
 import zipfile
 
 
-REQUIRED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2")
+REQUIRED_SOURCES = ("basix", "dolfinx", "fmt", "spdlog", "pugixml", "libxml2", "icu")
 REQUIRED_PACKAGES = (
     "fmt",
     "spdlog",
@@ -37,6 +40,7 @@ REQUIRED_PACKAGES = (
     "fenics-libdolfinx",
     "fenics-dolfinx",
     "libxml2-16",
+    "icu",
 )
 EXPECTED_STOCK_ABI_VIOLATING_PACKAGES = (
     "fenics-basix",
@@ -90,10 +94,14 @@ ABI_CEILINGS = {
 HANDOFF_FORMAT_VERSION = 1
 HANDOFF_KIND = "linux-fenics-native-rebuild-handoff"
 HANDOFF_STATUS = "candidate-unqualified"
-CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION = 1
+CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION = 2
 CANDIDATE_BUILD_HANDOFF_KIND = "linux-fenics-native-build-candidate-handoff"
 CANDIDATE_BUILD_HANDOFF_STATUS = "candidate-built-unqualified"
 HANDOFF_OMISSION_PACKAGES = ("kahip", "libadios2", "zeromq")
+DOLFINX_OMISSION_BUILD_FLAGS = {
+    "DOLFINX_ENABLE_ADIOS2": "OFF",
+    "DOLFINX_ENABLE_KAHIP": "OFF",
+}
 HANDOFF_PROVIDER_OWNER = "python-numpy-fenics-native-provider"
 REBUILD_COMPONENT_OWNERS = {
     "basix": "fenics-libbasix",
@@ -101,11 +109,18 @@ REBUILD_COMPONENT_OWNERS = {
     "spdlog": "spdlog",
     "pugixml": "pugixml",
     "libxml2": "libxml2-16",
+    "icu": "icu",
     "dolfinx": "fenics-libdolfinx",
 }
 WHEEL_OWNERS = {
     "fenics_basix": "fenics-basix",
     "fenics_dolfinx": "fenics-dolfinx",
+}
+LOCKED_PYTHON_SITE = PurePosixPath("lib/python3.14/site-packages")
+TARGET_PYTHON_SITE = PurePosixPath("lib/python3.14/site-packages")
+WHEEL_MEMBER_ROOTS = {
+    "fenics-basix": ("basix", "fenics_basix-0.11.0.dist-info"),
+    "fenics-dolfinx": ("dolfinx", "fenics_dolfinx-0.11.0.dist-info"),
 }
 
 
@@ -274,9 +289,15 @@ def validate_sources(source_lock_path: Path, source_dir: Path) -> tuple[dict, li
     manifest = load_json(source_lock_path)
     if manifest.get("schema_version") != 1:
         raise InputError("unsupported FEniCS rebuild source-manifest schema")
+    if manifest.get("target") != {
+        "architecture": "x86_64",
+        "python_abi": "cp314",
+        "glibc_floor": "2.17",
+    }:
+        raise InputError("FEniCS rebuild source manifest target must be x86_64/cp314/glibc-2.17")
     sources = manifest.get("sources")
     if not isinstance(sources, dict) or tuple(sources) != REQUIRED_SOURCES:
-        raise InputError("source manifest must contain exactly the fixed Basix/DOLFINx/fmt/spdlog/pugixml/libxml2 sources")
+        raise InputError("source manifest must contain exactly the fixed Basix/DOLFINx/fmt/spdlog/pugixml/libxml2/ICU sources")
     evidence = []
     for key in REQUIRED_SOURCES:
         record = sources[key]
@@ -405,8 +426,8 @@ def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
         raise InputError("unsupported Python wheel-builder manifest identity")
     if manifest.get("target") != {
         "architecture": "x86_64",
-        "python_version": "3.12.10",
-        "python_abi": "cp312",
+        "python_version": "3.14.10",
+        "python_abi": "cp314",
         "glibc_floor": "2.17",
     }:
         raise InputError("Python wheel-builder target differs from the frozen Linux CPython contract")
@@ -451,12 +472,17 @@ def validate_python_builder(path: Path) -> tuple[dict, Path, Path]:
             raise InputError(f"Python wheel-builder wheel version differs for {name!r}")
         require_sha(record.get("sha256"), f"Python wheel-builder wheel {name} sha256")
     base_runtime = manifest.get("base_runtime")
+    base_tcl_tk = base_runtime.get("tcl_tk") if isinstance(base_runtime, dict) else None
     if (
         not isinstance(base_runtime, dict)
         or base_runtime.get("profile") != "numpy"
-        or base_runtime.get("python_version") != "3.12.10"
-        or base_runtime.get("python_abi") != "cp312"
+        or base_runtime.get("python_version") != "3.14.10"
+        or base_runtime.get("python_abi") != "cp314"
         or base_runtime.get("python_sha256") != python_record.get("sha256")
+        or not isinstance(base_tcl_tk, dict)
+        or base_tcl_tk.get("version") != "8.6.18"
+        or base_tcl_tk.get("ownership") != "producer"
+        or not re.fullmatch(r"[0-9a-f]{64}", str(base_tcl_tk.get("provenance_sha256", "")))
     ):
         raise InputError("Python wheel-builder base-runtime identity is incomplete or inconsistent")
     for key in ("runtime_manifest_sha256", "qualified_archive_sha256"):
@@ -512,7 +538,7 @@ def validate_libxml2_build_deps(path: Path, package_lock: Path) -> tuple[dict, P
         raise InputError("libxml2 build-dependency FEniCS package-lock identity mismatch")
     require_sha(input_evidence.get("fenics_prefix_verification_sha256"), "libxml2 build-dependency prefix verification sha256")
     if (
-        input_evidence.get("fenics_prefix_verified_package_count") != 128
+        input_evidence.get("fenics_prefix_verified_package_count") != 124
         or input_evidence.get("development_replay_input_format") != "@EXPLICIT-url-plus-sha256"
         or input_evidence.get("dependency_solver_used") is not False
     ):
@@ -915,12 +941,14 @@ def build_candidate(
         "MPICH_CC": str(tools["cc"]), "MPICH_CXX": str(tools["cxx"]),
         "PKG_CONFIG_PATH": f"{stock}/lib/pkgconfig:{stock}/share/pkgconfig",
         "LD_LIBRARY_PATH": f"{lib}:{stock}/lib",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
         "SOURCE_DATE_EPOCH": "315532800",
     })
     common = [
         "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
         f"-DCMAKE_C_COMPILER={tools['cc']}",
         f"-DCMAKE_CXX_COMPILER={tools['cxx']}",
         f"-DCMAKE_C_FLAGS=-specs={c_specs}",
@@ -954,18 +982,51 @@ def build_candidate(
         "-DLIBXML2_WITH_TESTS=OFF", "-DLIBXML2_WITH_PROGRAMS=OFF", "-DLIBXML2_WITH_DOCS=OFF",
         "-DLIBXML2_WITH_LEGACY=ON", "-DLIBXML2_WITH_TLS=ON", f"-DCMAKE_SHARED_LINKER_FLAGS={link_flags}",
     ])
+    # ICU remains reachable through locked MPI/hwloc and curl/PSL providers,
+    # even with the rebuilt libxml2 configured without ICU support.  Rebuild
+    # only the locked 78.3 ICU libraries against the frozen C++ provider.
+    icu_build = build / "icu"
+    icu_build.mkdir()
+    icu_env = env.copy()
+    icu_env.update({
+        "CFLAGS": f"-specs={c_specs} -fPIC",
+        "CXXFLAGS": f"-specs={cxx_specs} -fPIC -fvisibility-inlines-hidden",
+        "LDFLAGS": f"-L{link_root}",
+    })
+    icu_source = src / "icu" / "source"
+    if not (icu_source / "configure").is_file():
+        raise InputError("pinned ICU 78.3 source archive has no configure script")
+    run("/bin/bash", str(icu_source / "configure"),
+        f"--prefix={prefix}", f"--libdir={lib}",
+        "--enable-shared", "--disable-static",
+        "--disable-samples", "--disable-extras",
+        "--with-data-packaging=library", env=icu_env, cwd=icu_build)
+    run(tools["make"], "-j4", env=icu_env, cwd=icu_build)
+    run(tools["make"], "install", env=icu_env, cwd=icu_build)
+    icu_installed = sorted(
+        path for path in lib.glob("libicu*.so*") if path.is_file()
+    )
+    if not icu_installed or not any(path.name == "libicuuc.so.78.3" for path in icu_installed):
+        raise InputError("ICU 78.3 rebuild did not install versioned runtime libraries")
+    (icu_build / "install_manifest.txt").write_text(
+        "".join(f"{path}\n" for path in icu_installed), encoding="utf-8"
+    )
     cmake_build("dolfinx", src / "dolfinx-0.11.0" / "cpp", [
         f"-DCMAKE_PREFIX_PATH={prefix};{stock}", f"-DCMAKE_LIBRARY_PATH={prefix}/lib;{stock}/lib", f"-DMPI_C_COMPILER={stock}/bin/mpicc", f"-DMPI_CXX_COMPILER={stock}/bin/mpicxx",
         "-DMPI_CXX_SKIP_MPICXX=ON", "-DMPI_CXX_LIB_NAMES=mpi", "-DDOLFINX_BASIX_PYTHON=OFF", "-DDOLFINX_UFCX_PYTHON=OFF", "-DDOLFINX_ENABLE_ADIOS2=OFF", "-DDOLFINX_ENABLE_KAHIP=OFF", "-DDOLFINX_ENABLE_PETSC=ON", "-DDOLFINX_ENABLE_SLEPC=ON", "-DDOLFINX_ENABLE_SUPERLU_DIST=ON", "-DDOLFINX_ENABLE_PARMETIS=ON", "-DDOLFINX_ENABLE_SCOTCH=ON", f"-DCMAKE_SHARED_LINKER_FLAGS={link_flags}", f"-DCMAKE_MODULE_LINKER_FLAGS={link_flags}",
     ])
 
     wheel_rpath = r"$ORIGIN/../../../../lib"
+    compatibility = build / "python-builder-compat"
+    compatibility.mkdir()
+    compat_source = Path(__file__).with_name("fenics_builder_sitecustomize.py")
+    shutil.copy2(compat_source, compatibility / "sitecustomize.py")
     wheel_env = env.copy()
     wheel_env.update({
         "CMAKE_PREFIX_PATH": f"{prefix};{stock}",
         "CFLAGS": f"-specs={c_specs}",
         "CXXFLAGS": f"-specs={cxx_specs} -fvisibility-inlines-hidden",
-        "PYTHONPATH": str(python_builder_site),
+        "PYTHONPATH": os.pathsep.join([str(compatibility), str(python_builder_site)]),
         "PYTHONNOUSERSITE": "1",
         "PIP_CONFIG_FILE": os.devnull,
         "PIP_NO_INDEX": "1",
@@ -988,9 +1049,10 @@ def build_candidate(
     with zipfile.ZipFile(basix_wheel) as zf:
         zf.extractall(basix_audit)
     wheel_env["PYTHONPATH"] = os.pathsep.join([
+        str(compatibility),
         str(python_builder_site),
         str(basix_audit),
-        str(stock / "lib" / "python3.12" / "site-packages"),
+        str(stock.joinpath(*LOCKED_PYTHON_SITE.parts)),
     ])
     wheel_env["CMAKE_ARGS"] = (
         f"-DCMAKE_C_COMPILER={tools['cc']} "
@@ -1017,7 +1079,7 @@ def build_candidate(
     return [basix_wheel, dolfinx_wheel], [basix_audit, dolfinx_audit]
 
 
-def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path]) -> tuple[list[dict], list[dict]]:
+def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Path], tools: dict[str, Path], locked_prefix: Path) -> tuple[list[dict], list[dict]]:
     prefix = roots["prefix"]
     patterns = [
         "lib/libfenics_cxxrt.so.1",
@@ -1026,6 +1088,12 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
         "lib/libspdlog.so.*",
         "lib/libpugixml.so.*",
         "lib/libxml2.so.*",
+        "lib/libicudata.so.78.3",
+        "lib/libicui18n.so.78.3",
+        "lib/libicuio.so.78.3",
+        "lib/libicuuc.so.78.3",
+        "lib/libicutu.so.78.3",
+        "lib/libicutest.so.78.3",
         "lib/libdolfinx.so.0.11.0",
     ]
     elfs: list[Path] = []
@@ -1039,6 +1107,41 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
         if not candidates:
             raise InputError(f"rebuilt wheel contains no extension module: {root}")
         elfs.extend(candidates)
+    relocation_records = []
+    for path in dict.fromkeys(elfs):
+        if path.name == "libfenics_cxxrt.so.1":
+            continue  # separately SHA-256 pinned before entering this builder
+        before = inspect_elf(path, tools["readelf"], require_relative_rpath=False)
+        entries = [entry for packed in before["rpath"] for entry in packed.split(":") if entry]
+        absolute = [entry for entry in entries if not entry.startswith("$ORIGIN")]
+        if not absolute:
+            continue
+        allowed = {str(roots["prefix"] / "lib"), str(roots["prefix"] / "lib64")}
+        # The locked FEniCS runtime is an input to the build, never a runtime
+        # provider path in the standalone overlay.
+        allowed.add(str(locked_prefix / "lib"))
+        if any(entry not in allowed for entry in absolute):
+            raise InputError(f"unrecognized native rebuild RPATH in {path}: {absolute}")
+        relative = "$ORIGIN" if path.is_relative_to(prefix / "lib") else "$ORIGIN/../../../../lib"
+        patchelf = shutil.which("patchelf")
+        if not patchelf:
+            raise InputError("native ELF RPATH relocation requires patchelf")
+        run(patchelf, "--force-rpath", "--set-rpath", relative, str(path))
+        after = inspect_elf(path, tools["readelf"])
+        for field in ("needed", "soname", "required_versions", "private_versions", "version_max"):
+            if before[field] != after[field]:
+                raise InputError(f"native ELF relocation modified {field}: {path}")
+        relocation_records.append({"path": str(path), "before_sha256": before["sha256"], "after_sha256": after["sha256"], "before_rpath": before["rpath"], "after_rpath": after["rpath"]})
+    (roots["evidence"] / "native-rpath-relocation.json").write_text(
+        json.dumps(relocation_records, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    for wheel, audit_root in zip(wheels, audits, strict=True):
+        replacements = {
+            Path(item["path"]).relative_to(audit_root).as_posix(): Path(item["path"]).read_bytes()
+            for item in relocation_records if Path(item["path"]).is_relative_to(audit_root)
+        }
+        if replacements:
+            rewrite_relocated_wheel(wheel, replacements)
     elf_records = [inspect_elf(path, tools["readelf"]) for path in dict.fromkeys(elfs)]
     for record in elf_records:
         if record["path"].endswith("libfenics_cxxrt.so.1"):
@@ -1047,6 +1150,47 @@ def collect_outputs(roots: dict[str, Path], wheels: list[Path], audits: list[Pat
             raise InputError(f"rebuilt output retains host C++ runtime symbol versions: {record['path']}")
     wheel_records = [{"path": str(path), "sha256": sha256(path), "size": path.stat().st_size} for path in wheels]
     return elf_records, wheel_records
+
+
+def rewrite_relocated_wheel(wheel: Path, replacements: dict[str, bytes]) -> None:
+    """Update rebuilt extension bytes and wheel RECORD without changing other files."""
+    temp = wheel.with_suffix(".relocated.tmp")
+    try:
+        with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(temp, "w") as destination:
+            names = source.namelist()
+            if len(set(names)) != len(names) or not set(replacements).issubset(names):
+                raise InputError("relocated wheel has duplicate or missing extension members")
+            record_names = [name for name in names if name.endswith(".dist-info/RECORD")]
+            if len(record_names) != 1:
+                raise InputError("relocated wheel must contain exactly one RECORD")
+            record_name = record_names[0]
+            rows = list(csv.reader(io.StringIO(source.read(record_name).decode("utf-8"))))
+            seen = set()
+            for row in rows:
+                if len(row) != 3:
+                    raise InputError("malformed rebuilt wheel RECORD")
+                name = row[0]
+                if name in replacements:
+                    digest = hashlib.sha256(replacements[name]).digest()
+                    row[1] = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+                    row[2] = str(len(replacements[name]))
+                    seen.add(name)
+            if seen != set(replacements):
+                raise InputError("relocated wheel extension absent from RECORD")
+            text_buffer = io.StringIO(newline="")
+            writer = csv.writer(text_buffer, lineterminator="\n")
+            writer.writerows(rows)
+            for member in source.infolist():
+                if member.filename == record_name:
+                    contents = text_buffer.getvalue().encode("utf-8")
+                else:
+                    contents = replacements.get(member.filename)
+                    if contents is None:
+                        contents = source.read(member.filename)
+                destination.writestr(member, contents)
+        os.replace(temp, wheel)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def candidate_output_binding(
@@ -1155,14 +1299,20 @@ def installed_owned_paths(record: dict) -> set[str]:
 
 def handoff_runtime_prefix_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    if text.startswith("include/"):
-        return True
     return re.fullmatch(r"lib/[^/]+\.so(?:\..*)?", text) is not None
 
 
 def ignored_build_install_path(relative: PurePosixPath) -> bool:
     text = relative.as_posix()
-    return text.startswith(("lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+    return text in {"bin/xml2-config", "lib/dolfinx/dolfinx.conf"} or text.startswith(("include/", "lib/cmake/", "lib/pkgconfig/", "share/")) or relative.suffix == ".a"
+
+
+def retained_libxml2_development_header(relative: PurePosixPath, owner: str, installed: dict) -> bool:
+    """Keep separately locked libxml2 headers from its development package."""
+    if owner != "libxml2-16" or relative.parts[:2] != ("include", "libxml2"):
+        return False
+    development = installed.get("libxml2")
+    return development is not None and relative.as_posix() in installed_owned_paths(development)
 
 
 def collect_install_owners(roots: dict[str, Path]) -> dict[str, str]:
@@ -1210,7 +1360,14 @@ def collect_candidate_replacements(
     install_owners = collect_install_owners(roots)
     replacements: dict[str, dict] = {}
 
-    def add_candidate(destination_relative: PurePosixPath, owner: str, data: bytes, mode: int) -> None:
+    def add_candidate(
+        destination_relative: PurePosixPath,
+        owner: str,
+        data: bytes,
+        mode: int,
+        *,
+        cp314_wheel_payload: bool = False,
+    ) -> None:
         text = destination_relative.as_posix()
         if text in replacements:
             raise InputError(f"native rebuild handoff has duplicate replacement destination: {text}")
@@ -1218,6 +1375,33 @@ def collect_candidate_replacements(
             if text != "lib/libfenics_cxxrt.so.1":
                 raise InputError(f"private provider has unexpected handoff destination: {text}")
             replaces_sha = None
+        elif cp314_wheel_payload:
+            roots_for_owner = WHEEL_MEMBER_ROOTS.get(owner)
+            if roots_for_owner is None:
+                raise InputError(f"cp314 wheel payload has no fixed owner roots: {owner}")
+            try:
+                target_member = destination_relative.relative_to(TARGET_PYTHON_SITE)
+            except ValueError as exc:
+                raise InputError(f"cp314 wheel payload is outside the cp314 site-packages root: {text}") from exc
+            if not target_member.parts or target_member.parts[0] not in roots_for_owner:
+                raise InputError(f"cp314 wheel payload escapes the fixed package roots for {owner}: {text}")
+            stock_paths = owned_by_package.get(owner, set())
+            if not any(
+                PurePosixPath(stock_path).is_relative_to(LOCKED_PYTHON_SITE)
+                and PurePosixPath(stock_path).relative_to(LOCKED_PYTHON_SITE).parts
+                and PurePosixPath(stock_path).relative_to(LOCKED_PYTHON_SITE).parts[0] in roots_for_owner
+                for stock_path in stock_paths
+            ):
+                raise InputError(f"cp314 wheel payload owner has no bound cp314 locked Python payload: {owner}")
+            if text in stock_paths:
+                stock = locked_prefix / Path(*destination_relative.parts)
+                if not stock.is_file() or stock.is_symlink():
+                    raise InputError(
+                        f"cp314 wheel replacement stock destination is not a regular file: {owner}: {text}"
+                    )
+                replaces_sha = sha256(stock)
+            else:
+                replaces_sha = None
         else:
             if owner not in owned_by_package or text not in owned_by_package[owner]:
                 raise InputError(f"candidate replacement is not owned by locked package {owner}: {text}")
@@ -1238,6 +1422,8 @@ def collect_candidate_replacements(
     for raw_relative, owner in sorted(install_owners.items()):
         relative = safe_handoff_relative(raw_relative, "candidate install destination")
         source = roots["prefix"] / Path(*relative.parts)
+        if retained_libxml2_development_header(relative, owner, installed):
+            continue
         if source.is_symlink():
             stock = locked_prefix / Path(*relative.parts)
             if owner != HANDOFF_PROVIDER_OWNER and stock.is_symlink():
@@ -1263,9 +1449,15 @@ def collect_candidate_replacements(
                 zip_mode = (info.external_attr >> 16) & 0o177777
                 if stat.S_ISLNK(zip_mode):
                     raise InputError(f"candidate wheel contains a symlink: {wheel.name}: {member}")
-                destination_relative = PurePosixPath("lib/python3.12/site-packages") / member
+                destination_relative = TARGET_PYTHON_SITE / member
                 mode = zip_mode & 0o777 or 0o644
-                add_candidate(destination_relative, wheel_owner, bundle.read(info), mode)
+                add_candidate(
+                    destination_relative,
+                    wheel_owner,
+                    bundle.read(info),
+                    mode,
+                    cp314_wheel_payload=True,
+                )
 
     if not replacements:
         raise InputError("native rebuild produced no package handoff replacements")
@@ -1276,6 +1468,26 @@ def regular_file_identity(path: Path, label: str) -> dict:
     if not path.is_file() or path.is_symlink():
         raise InputError(f"{label} is missing or is not a regular file: {path}")
     return {"path": str(path.resolve()), "sha256": sha256(path)}
+
+
+def dolfinx_build_configuration(roots: dict[str, Path]) -> dict:
+    """Bind the DOLFINx omission-producing CMake configuration into the candidate."""
+
+    cache = roots["build"] / "dolfinx" / "CMakeCache.txt"
+    identity = regular_file_identity(cache, "DOLFINx CMake cache")
+    observed: dict[str, list[str]] = {name: [] for name in DOLFINX_OMISSION_BUILD_FLAGS}
+    pattern = re.compile(r"(DOLFINX_ENABLE_(?:ADIOS2|KAHIP)):[^=]+=([^\r\n]+)")
+    for line in cache.read_text(encoding="utf-8", errors="strict").splitlines():
+        match = pattern.fullmatch(line)
+        if match and match.group(1) in observed:
+            observed[match.group(1)].append(match.group(2).strip().upper())
+    flags: dict[str, str] = {}
+    for name, expected in DOLFINX_OMISSION_BUILD_FLAGS.items():
+        values = observed[name]
+        if values != [expected]:
+            raise InputError(f"DOLFINx build cache does not prove {name}={expected}: {values!r}")
+        flags[name] = expected
+    return {"cmake_cache": identity, "flags": flags}
 
 
 def write_candidate_build_handoff(
@@ -1328,6 +1540,7 @@ def write_candidate_build_handoff(
     if set(source_hashes_unsorted) != set(REQUIRED_SOURCES):
         raise InputError("candidate build source evidence differs from the fixed source set")
     source_hashes = {name: source_hashes_unsorted[name] for name in sorted(REQUIRED_SOURCES)}
+    build_configuration = dolfinx_build_configuration(roots)
 
     payload = {
         "format_version": CANDIDATE_BUILD_HANDOFF_FORMAT_VERSION,
@@ -1355,6 +1568,7 @@ def write_candidate_build_handoff(
             "private_provider_manifest": regular_file_identity(
                 private_provider_manifest, "private-provider manifest"
             ),
+            "dolfinx_build_configuration": build_configuration,
         },
         "candidate_output_binding": output_binding,
         "candidate_output_binding_sha256": output_binding_sha,
@@ -1431,6 +1645,7 @@ def validate_candidate_build_handoff(path: Path) -> dict:
         "python_builder_manifest",
         "libxml2_build_deps_manifest",
         "private_provider_manifest",
+        "dolfinx_build_configuration",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected_inputs:
         raise InputError("candidate build handoff has unexpected or missing inputs")
@@ -1453,6 +1668,17 @@ def validate_candidate_build_handoff(path: Path) -> dict:
     python_builder_manifest = checked_input("python_builder_manifest")
     libxml2_build_deps_manifest = checked_input("libxml2_build_deps_manifest")
     private_provider_manifest = checked_input("private_provider_manifest")
+
+    expected_build_configuration = inputs.get("dolfinx_build_configuration")
+    if (
+        not isinstance(expected_build_configuration, dict)
+        or set(expected_build_configuration) != {"cmake_cache", "flags"}
+        or expected_build_configuration.get("flags") != DOLFINX_OMISSION_BUILD_FLAGS
+    ):
+        raise InputError("candidate build DOLFINx configuration identity is invalid")
+    actual_build_configuration = dolfinx_build_configuration(roots)
+    if actual_build_configuration != expected_build_configuration:
+        raise InputError("candidate build DOLFINx configuration changed after candidate handoff")
 
     locked_prefix_record = inputs.get("locked_prefix")
     if not isinstance(locked_prefix_record, dict) or set(locked_prefix_record) != {"path"}:
@@ -1565,6 +1791,7 @@ def validate_candidate_build_handoff(path: Path) -> dict:
         "python_builder_manifest": python_builder_manifest,
         "libxml2_build_deps_manifest": libxml2_build_deps_manifest,
         "private_provider_manifest": private_provider_manifest,
+        "dolfinx_build_configuration": actual_build_configuration,
         "wheels": wheels,
         "elf_records": elf_records,
         "wheel_records": wheel_records,
@@ -1696,6 +1923,8 @@ def finalize_candidate_build_handoff(
     candidate = validate_candidate_build_handoff(candidate_handoff_path)
     native_closure = validate_native_closure_report(native_closure_report)
     verify_native_closure_candidate_binding(native_closure, candidate["candidate_output_binding"])
+    if native_closure["dolfinx_build_flags"] != candidate["dolfinx_build_configuration"]["flags"]:
+        raise InputError("native closure DOLFINx build flags differ from candidate-bound CMake evidence")
     if destination is None:
         destination = candidate["roots"]["evidence"] / "package-handoff" / "native-rebuild-handoff.json"
     payload = write_package_handoff(
@@ -1902,7 +2131,7 @@ def main(argv: list[str] | None = None) -> int:
                 zlib_library,
                 lzma_library,
             )
-            elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools)
+            elf_records, wheel_records = collect_outputs(roots, wheels, audits, tools, args.locked_prefix.resolve())
             candidate_build_path = roots["evidence"] / "native-build-handoff.json"
             candidate_build_payload = write_candidate_build_handoff(
                 candidate_build_path,

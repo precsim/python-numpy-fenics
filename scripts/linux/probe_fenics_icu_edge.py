@@ -2,7 +2,7 @@
 """Hosted Linux probe for cutting the HDF5 -> curl -> libpsl -> ICU edge.
 
 The probe rebuilds only libcurl 8.23.0 with ``--without-libpsl`` from pinned
-public inputs.  It never changes the 128-package runtime lock and never claims
+public inputs.  It never changes the 124-package runtime lock and never claims
 that the resulting library is a releasable overlay input.  Its purpose is to
 produce executable closure evidence for one ICU edge while retaining the
 independent MPICH -> hwloc -> libxml2 -> ICU path as a negative control.
@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -25,7 +26,7 @@ from urllib.request import Request, urlopen
 
 
 CONTRACT_KIND = "linux-fenics-libcurl-without-libpsl-icu-edge-probe"
-EXPECTED_LOCK_RECORD_COUNT = 128
+EXPECTED_LOCK_RECORD_COUNT = 124
 EXPECTED_CURL_VERSION = "8.23.0"
 EXPECTED_CURL_SOURCE_SHA256 = "95b22eb32bf6d1fa6e3e9463bdb61cece3efc56d86576a9b3cbd428246a6d854"
 EXPECTED_FEEDSTOCK_COMMIT = "d770c46d773d7e2c81555d606720c3d6435b216f"
@@ -91,7 +92,7 @@ def load_contract(path: Path) -> dict:
 
     runtime_lock = data.get("runtime_lock")
     if not isinstance(runtime_lock, dict) or runtime_lock.get("record_count") != EXPECTED_LOCK_RECORD_COUNT:
-        raise ProbeError("ICU-edge contract must preserve the exact 128-record runtime lock")
+        raise ProbeError("ICU-edge contract must preserve the exact 124-record runtime lock")
     packages = runtime_lock.get("packages")
     expected_names = {"hdf5", "libcurl", "libpsl", "icu", "mpich", "libhwloc", "libxml2", "libxml2-16"}
     if not isinstance(packages, dict) or set(packages) != expected_names:
@@ -250,7 +251,7 @@ def validate_hosted_evidence(prefix_verification: Path, build_tool_verification:
         or not isinstance(prefix.get("packages"), list)
         or len(prefix["packages"]) != EXPECTED_LOCK_RECORD_COUNT
     ):
-        raise ProbeError("hosted FEniCS prefix verification does not prove the exact 128-record locked replay")
+        raise ProbeError("hosted FEniCS prefix verification does not prove the exact 124-record locked replay")
 
     build_tools = load_json(build_tool_verification)
     expected_roots = {
@@ -510,16 +511,28 @@ def build_provider_index(prefix: Path, readelf: Path) -> tuple[dict[str, Path], 
         for key in keys:
             prior = providers.get(key)
             if prior is not None and prior.resolve() != path.resolve():
-                raise ProbeError(f"multiple locked providers for {key}: {prior} and {path}")
+                prior_audit = audits.get(prior.resolve())
+                if prior_audit is None or prior_audit.get("sha256") != audit.get("sha256"):
+                    raise ProbeError(f"multiple locked providers for {key}: {prior} and {path}")
+                # Conda packages may install an exact SONAME filename and a
+                # versioned regular-file alias as byte-identical hardlink/copy
+                # payloads.  Treat that as one provider identity and prefer the
+                # exact filename matching the requested SONAME when available.
+                if path.name == key and prior.name != key:
+                    providers[key] = path.resolve()
+                continue
             providers[key] = path.resolve()
     for path in sorted(library_root.iterdir()):
         if not path.is_symlink():
             continue
         target = path.resolve(strict=False)
         if target in audits:
-            prior = providers.get(path.name)
-            if prior is not None and prior.resolve() != target:
-                raise ProbeError(f"ambiguous locked symlink provider for {path.name}")
+            # An exact filename in the prefix is the loader-visible provider
+            # for that DT_NEEDED name.  This is how conda's _openmp_mutex
+            # selects LLVM OpenMP: libgomp.so.1 is a symlink to libomp while
+            # the GNU libgomp package still ships libgomp.so.1.0.0 with the
+            # same SONAME.  The exact symlink must override that SONAME-only
+            # claim.
             providers[path.name] = target
     return providers, audits
 
@@ -543,9 +556,12 @@ def candidate_curl_provider(install_prefix: Path, readelf: Path) -> tuple[Path, 
 def find_root(prefix: Path, pattern: str) -> Path:
     candidates = [path.resolve() for path in sorted((prefix / "lib").glob(pattern)) if not path.is_symlink() and is_elf(path)]
     unique = sorted(set(candidates))
-    if len(unique) != 1:
-        raise ProbeError(f"expected one ELF root for {pattern}, found {len(unique)}: {unique}")
-    return unique[0]
+    if not unique:
+        raise ProbeError(f"expected one ELF root for {pattern}, found 0: []")
+    identities = {sha256_file(path) for path in unique}
+    if len(identities) != 1:
+        raise ProbeError(f"expected one ELF root identity for {pattern}, found {len(unique)}: {unique}")
+    return min(unique, key=lambda path: (len(path.name), path.name))
 
 
 def closure(root: Path, providers: dict[str, Path], readelf: Path, external_allowlist: set[str]) -> dict:
@@ -711,19 +727,63 @@ def build_curl(contract: dict, source: Path, locked_prefix: Path, build_tool_pre
         ),
         "CPPFLAGS": f"-I{locked_prefix / 'include'}",
         "CFLAGS": "-O2 -fPIC",
-        "LDFLAGS": f"-L{locked_prefix / 'lib'}",
+        "LDFLAGS": f"-L{locked_prefix / 'lib'} -Wl,--no-as-needed",
+        # Keep the stock direct zlib provider edge while testing the isolated
+        # PSL omission. The conda compiler otherwise drops -lz with its
+        # default --as-needed behavior in this independent curl build.
+        # The locked libzlib runtime provides libz.so.1; an unversioned
+        # libz.so development linker alias is not part of this runtime lock.
+        "LIBS": "-l:libz.so.1",
         "LD_LIBRARY_PATH": str(locked_prefix / "lib"),
     }
     configure = [str(source_root / "configure"), f"--prefix={install_prefix}", f"--host={contract['probe']['host_triplet']}"]
     configure.extend(flag.format(locked_prefix=locked_prefix) for flag in contract["probe"]["configure_flags"])
-    configure_result = run(configure, cwd=source_root, env=env)
+    try:
+        configure_result = run(configure, cwd=source_root, env=env)
+    except ProbeError as exc:
+        config_log = source_root / "config.log"
+        tail = "\n".join(config_log.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]) if config_log.is_file() else "missing config.log"
+        raise ProbeError(f"{exc}\nconfigure config.log (last 100 lines):\n{tail}") from exc
     run([str(tools["make"]), "-j2"], cwd=source_root, env=env)
     run([str(tools["make"]), "install"], cwd=source_root, env=env)
+    # Conda's compiler wrapper adds a link-time search path into its own
+    # build-only prefix.  The experiment must be able to relocate the curl
+    # candidate without keeping that temporary toolchain on the ELF path.
+    relocation = relocate_curl_probe(install_prefix, build_tool_prefix)
     return install_prefix, {
         "configure": configure,
         "configure_output_sha256": hashlib.sha256(configure_result.stdout.encode("utf-8")).hexdigest(),
         "configuration_provenance": contract["probe"]["configuration_provenance"],
+        "relocation": relocation,
     }
+
+
+def relocate_curl_probe(install_prefix: Path, build_tool_prefix: Path) -> list[dict]:
+    patchelf = shutil.which("patchelf")
+    readelf = build_tool_prefix / "bin" / "x86_64-conda-linux-gnu-readelf"
+    if not patchelf:
+        raise ProbeError("ICU-edge relocation requires patchelf in the pinned manylinux container")
+    records = []
+    paths = [*sorted((install_prefix / "lib").glob("libcurl.so*")), install_prefix / "bin" / "curl"]
+    for path in paths:
+        if path.is_symlink() or not is_elf(path):
+            continue
+        before = read_elf(path, readelf)
+        # Reject unexpected absolute paths even during this build-only probe.
+        build_lib = str(build_tool_prefix / "lib")
+        install_lib = str(install_prefix / "lib")
+        for packed in before["rpath"]:
+            for entry in packed.split(":"):
+                if entry and not entry.startswith("$ORIGIN") and entry not in (build_lib, install_lib):
+                    raise ProbeError(f"unexpected curl probe build RPATH: {path}: {entry}")
+        relative_rpath = "$ORIGIN/../lib" if path.parent == install_prefix / "bin" else "$ORIGIN"
+        if before["rpath"]:
+            run([patchelf, "--set-rpath", relative_rpath, str(path)])
+        after = read_elf(path, readelf, strict_abi=True)
+        records.append({"path": str(path), "before_rpath": before["rpath"], "after_rpath": after["rpath"], "sha256": after["sha256"]})
+    if not any(Path(record["path"]).name.startswith("libcurl.so") for record in records):
+        raise ProbeError("curl relocation found no rebuilt libcurl ELF")
+    return records
 
 
 def external_allowlist(base_provenance_path: Path) -> set[str]:
@@ -765,17 +825,32 @@ def validate_linker_resolution_output(output: str, candidate_lib: Path) -> str:
     return str(provider_real)
 
 
-def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path) -> dict:
+def run_linker_resolution_probe(hdf5: Path, candidate_lib: Path, locked_prefix: Path, scratch: Path) -> dict:
+    # The stock HDF5 ELF has an RPATH that intentionally resolves its locked
+    # libcurl before LD_LIBRARY_PATH.  Exercise the candidate using a private
+    # relocated HDF5 copy, retaining the original locked ELF unchanged.
+    patchelf = shutil.which("patchelf")
+    if not patchelf:
+        raise ProbeError("HDF5 linker control requires patchelf")
+    control = scratch / "hdf5-linker-control"
+    control.mkdir()
+    staged_hdf5 = control / hdf5.name
+    shutil.copy2(hdf5, staged_hdf5)
+    (control / "libcurl.so.4").symlink_to(candidate_lib / "libcurl.so.4")
+    run([patchelf, "--force-rpath", "--set-rpath", "$ORIGIN", str(staged_hdf5)])
     env = {
         "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": os.pathsep.join([str(candidate_lib), str(locked_prefix / "lib")]),
         "LD_BIND_NOW": "1",
     }
-    output = run(["ldd", "-r", str(hdf5)], env=env).stdout
+    output = run(["ldd", "-r", str(staged_hdf5)], env=env).stdout
     provider = validate_linker_resolution_output(output, candidate_lib)
     return {
         "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         "libcurl_provider": provider,
+        "control_hdf5_sha256": sha256_file(staged_hdf5),
+        "original_hdf5_sha256": sha256_file(hdf5),
+        "control_rpath": "$ORIGIN",
     }
 
 
@@ -851,7 +926,7 @@ def run_probe(
     if candidate_curl.resolve() not in candidate_path_set:
         raise ProbeError("HDF5 candidate closure resolved libcurl somewhere other than the rebuilt provider")
     closure_abi = audit_candidate_closure(candidate_curl_closure, readelf)
-    linker_probe = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix)
+    linker_probe = run_linker_resolution_probe(hdf5, install_prefix / "lib", locked_prefix, scratch)
 
     feature_env = {
         "PATH": "/usr/bin:/bin",

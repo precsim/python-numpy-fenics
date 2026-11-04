@@ -31,11 +31,15 @@ REQUIRED_FIELDS = (
 )
 
 SOURCE_EXPLICIT_SHA256 = {
-    "x64": "e33a118540b9c5d1c954c4d4cd86a2f7343530a9852eb203ea16ee7aa84d9afa",
+    "x64": "f39c66f7739b1154b7c930c085924e73df89578da260e714c293bb923a869d00",
 }
 
 REQUIRED_VERSIONS = {
-    "python": "3.12.10",
+    "python": "3.14.10",
+    "python_abi": "3.14",
+    "cpython": "3.14.10",
+    "libpython": "3.14.10",
+    "python-gil": "3.14.10",
     "numpy": "2.5.2",
     "fenics-dolfinx": "0.11.0.post0",
     "fenics-libdolfinx": "0.11.0.post0",
@@ -47,6 +51,30 @@ REQUIRED_VERSIONS = {
     "fenics-ufl": "2026.1.0",
     "fenics-jit-runtime": "0.1.0",
     "fenics-jit-micro-clang": "20260826",
+}
+
+CP314_BUILD_MARKERS = {
+    "python": "cp314",
+    "python_abi": "cp314",
+    "cpython": "py314",
+    "libpython": "cp314",
+    "numpy": "py314",
+    "mpi4py": "py314",
+    "cffi": "py314",
+}
+
+# These exact py312-labelled packages are intentionally retained by the cp314
+# solve. The Python extension packages use _python_abi3_support with a
+# cpython>=3.12 floor; the remaining entries are their native/ABI companion
+# packages. Their labels must never be rewritten to py314. Release
+# qualification proves the unchanged package payloads under CPython 3.14.10.
+ALLOWED_PY312_COMPAT_PACKAGES = {
+    "fenics-basix",
+    "fenics-basix-nanobind-abi",
+    "fenics-dolfinx",
+    "fenics-libbasix",
+    "fenics-libdolfinx",
+    "petsc4py",
 }
 
 
@@ -128,6 +156,30 @@ def load_lock(path: Path, architecture: str | None) -> dict[str, Any]:
                 f"package lock version mismatch for {name}: "
                 f"{actual_version!r} != {expected_version!r}"
             )
+
+    for name, marker in CP314_BUILD_MARKERS.items():
+        build = str(by_name[name]["build"])
+        if marker not in build:
+            raise SystemExit(
+                f"package lock build mismatch for {name}: "
+                f"{build!r} does not contain required marker {marker!r}"
+            )
+
+    if "_python_abi3_support" not in by_name:
+        raise SystemExit("package lock is missing _python_abi3_support for stable-ABI payloads")
+    py312_packages = {
+        str(record["name"])
+        for record in packages
+        if "py312" in str(record["build"])
+        or "cp312" in str(record["build"])
+        or "py312" in str(record["url"])
+        or "cp312" in str(record["url"])
+    }
+    if py312_packages != ALLOWED_PY312_COMPAT_PACKAGES:
+        raise SystemExit(
+            "unexpected py312/cp312 package set in cp314 lock: "
+            f"{sorted(py312_packages)!r} != {sorted(ALLOWED_PY312_COMPAT_PACKAGES)!r}"
+        )
     return payload
 
 

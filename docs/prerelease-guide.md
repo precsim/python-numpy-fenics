@@ -37,11 +37,26 @@ manual qualification runs also always execute. Documentation-only merges do
 not automatically create promotable runtime artifacts; publication still
 requires successful qualifications for the exact `main` SHA selected above.
 
-When FEniCS work resumes, first migrate and qualify the retained cp312
-workflows against the corresponding cp314 NumPy base. Only then opt in with
+FEniCS qualification workflows now consume the previously published,
+SHA-256-pinned `runtime-v0.1.0-rc1` NumPy base archives rather than rebuilding
+core and NumPy. The authoritative per-platform asset, manifest and qualification
+hashes and producer commit are recorded in
+`locks/core/fenics-numpy-base-release.json`. The FEniCS overlay has its own
+producer commit; the inherited NumPy base retains the original release commit.
+To update the base, review and explicitly update the release lock and its
+qualification evidence rather than silently selecting the newest release.
+
+Before FEniCS can be published, refresh the retained cp312 FEniCS package locks
+for the cp314 ABI, then qualify the migrated workflows against the pinned
+cp314 NumPy base. Only then opt in with
 `include_fenics` and provide the three FEniCS workflow run IDs as well. That
-mode requires the full additional FEniCS target matrix from the same `main`
-revision and matching NumPy base identities.
+mode requires the full additional FEniCS target matrix and matching NumPy base
+identities. The `producer-prerelease` publisher still requires same-commit
+qualification runs for all included profiles, but its cross-profile binding
+also supports the independently pinned, cross-revision NumPy base: the release
+manifest records the original NumPy release tag, producer revision and pinned
+file/tree hashes rather than falsely identifying newly built NumPy as the
+FEniCS input. Base reuse alone does not qualify or authorize a FEniCS release.
 
 ## Downstream handoff
 

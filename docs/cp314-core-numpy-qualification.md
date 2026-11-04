@@ -35,7 +35,8 @@ producer revision, and match the publisher's checkout revision. Feature-branch
 run IDs above cannot be passed to the pre-release workflow. See
 [the pre-release guide](prerelease-guide.md).
 
-FEniCS qualification is deferred. The retained FEniCS workflows include
-CPython 3.12 (`cp312`) inputs and Linux Tcl/Tk 8.6.12 inputs, and their older
-experiments do not establish compatibility with the new cp314 base. No FEniCS
-profile was qualified as part of this migration.
+FEniCS qualification is deferred. The retained workflows now target
+CPython 3.14.10 (`cp314`) and Tcl/Tk 8.6.18, but their existing FEniCS package
+locks and older experiments remain tied to cp312. These do not establish
+compatibility with the new cp314 base. No FEniCS profile was qualified as part
+of this migration.
