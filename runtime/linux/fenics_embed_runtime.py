@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import ctypes
 import os
 from pathlib import Path
@@ -29,6 +28,8 @@ def _runtime_root() -> Path:
 
 
 def _wrapper_root(runtime_root: Path) -> Path:
+    import hashlib
+
     candidates: list[Path] = []
     for raw in (os.environ.get("RUNNER_TEMP"), tempfile.gettempdir(), "/tmp"):
         if not raw:
@@ -101,6 +102,29 @@ def _activate_toolchain_runtime(private_prefix: Path) -> None:
         provider = (private_prefix / "lib" / soname).resolve()
         if not provider.is_file():
             raise RuntimeError(f"private toolchain runtime provider is missing: {provider}")
+        mapped = _mapped_soname_paths(soname)
+        competing = mapped - {provider}
+        if competing:
+            raise RuntimeError(
+                f"competing {soname} provider was loaded before FEniCS activation: {sorted(map(str, competing))}"
+            )
+        ctypes.CDLL(str(provider), mode=os.RTLD_NOW | os.RTLD_GLOBAL)
+        mapped = _mapped_soname_paths(soname)
+        if mapped != {provider}:
+            raise RuntimeError(
+                f"private {soname} provider did not become authoritative: {sorted(map(str, mapped))}"
+            )
+
+
+def _activate_openssl_runtime(private_prefix: Path) -> None:
+    # Python's _hashlib loads the public base libcrypto.so.3 on first import.
+    # FEniCS's locked libssl requires newer OPENSSL_3.6.0 symbols from the
+    # matching private libcrypto. Bind that pair before importing hashlib or
+    # anything else that could load the public SONAME into this process.
+    for soname in ("libcrypto.so.3", "libssl.so.3"):
+        provider = (private_prefix / "lib" / soname).resolve()
+        if not provider.is_file():
+            raise RuntimeError(f"private OpenSSL provider is missing: {provider}")
         mapped = _mapped_soname_paths(soname)
         competing = mapped - {provider}
         if competing:
@@ -234,6 +258,7 @@ def activate() -> Path:
     ]
     sys.path[:0] = authoritative_sites
 
+    _activate_openssl_runtime(private_prefix)
     _activate_toolchain_runtime(private_prefix)
     wrapper = _write_jit_wrapper(root)
     private_bin = private_prefix / "bin"

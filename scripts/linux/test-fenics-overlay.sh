@@ -599,6 +599,12 @@ if activated != root:
     raise SystemExit(f"unexpected activated runtime root: {activated} != {root}")
 
 private = root / "fenics-runtime" / "conda"
+import hashlib
+import ssl
+if hashlib.sha256(b"fenics-openssl-provider").digest_size != 32:
+    raise SystemExit("public Python hashlib failed after FEniCS OpenSSL activation")
+if not ssl.OPENSSL_VERSION.startswith("OpenSSL 3."):
+    raise SystemExit(f"public Python ssl cannot use FEniCS OpenSSL: {ssl.OPENSSL_VERSION}")
 public_site = root / "lib" / "python3.14" / "site-packages"
 private_site = private / "lib" / "python3.14" / "site-packages"
 if [Path(p).resolve() for p in sys.path[:2]] != [private_site.resolve(), public_site.resolve()]:
@@ -700,6 +706,13 @@ for line in Path("/proc/self/maps").read_text(errors="replace").splitlines():
             mapped.add(Path(fields[5]).resolve())
         except OSError:
             pass
+for soname in ("libcrypto.so.3", "libssl.so.3"):
+    providers = {path for path in mapped if path.name == soname}
+    expected = (private / "lib" / soname).resolve()
+    if providers != {expected}:
+        raise SystemExit(
+            f"expected one authoritative private {soname} provider: {sorted(map(str, providers))}"
+        )
 mpi = {path for path in mapped if path.name.startswith("libmpi.so")}
 if len(mpi) != 1 or not all(private in path.parents for path in mpi):
     raise SystemExit(f"expected exactly one mapped private MPICH provider: {sorted(map(str, mpi))}")

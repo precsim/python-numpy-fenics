@@ -10,6 +10,31 @@ from runtime.linux import fenics_embed_runtime as bootstrap
 
 
 class LinuxFenicsRuntimeActivationTests(unittest.TestCase):
+    def test_private_openssl_pair_is_loaded_in_dependency_order(self) -> None:
+        private = Path("/tmp/fenics runtime with spaces/conda")
+        crypto = (private / "lib/libcrypto.so.3").resolve()
+        ssl = (private / "lib/libssl.so.3").resolve()
+        with mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(bootstrap, "_mapped_soname_paths", side_effect=[
+                 set(), {crypto}, set(), {ssl}
+             ]), \
+             mock.patch.object(bootstrap.os, "RTLD_NOW", 2, create=True), \
+             mock.patch.object(bootstrap.os, "RTLD_GLOBAL", 256, create=True), \
+             mock.patch.object(bootstrap.ctypes, "CDLL") as load:
+            bootstrap._activate_openssl_runtime(private)
+        self.assertEqual([call.args[0] for call in load.call_args_list], [str(crypto), str(ssl)])
+
+    def test_existing_public_crypto_provider_is_rejected(self) -> None:
+        private = Path("/tmp/fenics runtime with spaces/conda")
+        with mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(bootstrap, "_mapped_soname_paths", return_value={
+                 Path("/tmp/public/libcrypto.so.3")
+             }), \
+             mock.patch.object(bootstrap.ctypes, "CDLL") as load:
+            with self.assertRaisesRegex(RuntimeError, "competing libcrypto.so.3"):
+                bootstrap._activate_openssl_runtime(private)
+        load.assert_not_called()
+
     def test_mapped_provider_path_preserves_spaces(self) -> None:
         provider_name = "/tmp/fenics runtime with spaces/libgcc_s.so.1"
         provider = Path(provider_name)
