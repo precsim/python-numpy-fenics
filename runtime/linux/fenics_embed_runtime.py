@@ -124,16 +124,12 @@ def _activate_openssl_runtime(private_prefix: Path) -> None:
     openssl_conf = (private_prefix / "ssl" / "openssl.cnf").resolve()
     if not openssl_conf.is_file():
         raise RuntimeError(f"private OpenSSL configuration is missing: {openssl_conf}")
-    os.environ["OPENSSL_CONF"] = str(openssl_conf)
-
     openssl_modules = (private_prefix / "lib" / "ossl-modules").resolve()
-    if openssl_modules.is_dir():
-        os.environ["OPENSSL_MODULES"] = str(openssl_modules)
-    else:
-        os.environ.pop("OPENSSL_MODULES", None)
-
-    for soname in ("libcrypto.so.3", "libssl.so.3"):
-        provider = (private_prefix / "lib" / soname).resolve()
+    providers = [
+        (soname, (private_prefix / "lib" / soname).resolve())
+        for soname in ("libcrypto.so.3", "libssl.so.3")
+    ]
+    for soname, provider in providers:
         if not provider.is_file():
             raise RuntimeError(f"private OpenSSL provider is missing: {provider}")
         mapped = _mapped_soname_paths(soname)
@@ -142,6 +138,14 @@ def _activate_openssl_runtime(private_prefix: Path) -> None:
             raise RuntimeError(
                 f"competing {soname} provider was loaded before FEniCS activation: {sorted(map(str, competing))}"
             )
+
+    os.environ["OPENSSL_CONF"] = str(openssl_conf)
+    if openssl_modules.is_dir():
+        os.environ["OPENSSL_MODULES"] = str(openssl_modules)
+    else:
+        os.environ.pop("OPENSSL_MODULES", None)
+
+    for soname, provider in providers:
         ctypes.CDLL(str(provider), mode=os.RTLD_NOW | os.RTLD_GLOBAL)
         mapped = _mapped_soname_paths(soname)
         if mapped != {provider}:

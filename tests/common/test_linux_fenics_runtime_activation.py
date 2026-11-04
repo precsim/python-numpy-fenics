@@ -23,7 +23,7 @@ class LinuxFenicsRuntimeActivationTests(unittest.TestCase):
         with mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(Path, "is_dir", return_value=True), \
              mock.patch.object(bootstrap, "_mapped_soname_paths", side_effect=[
-                 set(), {crypto}, set(), {ssl}
+                 set(), set(), {crypto}, {ssl}
              ]), \
              mock.patch.object(bootstrap.os, "RTLD_NOW", 2, create=True), \
              mock.patch.object(bootstrap.os, "RTLD_GLOBAL", 256, create=True), \
@@ -34,15 +34,39 @@ class LinuxFenicsRuntimeActivationTests(unittest.TestCase):
             self.assertEqual(os.environ["OPENSSL_MODULES"], str(openssl_modules))
         self.assertEqual([call.args[0] for call in load.call_args_list], [str(crypto), str(ssl)])
 
+    def test_openssl_activation_scrubs_ambient_modules_when_lock_has_none(self) -> None:
+        private = Path("/tmp/fenics runtime with spaces/conda")
+        crypto = (private / "lib/libcrypto.so.3").resolve()
+        ssl = (private / "lib/libssl.so.3").resolve()
+        with mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(Path, "is_dir", return_value=False), \
+             mock.patch.object(bootstrap, "_mapped_soname_paths", side_effect=[
+                 set(), set(), {crypto}, {ssl}
+             ]), \
+             mock.patch.object(bootstrap.os, "RTLD_NOW", 2, create=True), \
+             mock.patch.object(bootstrap.os, "RTLD_GLOBAL", 256, create=True), \
+             mock.patch.object(bootstrap.ctypes, "CDLL"), \
+             mock.patch.dict(os.environ, {"OPENSSL_MODULES": "/hostile/modules"}, clear=False):
+            bootstrap._activate_openssl_runtime(private)
+            self.assertNotIn("OPENSSL_MODULES", os.environ)
+
     def test_existing_public_crypto_provider_is_rejected(self) -> None:
         private = Path("/tmp/fenics runtime with spaces/conda")
+        original_conf = "/ambient/openssl.cnf"
+        original_modules = "/ambient/ossl-modules"
         with mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(bootstrap, "_mapped_soname_paths", return_value={
                  Path("/tmp/public/libcrypto.so.3")
              }), \
-             mock.patch.object(bootstrap.ctypes, "CDLL") as load:
+             mock.patch.object(bootstrap.ctypes, "CDLL") as load, \
+             mock.patch.dict(os.environ, {
+                 "OPENSSL_CONF": original_conf,
+                 "OPENSSL_MODULES": original_modules,
+             }, clear=False):
             with self.assertRaisesRegex(RuntimeError, "competing libcrypto.so.3"):
                 bootstrap._activate_openssl_runtime(private)
+            self.assertEqual(os.environ["OPENSSL_CONF"], original_conf)
+            self.assertEqual(os.environ["OPENSSL_MODULES"], original_modules)
         load.assert_not_called()
 
     def test_mapped_provider_path_preserves_spaces(self) -> None:

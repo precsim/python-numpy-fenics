@@ -551,6 +551,10 @@ PY
 cat > "$poison/python/sitecustomize.py" <<'PY'
 raise RuntimeError("ambient sitecustomize poison imported")
 PY
+mkdir -p "$poison/openssl-modules"
+cat > "$poison/openssl.cnf" <<'EOF'
+# hostile ambient OpenSSL configuration: activation must replace this path
+EOF
 for compiler in gcc g++ cc c++ x86_64-conda-linux-gnu-gcc pkg-config ld as ar ranlib; do
     cat > "$poison/bin/$compiler" <<'SH'
 #!/usr/bin/env bash
@@ -568,6 +572,8 @@ export XDG_CACHE_HOME="$cache"
 export HOME="$poison/home"
 export PATH="$poison/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="$poison/native"
+export OPENSSL_CONF="$poison/openssl.cnf"
+export OPENSSL_MODULES="$poison/openssl-modules"
 export CC="$poison/bin/gcc"
 export CXX="$poison/bin/g++"
 export CPP="$poison/bin/gcc -E"
@@ -611,6 +617,8 @@ if Path(os.environ.get("OPENSSL_CONF", "")).resolve() != expected_openssl_conf:
 expected_openssl_modules = private / "lib" / "ossl-modules"
 if expected_openssl_modules.is_dir() and Path(os.environ.get("OPENSSL_MODULES", "")).resolve() != expected_openssl_modules.resolve():
     raise SystemExit(f"FEniCS activation did not bind private OPENSSL_MODULES: {os.environ.get('OPENSSL_MODULES')!r}")
+if not expected_openssl_modules.is_dir() and "OPENSSL_MODULES" in os.environ:
+    raise SystemExit(f"FEniCS activation retained ambient OPENSSL_MODULES: {os.environ['OPENSSL_MODULES']!r}")
 public_site = root / "lib" / "python3.14" / "site-packages"
 private_site = private / "lib" / "python3.14" / "site-packages"
 if [Path(p).resolve() for p in sys.path[:2]] != [private_site.resolve(), public_site.resolve()]:
