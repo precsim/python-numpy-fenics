@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -10,18 +11,27 @@ from runtime.linux import fenics_embed_runtime as bootstrap
 
 
 class LinuxFenicsRuntimeActivationTests(unittest.TestCase):
+    def test_hashlib_is_deferred_until_after_openssl_activation(self) -> None:
+        self.assertNotIn("hashlib", bootstrap.__dict__)
+
     def test_private_openssl_pair_is_loaded_in_dependency_order(self) -> None:
         private = Path("/tmp/fenics runtime with spaces/conda")
         crypto = (private / "lib/libcrypto.so.3").resolve()
         ssl = (private / "lib/libssl.so.3").resolve()
+        openssl_conf = (private / "ssl/openssl.cnf").resolve()
+        openssl_modules = (private / "lib/ossl-modules").resolve()
         with mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(Path, "is_dir", return_value=True), \
              mock.patch.object(bootstrap, "_mapped_soname_paths", side_effect=[
                  set(), {crypto}, set(), {ssl}
              ]), \
              mock.patch.object(bootstrap.os, "RTLD_NOW", 2, create=True), \
              mock.patch.object(bootstrap.os, "RTLD_GLOBAL", 256, create=True), \
-             mock.patch.object(bootstrap.ctypes, "CDLL") as load:
+             mock.patch.object(bootstrap.ctypes, "CDLL") as load, \
+             mock.patch.dict(os.environ, {"OPENSSL_CONF": "ambient", "OPENSSL_MODULES": "ambient"}):
             bootstrap._activate_openssl_runtime(private)
+            self.assertEqual(os.environ["OPENSSL_CONF"], str(openssl_conf))
+            self.assertEqual(os.environ["OPENSSL_MODULES"], str(openssl_modules))
         self.assertEqual([call.args[0] for call in load.call_args_list], [str(crypto), str(ssl)])
 
     def test_existing_public_crypto_provider_is_rejected(self) -> None:

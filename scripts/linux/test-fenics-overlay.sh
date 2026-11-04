@@ -601,10 +601,16 @@ if activated != root:
 private = root / "fenics-runtime" / "conda"
 import hashlib
 import ssl
-if hashlib.sha256(b"fenics-openssl-provider").digest_size != 32:
+if hashlib.sha256(b"fenics-openssl-provider").hexdigest() != "e5eb9e99a3c007176477157cd50ee1d0d97ca52c249d0a69a67413686b1a7af2":
     raise SystemExit("public Python hashlib failed after FEniCS OpenSSL activation")
-if not ssl.OPENSSL_VERSION.startswith("OpenSSL 3."):
-    raise SystemExit(f"public Python ssl cannot use FEniCS OpenSSL: {ssl.OPENSSL_VERSION}")
+if not ssl.OPENSSL_VERSION.startswith("OpenSSL 3.6.5 "):
+    raise SystemExit(f"public Python ssl did not select locked FEniCS OpenSSL 3.6.5: {ssl.OPENSSL_VERSION}")
+expected_openssl_conf = (private / "ssl" / "openssl.cnf").resolve()
+if Path(os.environ.get("OPENSSL_CONF", "")).resolve() != expected_openssl_conf:
+    raise SystemExit(f"FEniCS activation did not bind private OPENSSL_CONF: {os.environ.get('OPENSSL_CONF')!r}")
+expected_openssl_modules = private / "lib" / "ossl-modules"
+if expected_openssl_modules.is_dir() and Path(os.environ.get("OPENSSL_MODULES", "")).resolve() != expected_openssl_modules.resolve():
+    raise SystemExit(f"FEniCS activation did not bind private OPENSSL_MODULES: {os.environ.get('OPENSSL_MODULES')!r}")
 public_site = root / "lib" / "python3.14" / "site-packages"
 private_site = private / "lib" / "python3.14" / "site-packages"
 if [Path(p).resolve() for p in sys.path[:2]] != [private_site.resolve(), public_site.resolve()]:

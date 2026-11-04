@@ -121,6 +121,17 @@ def _activate_openssl_runtime(private_prefix: Path) -> None:
     # FEniCS's locked libssl requires newer OPENSSL_3.6.0 symbols from the
     # matching private libcrypto. Bind that pair before importing hashlib or
     # anything else that could load the public SONAME into this process.
+    openssl_conf = (private_prefix / "ssl" / "openssl.cnf").resolve()
+    if not openssl_conf.is_file():
+        raise RuntimeError(f"private OpenSSL configuration is missing: {openssl_conf}")
+    os.environ["OPENSSL_CONF"] = str(openssl_conf)
+
+    openssl_modules = (private_prefix / "lib" / "ossl-modules").resolve()
+    if openssl_modules.is_dir():
+        os.environ["OPENSSL_MODULES"] = str(openssl_modules)
+    else:
+        os.environ.pop("OPENSSL_MODULES", None)
+
     for soname in ("libcrypto.so.3", "libssl.so.3"):
         provider = (private_prefix / "lib" / soname).resolve()
         if not provider.is_file():

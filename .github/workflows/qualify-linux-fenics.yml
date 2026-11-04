@@ -42,6 +42,7 @@ jobs:
           python3 -m unittest tests.common.test_linux_fenics_python_builder
           python3 -m unittest tests.common.test_linux_fenics_patchelf
           python3 -m unittest tests.common.test_linux_prefix_relocation
+          python3 -m unittest tests.common.test_linux_fenics_runtime_activation
           python3 -m unittest tests.common.test_linux_fenics_libxml2_build_deps
           python3 -m unittest tests.common.test_linux_fenics_native_handoff
           python3 -m unittest tests.common.test_linux_fenics_native_candidate_audit
