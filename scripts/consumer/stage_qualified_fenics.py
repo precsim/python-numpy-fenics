@@ -78,6 +78,20 @@ def validate_manifest(lock: dict, record: dict, platform: str) -> dict:
     return selected
 
 
+def validate_qualification(lock: dict, base: dict, record: dict, platform: str) -> None:
+    checks = record.get("checks")
+    require(record.get("format_version") == 1
+            and record.get("producer_repository") == lock["repository"]
+            and record.get("producer_revision") == base["producer_revision"]
+            and record.get("platform") == platform
+            and record.get("profile") == "numpy"
+            and record.get("artifact") == base["name"]
+            and record.get("artifact_sha256") == base["sha256"]
+            and isinstance(checks, dict) and bool(checks)
+            and all(value in ("pass", "not-applicable") for value in checks.values()),
+            "NumPy base qualification does not match pinned prior release")
+
+
 def embedded_manifest(archive: Path, manifest_name: str, expected_sha: str) -> dict:
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as opened:
@@ -205,9 +219,18 @@ def stage(lock_file: Path, platform: str, cache: Path, output: Path) -> dict:
     base = pins["numpy_base"]
     overlay = pins["fenics"]
     base_file = download(base["tag"], base["name"], cache, lock["repository"])
+    qualification_name = base.get("qualification_name")
+    qualification_sha = base.get("qualification_sha256")
+    require(isinstance(qualification_name, str) and bool(qualification_name)
+            and isinstance(qualification_sha, str),
+            "incomplete pinned NumPy base qualification identity")
+    qualification_file = download(base["tag"], qualification_name, cache, lock["repository"])
     overlay_file = download(lock["tag"], overlay["name"], cache, lock["repository"])
     verify_file(base_file, base["sha256"])
+    verify_file(qualification_file, qualification_sha)
     verify_file(overlay_file, overlay["sha256"])
+    validate_qualification(lock, base,
+                           json.loads(qualification_file.read_text(encoding="utf-8")), platform)
 
     base_manifest = embedded_manifest(base_file, "runtime-manifest.json", base["manifest_sha256"])
     overlay_manifest = embedded_manifest(overlay_file, "fenics-embed-manifest.json",

@@ -59,12 +59,23 @@ class ConsumerHandoffTests(unittest.TestCase):
         overlay = cache / overlay_name
         write_zip(overlay, {"fenics-embed-manifest.json": overlay_bytes,
                             "Lib/site-packages/fenics_embed_runtime.py": b"overlay"})
+        qualification_name = f"qualification-{platform}-numpy.json"
+        qualification = {
+            "format_version": 1, "platform": platform, "profile": "numpy",
+            "producer_repository": "precsim/python-numpy-fenics",
+            "producer_revision": "b" * 40, "artifact": base_name,
+            "artifact_sha256": digest(base.read_bytes()),
+            "workflow_run_id": "12345", "checks": {"relocation": "pass"},
+        }
+        qualification_file = cache / qualification_name
+        qualification_file.write_text(json.dumps(qualification), encoding="utf-8")
         fenics_pin = {"name": overlay_name, "sha256": digest(overlay.read_bytes()),
                       "manifest_sha256": digest(overlay_bytes)}
         base_pin = {"name": base_name, "sha256": digest(base.read_bytes()),
                     "manifest_sha256": digest(base_bytes), "tag": "runtime-v0.1.0-rc1",
                     "producer_revision": "b" * 40, "numpy_tree_sha256": "c" * 64,
-                    "numpy_entry_count": 2, "qualification_sha256": "d" * 64}
+                    "numpy_entry_count": 2, "qualification_name": qualification_name,
+                    "qualification_sha256": digest(qualification_file.read_bytes())}
         lock = {"format_version": 1, "repository": "precsim/python-numpy-fenics",
                 "tag": "runtime-v0.1.0-rc2", "producer_revision": "a" * 40,
                 "platforms": {platform: {"fenics": fenics_pin, "numpy_base": base_pin}}}
@@ -129,6 +140,17 @@ class ConsumerHandoffTests(unittest.TestCase):
             (cache / "fenics-runtime.zip").write_bytes(b"corrupt")
             with self.assertRaisesRegex(ConsumerStageError, "changed pinned asset"):
                 stage(lock, "win-x64", cache, root / "output")
+            self.assertFalse((root / "output").exists())
+
+    def test_rejects_changed_base_qualification_pin_before_extracting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_file, cache = self.fixture(root)
+            lock = json.loads(lock_file.read_text())
+            lock["platforms"]["win-x64"]["numpy_base"]["qualification_sha256"] = "0" * 64
+            lock_file.write_text(json.dumps(lock), encoding="utf-8")
+            with self.assertRaisesRegex(ConsumerStageError, "changed pinned asset"):
+                stage(lock_file, "win-x64", cache, root / "output")
             self.assertFalse((root / "output").exists())
 
     def test_rejects_wrong_rc2_numpy_instead_of_pinned_rc1_base(self) -> None:

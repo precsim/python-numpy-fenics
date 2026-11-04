@@ -10,7 +10,7 @@ The public producer release [`runtime-v0.1.0-rc2`](https://github.com/precsim/py
 - Release manifest SHA-256: `dff3909366f2c57e3765226399fb867282a3e253ac3ece065f28e26713489e29`
 - **Important:** Every rc2 FEniCS overlay uses the immutable **rc1 NumPy base** (`runtime-v0.1.0-rc1`, producer revision `95a8b43b674da0d1a1955b8dec002c9f2ab1c925`), *not* the independent rc2 NumPy profile. Use the cross-profile bindings in the published prerelease manifest.
 
-All four platform asset SHA-256 values, embedded manifest SHA-256 values, and pinned NumPy tree identities are recorded in [`locks/consumer/runtime-v0.1.0-rc2.json`](../locks/consumer/runtime-v0.1.0-rc2.json). This file is a **consumer-side receipt** and should be copied into the downstream application's source control without modifications.
+All four platform asset SHA-256 values, embedded manifest SHA-256 values, rc1 NumPy qualification record SHA-256 values, and pinned NumPy tree identities are recorded in [`locks/consumer/runtime-v0.1.0-rc2.json`](../locks/consumer/runtime-v0.1.0-rc2.json). This file is a **consumer-side receipt** and should be copied into the downstream application's source control without modifications.
 
 ## Acquire, verify, and stage
 
@@ -31,7 +31,7 @@ python3 scripts/consumer/stage_qualified_fenics.py --platform linux-x64 --cache 
 python3 scripts/consumer/stage_qualified_fenics.py --platform macos-arm64 --cache build/consumer-release-cache --output 'build/consumer host with spaces/runtime'
 ```
 
-The script downloads the **rc2 release manifest**, the **rc1 NumPy base archive**, and the **rc2 FEniCS overlay**. Before installing it verifies the pinned release manifest SHA-256, release producer revision, FEniCS archive and embedded manifest SHA-256, rc1 archive and embedded manifest SHA-256, and each platform's cross-release NumPy tree and qualification binding. It rejects changed archives, unsafe file paths, symlink escapes, and overlapping overlay files; it does not overwrite a pre-existing output runtime. The archive extraction is staged in a temporary directory and renamed into place only after both layers pass.
+The script downloads the **rc2 release manifest**, the **rc1 NumPy base archive and qualification record**, and the **rc2 FEniCS overlay**. Before installing it verifies the pinned release manifest SHA-256, release producer revision, FEniCS archive and embedded manifest SHA-256, rc1 archive, embedded manifest and qualification SHA-256, the qualification's producer/artifact identity and successful checks, and each platform's cross-release NumPy tree binding. It rejects changed archives or qualification evidence, unsafe file paths, symlink escapes, and overlapping overlay files; it does not overwrite a pre-existing output runtime. The archive extraction is staged in a temporary directory and renamed into place only after both layers pass.
 
 The tool makes **no modifications to the upstream producer release**, does not rebuild binary dependencies, and does not require any private consumer source or token. The cache and extracted runtime live under the ignored `build/` directory.
 

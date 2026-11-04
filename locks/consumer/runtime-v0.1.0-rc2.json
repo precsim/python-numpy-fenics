@@ -13,6 +13,7 @@
         "numpy_entry_count": 1007,
         "numpy_tree_sha256": "0dad7529b93ee5671d91a57ea1ebf203ca4b0b8b433bee0b16f30df5bd6c9a97",
         "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_name": "qualification-linux-x64-numpy.json",
         "qualification_sha256": "e3169fbb7a15b7840a47f7d4b802e97b7f81a9bb0ec78b9b98b945ce6aad9347",
         "sha256": "e4f116ebae105bc76afc204c32d8a94f7aecf3c929269d7a557c80f1af0a6ab6",
         "tag": "runtime-v0.1.0-rc1"
@@ -30,6 +31,7 @@
         "numpy_entry_count": 923,
         "numpy_tree_sha256": "0b0c57b2508d38a392efd5afbca249f82b4065aa3d993692103d5eeacad64ee8",
         "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_name": "qualification-macos-arm64-numpy.json",
         "qualification_sha256": "ad58496daa6ebd4153af5baec98b5e2dffad2f56b4e2e018c02545578913d03b",
         "sha256": "5dee67bd1562efe3c4c012cc520af9771a4ca2bdf268c0cbdf275b3f95bbdcd9",
         "tag": "runtime-v0.1.0-rc1"
@@ -47,6 +49,7 @@
         "numpy_entry_count": 923,
         "numpy_tree_sha256": "88c38bbea3a34b9758f5ea2d99a61e3a94b82c31272644835399f68d9bccd15b",
         "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_name": "qualification-macos-x64-numpy.json",
         "qualification_sha256": "f286c42f8ddc4a1f2492970f02b7f2e60d4a0f94c0e7ede0ad8ab702551fdca3",
         "sha256": "317ed4ed01915c74e84e394386705157c0381084765c156a8bde24c9f85fbaf1",
         "tag": "runtime-v0.1.0-rc1"
@@ -64,6 +67,7 @@
         "numpy_entry_count": 1027,
         "numpy_tree_sha256": "eab9fa3ffdde979afcd8e64cb816f66fc77b93bd45c6260a35e9f0d7d1f7f6e3",
         "producer_revision": "95a8b43b674da0d1a1955b8dec002c9f2ab1c925",
+        "qualification_name": "qualification-win-x64-numpy.json",
         "qualification_sha256": "522d6be5e369a7472089c23e0265f037cf4abefd98fa53bd89c9e0d30117c56d",
         "sha256": "eb0625045f1bf3c713f9705d0f95bd238e66954221d8430dbc1c2d10e4993ee1",
         "tag": "runtime-v0.1.0-rc1"
