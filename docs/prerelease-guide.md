@@ -1,9 +1,12 @@
 # Producer pre-release and downstream artifact handoff
 
-The active publication scope is the `core` and `numpy` profiles for Windows
-x64, Linux x86_64, macOS arm64 and macOS x86_64. FEniCS is explicitly optional
-and remains deferred. A producer pre-release is an immutable input for
-downstream testing, not a downstream product release.
+The producer publishes `core` and `numpy` profiles for Windows x64,
+Linux x86_64, macOS arm64 and macOS x86_64. The initial
+`runtime-v0.1.0-rc1` contains those profiles; `runtime-v0.1.0-rc2` also includes
+qualified FEniCS overlays on all four targets, using the separately pinned
+`rc1` NumPy base. A producer pre-release is an immutable input for downstream
+testing, not a downstream product release. See
+[the rc2 consumer integration handoff](consumer-integration-rc2.md).
 
 ## Qualification inputs
 
@@ -46,9 +49,9 @@ producer commit; the inherited NumPy base retains the original release commit.
 To update the base, review and explicitly update the release lock and its
 qualification evidence rather than silently selecting the newest release.
 
-Before FEniCS can be published, refresh the retained cp312 FEniCS package locks
-for the cp314 ABI, then qualify the migrated workflows against the pinned
-cp314 NumPy base. Only then opt in with
+When publishing FEniCS, qualify the cp314 FEniCS package locks and migrated
+workflows against the pinned cp314 NumPy base. This was completed for the
+published rc2 prerelease. Opt in with
 `include_fenics` and provide the three FEniCS workflow run IDs as well. That
 mode requires the full additional FEniCS target matrix and matching NumPy base
 identities. The `producer-prerelease` publisher still requires same-commit
