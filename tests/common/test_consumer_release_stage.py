@@ -12,7 +12,7 @@ import unittest
 import zipfile
 
 from scripts.consumer.stage_qualified_fenics import (
-    ConsumerStageError, extract_layer, stage, validate_manifest,
+    ConsumerStageError, embedded_manifest, extract_layer, stage, validate_manifest,
 )
 
 
@@ -209,6 +209,19 @@ class ConsumerHandoffTests(unittest.TestCase):
             extract_layer(overlay, runtime, occupied)
             self.assertTrue((runtime / "lib/site-packages/python.py").is_file())
             self.assertTrue((runtime / "lib/site-packages/dolfinx.py").is_file())
+
+    def test_tar_embedded_manifest_accepts_gnu_dot_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "runtime.tar.gz"
+            payload = json.dumps({"profile": "numpy"}).encode()
+            with tarfile.open(archive, "w:gz") as opened:
+                member = tarfile.TarInfo("./runtime-manifest.json")
+                member.size = len(payload)
+                opened.addfile(member, io.BytesIO(payload))
+            self.assertEqual(
+                embedded_manifest(archive, "runtime-manifest.json", digest(payload)),
+                {"profile": "numpy"},
+            )
 
     def test_tar_rejects_escaping_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
