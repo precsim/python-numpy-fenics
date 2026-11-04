@@ -155,6 +155,8 @@ def _activate_openssl_runtime(private_prefix: Path) -> None:
 
 
 def _write_jit_wrapper(runtime_root: Path) -> Path:
+    import subprocess
+
     global _JIT_WRAPPER
     if _JIT_WRAPPER is not None and _JIT_WRAPPER.exists():
         return _JIT_WRAPPER
@@ -174,6 +176,21 @@ def _write_jit_wrapper(runtime_root: Path) -> Path:
 
     wrapper_root = _wrapper_root(runtime_root)
     wrapper_root.mkdir(parents=True, exist_ok=True)
+    # The conda GCC driver loads conda.specs implicitly during linking. Its
+    # retained relocation token would otherwise enter every fresh JIT ELF's
+    # DT_RPATH. Override it with this same compiler's built-in default specs,
+    # as the qualified native-source builder does for its offline links.
+    default_specs_text = subprocess.check_output(
+        [str(compiler), "-dumpspecs"], text=True
+    )
+    if (
+        "*link_command:" not in default_specs_text
+        or _GCC_SPECS_PREFIX_TOKEN in default_specs_text
+        or str(private_prefix) in default_specs_text
+    ):
+        raise RuntimeError("bundled GCC default specs are not safe for relocatable FFCx JIT")
+    default_specs = wrapper_root / "fenics-gcc-default.specs"
+    default_specs.write_text(default_specs_text, encoding="utf-8")
     wrapper = wrapper_root / "fenics-gcc"
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -182,8 +199,10 @@ private_prefix={shlex.quote(str(private_prefix))}
 sysroot={shlex.quote(str(sysroot))}
 python_include={shlex.quote(str(python_include))}
 private_include={shlex.quote(str(private_include))}
+default_specs={shlex.quote(str(default_specs))}
 
 args=(
+  "-specs=$default_specs"
   "--sysroot=$sysroot"
   "-B$private_prefix/libexec/gcc/x86_64-conda-linux-gnu/16.2.0/"
   "-B$private_prefix/lib/gcc/x86_64-conda-linux-gnu/16.2.0/"

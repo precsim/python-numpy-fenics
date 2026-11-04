@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -11,6 +12,50 @@ from runtime.linux import fenics_embed_runtime as bootstrap
 
 
 class LinuxFenicsRuntimeActivationTests(unittest.TestCase):
+    def test_jit_wrapper_overrides_conda_specs_with_compiler_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime with spaces"
+            private = root / "fenics-runtime" / "conda"
+            compiler = private / "bin" / "x86_64-conda-linux-gnu-gcc"
+            compiler.parent.mkdir(parents=True)
+            compiler.touch()
+            for directory in (
+                private / "include",
+                private / "x86_64-conda-linux-gnu" / "sysroot",
+                root / "include" / "python3.14",
+            ):
+                directory.mkdir(parents=True)
+            wrapper_dir = Path(temporary) / "shim"
+            with mock.patch.object(bootstrap, "_JIT_WRAPPER", None), \
+                 mock.patch.object(bootstrap, "_wrapper_root", return_value=wrapper_dir), \
+                 mock.patch("subprocess.check_output", return_value="*link_command:\n%(linker)\n") as dumpspecs:
+                wrapper = bootstrap._write_jit_wrapper(root)
+            dumpspecs.assert_called_once_with([str(compiler), "-dumpspecs"], text=True)
+            self.assertIn('"-specs=$default_specs"', wrapper.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (wrapper_dir / "fenics-gcc-default.specs").read_text(encoding="utf-8"),
+                "*link_command:\n%(linker)\n",
+            )
+
+    def test_jit_wrapper_rejects_unexpanded_prefix_in_default_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private = root / "fenics-runtime" / "conda"
+            compiler = private / "bin" / "x86_64-conda-linux-gnu-gcc"
+            compiler.parent.mkdir(parents=True)
+            compiler.touch()
+            for directory in (
+                private / "include",
+                private / "x86_64-conda-linux-gnu" / "sysroot",
+                root / "include" / "python3.14",
+            ):
+                directory.mkdir(parents=True)
+            with mock.patch.object(bootstrap, "_JIT_WRAPPER", None), \
+                 mock.patch.object(bootstrap, "_wrapper_root", return_value=root / "shim"), \
+                 mock.patch("subprocess.check_output", return_value="*link_command:\n@FENICS_PRIVATE_PREFIX@/lib\n"):
+                with self.assertRaisesRegex(RuntimeError, "default specs are not safe"):
+                    bootstrap._write_jit_wrapper(root)
+
     def test_hashlib_is_deferred_until_after_openssl_activation(self) -> None:
         self.assertNotIn("hashlib", bootstrap.__dict__)
 
