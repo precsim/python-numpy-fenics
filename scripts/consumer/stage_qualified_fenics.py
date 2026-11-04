@@ -100,7 +100,10 @@ def embedded_manifest(archive: Path, manifest_name: str, expected_sha: str) -> d
             content = opened.read(manifest_name)
     else:
         with tarfile.open(archive, "r:gz") as opened:
-            matches = [member for member in opened if member.name == manifest_name]
+            matches = [
+                member for member in opened
+                if member.name.removeprefix("./") == manifest_name
+            ]
             require(len(matches) == 1 and matches[0].isfile(),
                     f"missing or duplicate {manifest_name}")
             source = opened.extractfile(matches[0])
