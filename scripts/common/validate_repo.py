@@ -95,6 +95,8 @@ def main() -> int:
 
     required = [
         ROOT / ".github" / "workflows" / "validate.yml",
+        ROOT / ".github" / "workflows" / "qualify-reference-bridge.yml",
+        ROOT / ".github" / "workflows" / "publish-reference-bridge.yml",
         ROOT / ".github" / "workflows" / "qualify-windows-fenics.yml",
         ROOT / ".github" / "workflows" / "qualify-windows-core-numpy.yml",
         ROOT / ".github" / "workflows" / "qualify-macos-fenics.yml",
@@ -104,6 +106,21 @@ def main() -> int:
         ROOT / ".github" / "workflows" / "prerelease.yml",
         ROOT / "contracts" / "runtime-manifest-v1.schema.json",
         ROOT / "contracts" / "qualification-v1.schema.json",
+        ROOT / "consumer-kit" / "README.md",
+        ROOT / "consumer-kit" / "contracts" / "bridge-build-v1.schema.json",
+        ROOT / "consumer-kit" / "contracts" / "consumer-runtime-receipt-v1.schema.json",
+        ROOT / "consumer-kit" / "contracts" / "reference-package-v1.schema.json",
+        ROOT / "consumer-kit" / "tools" / "stage-runtime.py",
+        ROOT / "consumer-kit" / "tools" / "verify-runtime.py",
+        ROOT / "consumer-kit" / "tools" / "build_bridge.py",
+        ROOT / "consumer-kit" / "tools" / "audit-mex.py",
+        ROOT / "consumer-kit" / "tools" / "package-reference.py",
+        ROOT / "consumer-kit" / "tools" / "verify-package.py",
+        ROOT / "reference-bridge" / "bridge-build.json",
+        ROOT / "reference-bridge" / "src" / "mock_bridge.c",
+        ROOT / "reference-bridge" / "python" / "mock_backend.py",
+        ROOT / "reference-bridge" / "host" / "mock_smoke.m",
+        ROOT / "locks" / "consumer" / "reference-runtime-v1.json",
         ROOT / "config" / "runtime-matrix.json",
         ROOT / "locks" / "core" / "tcltk-8.6.18.json",
         ROOT / "locks" / "core" / "cpython-3.14.10-win-x64.json",
@@ -124,6 +141,42 @@ def main() -> int:
             json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             errors.append(f"invalid JSON {path.relative_to(ROOT)}: {exc}")
+
+    bridge_build_path = ROOT / "reference-bridge" / "bridge-build.json"
+    if bridge_build_path.is_file():
+        bridge_build = json.loads(bridge_build_path.read_text(encoding="utf-8"))
+        if (
+            bridge_build.get("format_version") != 1
+            or bridge_build.get("mex_name") != "bridge"
+            or set(bridge_build.get("targets", {}))
+            != {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
+        ):
+            errors.append("reference bridge build manifest has an invalid target contract")
+        for target, record in bridge_build.get("targets", {}).items():
+            if (
+                record.get("output") != "bridge.mex"
+                or record.get("exports") != ["mexFunction"]
+            ):
+                errors.append(
+                    f"reference bridge target has an invalid MEX contract: {target}"
+                )
+
+    receipt_path = ROOT / "locks" / "consumer" / "reference-runtime-v1.json"
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        profiles = receipt.get("profiles", {})
+        if (
+            receipt.get("format_version") != 1
+            or receipt.get("producer_repository") != "precsim/python-numpy-fenics"
+            or set(profiles)
+            != {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
+        ):
+            errors.append("reference bridge runtime receipt has an invalid producer/target contract")
+        for target, target_profiles in profiles.items():
+            if not {"core", "numpy", "fenics"}.issubset(target_profiles):
+                errors.append(
+                    f"reference bridge runtime receipt is missing a profile: {target}"
+                )
 
     matrix_path = ROOT / "config" / "runtime-matrix.json"
     tcltk_lock_path = ROOT / "locks" / "core" / "tcltk-8.6.18.json"

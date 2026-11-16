@@ -77,6 +77,30 @@ The manifest binds the producer repository/revision, platform, Python ABI,
 package identities, file hashes, native closure and JIT policy. See contracts/
 and docs/producer-consumer-boundary.md.
 
+## Public reference bridge and consumer kit
+
+The repository also contains a purpose-built public GNU Octave MEX reference
+bridge under reference-bridge/ and a reusable consumer integration kit under
+consumer-kit/. The reference bridge exercises the complete host boundary:
+GNU Octave loads one MEX candidate, the MEX starts the pinned producer CPython
+in isolated mode, and the bundled Python backend performs deterministic core,
+NumPy, and optional FEniCS probes.
+
+The consumer kit verifies immutable producer release receipts, stages runtimes
+transactionally, compiles one target MEX from an explicit source manifest,
+audits load-time dependencies, executes host acceptance, binds qualification
+evidence to the exact MEX SHA-256, and assembles offline-verifiable reference
+packages. The same target MEX bytes are reused across the selected runtime
+profiles. Producer runtimes are never rebuilt by this path.
+
+All reference bridge builds, automated qualification, and publishable package
+assembly run on GitHub Actions runners. A published reference package is already
+built and may be downloaded and tested independently on a compatible local host
+with GNU Octave; local execution is not a build or qualification path.
+
+See [the consumer kit](consumer-kit/README.md) and
+[the producer/consumer boundary](docs/producer-consumer-boundary.md).
+
 ## FEniCS package policy
 
 The default path is exact package reuse:

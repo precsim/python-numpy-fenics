@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/precsim/python-numpy-fenics/consumer-kit/contracts/bridge-build-v1.schema.json",
+  "title": "Python runtime consumer bridge build manifest v1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "mex_name",
+    "sources",
+    "include_dirs",
+    "python_helpers",
+    "host_fixtures",
+    "targets"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "mex_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "sources": {
+      "$ref": "#/$defs/pathList"
+    },
+    "include_dirs": {
+      "$ref": "#/$defs/pathList"
+    },
+    "python_helpers": {
+      "$ref": "#/$defs/pathList"
+    },
+    "host_fixtures": {
+      "$ref": "#/$defs/pathList"
+    },
+    "targets": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "win-x64": {
+          "$ref": "#/$defs/target"
+        },
+        "linux-x64": {
+          "$ref": "#/$defs/target"
+        },
+        "macos-arm64": {
+          "$ref": "#/$defs/target"
+        },
+        "macos-x64": {
+          "$ref": "#/$defs/target"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*//)(?!.*(?:^|/)\\.\\.?/)(?!.*(?:^|/)\\.\\.?$).+$"
+    },
+    "safeLeafName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "pathList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/safeRelativePath"
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "sources",
+        "output",
+        "matlab_alias",
+        "exports"
+      ],
+      "properties": {
+        "sources": {
+          "$ref": "#/$defs/pathList"
+        },
+        "output": {
+          "const": "bridge.mex"
+        },
+        "matlab_alias": {
+          "$ref": "#/$defs/safeLeafName"
+        },
+        "exports": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "mexFunction"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

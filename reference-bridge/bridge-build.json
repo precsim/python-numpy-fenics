@@ -1,0 +1,53 @@
+{
+  "format_version": 1,
+  "mex_name": "bridge",
+  "sources": [
+    "src/mock_bridge.c",
+    "src/mock_host.c",
+    "src/mock_python.c",
+    "src/mock_platform.c"
+  ],
+  "include_dirs": [
+    "src"
+  ],
+  "python_helpers": [
+    "python/mock_backend.py"
+  ],
+  "host_fixtures": [
+    "host/mock_smoke.m"
+  ],
+  "targets": {
+    "win-x64": {
+      "sources": [],
+      "output": "bridge.mex",
+      "matlab_alias": "bridge.mexw64",
+      "exports": [
+        "mexFunction"
+      ]
+    },
+    "linux-x64": {
+      "sources": [],
+      "output": "bridge.mex",
+      "matlab_alias": "bridge.mexa64",
+      "exports": [
+        "mexFunction"
+      ]
+    },
+    "macos-arm64": {
+      "sources": [],
+      "output": "bridge.mex",
+      "matlab_alias": "bridge.mexmaca64",
+      "exports": [
+        "mexFunction"
+      ]
+    },
+    "macos-x64": {
+      "sources": [],
+      "output": "bridge.mex",
+      "matlab_alias": "bridge.mexmaci64",
+      "exports": [
+        "mexFunction"
+      ]
+    }
+  }
+}

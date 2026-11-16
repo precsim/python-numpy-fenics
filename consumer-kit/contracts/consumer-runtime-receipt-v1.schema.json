@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/precsim/python-numpy-fenics/consumer-kit/contracts/consumer-runtime-receipt-v1.schema.json",
+  "title": "Immutable producer runtime consumer receipt v1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "producer_repository",
+    "profiles"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "producer_repository": {
+      "const": "precsim/python-numpy-fenics"
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "win-x64": {
+          "$ref": "#/$defs/profileSet"
+        },
+        "linux-x64": {
+          "$ref": "#/$defs/profileSet"
+        },
+        "macos-arm64": {
+          "$ref": "#/$defs/profileSet"
+        },
+        "macos-x64": {
+          "$ref": "#/$defs/profileSet"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitRevision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "releaseTag": {
+      "type": "string",
+      "pattern": "^runtime-v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$"
+    },
+    "assetName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\\\:]+$"
+    },
+    "archive": {
+      "type": "object",
+      "required": [
+        "name",
+        "sha256",
+        "manifest_name",
+        "manifest_sha256",
+        "qualification_name",
+        "qualification_sha256"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/assetName"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_name": {
+          "$ref": "#/$defs/assetName"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "qualification_name": {
+          "$ref": "#/$defs/assetName"
+        },
+        "qualification_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    },
+    "layer": {
+      "type": "object",
+      "required": [
+        "release_tag",
+        "producer_revision",
+        "archive"
+      ],
+      "properties": {
+        "release_tag": {
+          "$ref": "#/$defs/releaseTag"
+        },
+        "producer_revision": {
+          "$ref": "#/$defs/gitRevision"
+        },
+        "archive": {
+          "$ref": "#/$defs/archive"
+        }
+      },
+      "additionalProperties": false
+    },
+    "profileRecord": {
+      "type": "object",
+      "required": [
+        "release_tag",
+        "producer_revision",
+        "archive"
+      ],
+      "properties": {
+        "release_tag": {
+          "$ref": "#/$defs/releaseTag"
+        },
+        "producer_revision": {
+          "$ref": "#/$defs/gitRevision"
+        },
+        "archive": {
+          "$ref": "#/$defs/archive"
+        },
+        "base": {
+          "$ref": "#/$defs/layer"
+        },
+        "overlay": {
+          "$ref": "#/$defs/layer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "profileSet": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "core": {
+          "$ref": "#/$defs/profileRecord"
+        },
+        "numpy": {
+          "$ref": "#/$defs/profileRecord"
+        },
+        "fenics": {
+          "$ref": "#/$defs/profileRecord"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
