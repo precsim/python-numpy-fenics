@@ -17,6 +17,7 @@ FORBIDDEN = (
     "openblas", "blas", "lapack", "mpi", "petsc",
 )
 GLIBC = re.compile(r"GLIBC_([0-9]+)\.([0-9]+)")
+EXPECTED_EXPORTS = {"mexFunction", "__octave_mex_soversion__"}
 PE_DEPENDENCY_HEADERS = {
     "image has the following dependencies:",
     "image has the following delay load dependencies:",
@@ -124,6 +125,65 @@ def pe_dependencies(output: str) -> list[str]:
     return dependencies
 
 
+def pe_exports(output: str) -> list[str]:
+    """Extract named PE exports from dumpbin /exports output."""
+
+    exports: list[str] = []
+    in_table = False
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if re.fullmatch(r"ordinal\s+hint\s+RVA\s+name", line, flags=re.IGNORECASE):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if not line:
+            continue
+        if line.casefold() == "summary":
+            break
+        match = re.fullmatch(
+            r"\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)(?:\s+=.*)?",
+            line,
+        )
+        if match:
+            exports.append(match.group(1))
+    if not in_table:
+        raise ValueError("dumpbin output has no PE export table")
+    return exports
+
+
+def nm_exports(output: str) -> list[str]:
+    """Extract defined symbol names from nm output."""
+
+    exports: list[str] = []
+    for raw_line in output.splitlines():
+        fields = raw_line.split()
+        if len(fields) >= 2:
+            exports.append(fields[-1].split("@", 1)[0])
+    return exports
+
+
+def normalize_exports(platform: str, raw_exports: list[str]) -> list[str]:
+    if platform.startswith("macos-"):
+        return [symbol[1:] if symbol.startswith("_") else symbol for symbol in raw_exports]
+    return list(raw_exports)
+
+
+def require_exact_exports(platform: str, raw_exports: list[str]) -> list[str]:
+    normalized = normalize_exports(platform, raw_exports)
+    observed = set(normalized)
+    missing = sorted(EXPECTED_EXPORTS - observed)
+    unexpected = sorted(observed - EXPECTED_EXPORTS)
+    duplicates = sorted({symbol for symbol in normalized if normalized.count(symbol) > 1})
+    if missing or unexpected or duplicates:
+        raise ValueError(
+            f"{platform} export table differs from required MEX ABI: "
+            f"missing={missing!r} unexpected={unexpected!r} duplicates={duplicates!r} "
+            f"raw={raw_exports!r}"
+        )
+    return sorted(observed)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True,
@@ -137,11 +197,11 @@ def main() -> int:
 
     checks: dict[str, object] = {}
     if args.target == "win-x64":
-        exports = run_msvc_tool(["dumpbin", "/nologo", "/exports", str(mex)])
+        export_output = run_msvc_tool(["dumpbin", "/nologo", "/exports", str(mex)])
         imports = run_msvc_tool(["dumpbin", "/nologo", "/dependents", str(mex)])
-        if "mexFunction" not in exports:
-            raise SystemExit("PE export table does not contain mexFunction")
         try:
+            raw_exports = pe_exports(export_output)
+            exports = require_exact_exports(args.target, raw_exports)
             dependencies = pe_dependencies(imports)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -149,15 +209,19 @@ def main() -> int:
         if bad:
             raise SystemExit(f"forbidden PE load-time dependency: {bad}")
         checks.update(
-            exports="mexFunction",
+            exports=exports,
+            platform_exports=raw_exports,
             load_time_dependencies="system-only",
             observed_dependencies=dependencies,
         )
     elif args.target == "linux-x64":
         dynamic = run(["readelf", "-d", str(mex)])
-        symbols = run(["nm", "-D", "--defined-only", str(mex)])
-        if not re.search(r"\bmexFunction\b", symbols):
-            raise SystemExit("ELF dynamic symbols do not contain mexFunction")
+        symbol_output = run(["nm", "-D", "--defined-only", str(mex)])
+        raw_exports = nm_exports(symbol_output)
+        try:
+            exports = require_exact_exports(args.target, raw_exports)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         bad = forbidden_dependencies(
             line for line in dynamic.splitlines() if "(NEEDED)" in line
         )
@@ -171,21 +235,29 @@ def main() -> int:
         if observed and max(observed) > (2, 17):
             raise SystemExit(f"ELF requires glibc newer than 2.17: {max(observed)}")
         checks.update(
-            exports="mexFunction",
+            exports=exports,
+            platform_exports=raw_exports,
             load_time_dependencies="system-only",
             glibc_ceiling="2.17",
             observed_glibc_versions=[f"{major}.{minor}" for major, minor in observed],
         )
     else:
         imports = run(["otool", "-L", str(mex)])
-        symbols = run(["nm", "-gU", str(mex)])
-        if not re.search(r"\b_mexFunction\b", symbols):
-            raise SystemExit("Mach-O exports do not contain _mexFunction")
+        symbol_output = run(["nm", "-gU", str(mex)])
+        raw_exports = nm_exports(symbol_output)
+        try:
+            exports = require_exact_exports(args.target, raw_exports)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         dependency_lines = imports.splitlines()[1:]
         bad = forbidden_dependencies(dependency_lines)
         if bad:
             raise SystemExit(f"forbidden Mach-O load-time dependency: {bad}")
-        checks.update(exports="mexFunction", load_time_dependencies="system-only")
+        checks.update(
+            exports=exports,
+            platform_exports=raw_exports,
+            load_time_dependencies="system-only",
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
