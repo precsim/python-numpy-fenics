@@ -1,6 +1,7 @@
 #ifndef REFERENCE_BRIDGE_MOCK_HOST_H
 #define REFERENCE_BRIDGE_MOCK_HOST_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -12,10 +13,10 @@ typedef struct mxArray_tag mxArray;
 typedef struct MockHostApi MockHostApi;
 
 struct MockHostApi {
-    int (*mxIsChar)(const mxArray *array);
-    int (*mxIsDouble)(const mxArray *array);
-    int (*mxIsComplex)(const mxArray *array);
-    int (*mxIsSparse)(const mxArray *array);
+    bool (*mxIsChar)(const mxArray *array);
+    bool (*mxIsDouble)(const mxArray *array);
+    bool (*mxIsComplex)(const mxArray *array);
+    bool (*mxIsSparse)(const mxArray *array);
     size_t (*mxGetNumberOfElements)(const mxArray *array);
     size_t (*mxGetM)(const mxArray *array);
     size_t (*mxGetN)(const mxArray *array);

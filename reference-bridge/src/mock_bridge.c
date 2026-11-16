@@ -12,6 +12,15 @@
 #define MOCK_EXPORT __attribute__((visibility("default")))
 #endif
 
+/*
+ * Octave 10.2+ checks this metadata before calling mexFunction.  mkoctfile
+ * normally injects it, but the reference bridge is deliberately compiled
+ * directly so it can remain free of a liboctmex load-time dependency.  The
+ * pinned Octave 11.3 host uses liboctmex SOVERSION 1.  Older Octave hosts
+ * ignore this extra export.
+ */
+MOCK_EXPORT const int __octave_mex_soversion__ = 1;
+
 typedef struct MockPackageState {
     int ready;
     char package_root[MOCK_PATH_MAX];

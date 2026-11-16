@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -41,13 +42,18 @@ class MockBackendTests(unittest.TestCase):
         (package_root / "profile.txt").write_text(profile + "\n", encoding="utf-8")
 
         base_profile = "numpy" if profile == "fenics" else profile
-        (runtime_root / "runtime-manifest.json").write_text(
+        base_revision = "1" * 40
+        base_manifest_path = runtime_root / "runtime-manifest.json"
+        base_manifest_path.write_text(
             json.dumps(
                 {
                     "format_version": 1,
                     "profile": base_profile,
                     "python_abi": "cp314",
-                    "producer": {"repository": "precsim/python-numpy-fenics"},
+                    "producer": {
+                        "repository": "precsim/python-numpy-fenics",
+                        "revision": base_revision,
+                    },
                 }
             ),
             encoding="utf-8",
@@ -60,7 +66,11 @@ class MockBackendTests(unittest.TestCase):
                 "profile": "fenics",
                 "python_abi": "cp314",
                 "producer": {"repository": "precsim/python-numpy-fenics"},
-                "numpy": {"version": "2.5.2"},
+                "numpy": {
+                    "version": "2.5.2",
+                    "base_producer_revision": base_revision,
+                    "base_manifest_sha256": hashlib.sha256(base_manifest_path.read_bytes()).hexdigest(),
+                },
             }
             if windows_fenics_manifest:
                 overlay["python"] = {"version": "3.14.10"}
@@ -173,6 +183,16 @@ class MockBackendTests(unittest.TestCase):
             manifest["numpy"]["version"] = "0.0"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "required NumPy 2.5.2 base"):
+                self._configure(module, package_root, runtime_root, "fenics")
+
+    def test_fenics_configuration_rejects_mismatched_bound_base_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module, package_root, runtime_root = self._make_package(Path(tmp), profile="fenics")
+            manifest_path = runtime_root / "runtime-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["producer"]["revision"] = "2" * 40
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "base manifest SHA-256 does not match"):
                 self._configure(module, package_root, runtime_root, "fenics")
 
     def test_configuration_rejects_ambient_import_path(self) -> None:

@@ -7,6 +7,7 @@ sum, one fresh serial FEniCS/FFCx/PETSc probe, and controlled runtime identity.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -61,7 +62,12 @@ def _validate_manifest(manifest: dict[str, object], *, expected_profile: str) ->
         raise RuntimeError("runtime-manifest.json does not identify the public producer")
 
 
-def _validate_fenics_manifest(manifest: dict[str, object]) -> None:
+def _validate_fenics_manifest(
+    manifest: dict[str, object],
+    *,
+    base_manifest_sha256: str,
+    base_producer_revision: str,
+) -> None:
     if manifest.get("format_version") != 1:
         raise RuntimeError("fenics-embed-manifest.json format_version is not 1")
     if manifest.get("profile") != "fenics" or manifest.get("python_abi") != EXPECTED_ABI:
@@ -90,6 +96,16 @@ def _validate_fenics_manifest(manifest: dict[str, object]) -> None:
         raise RuntimeError(
             "fenics-embed-manifest.json does not bind the required NumPy "
             f"{EXPECTED_NUMPY} base"
+        )
+    if numpy_identity.get("base_manifest_sha256") != base_manifest_sha256:
+        raise RuntimeError(
+            "fenics-embed-manifest.json NumPy base manifest SHA-256 does not match "
+            "the staged runtime-manifest.json"
+        )
+    if numpy_identity.get("base_producer_revision") != base_producer_revision:
+        raise RuntimeError(
+            "fenics-embed-manifest.json NumPy base producer revision does not match "
+            "the staged runtime-manifest.json"
         )
 
 
@@ -151,12 +167,16 @@ def _configure(package_root_text: str, runtime_root_text: str, expected_profile:
     if sys.version_info[:3] != (3, 14, 10):
         raise RuntimeError(f"running interpreter does not have the required {EXPECTED_ABI} patch baseline")
 
-    base_manifest = _read_json(runtime_root / "runtime-manifest.json")
+    base_manifest_path = runtime_root / "runtime-manifest.json"
+    base_manifest = _read_json(base_manifest_path)
     base_profile = "numpy" if profile == "fenics" else profile
     _validate_manifest(base_manifest, expected_profile=base_profile)
     python_abi = base_manifest.get("python_abi")
     if not isinstance(python_abi, str):
         raise RuntimeError("runtime-manifest.json python_abi is not text")
+    base_producer = base_manifest.get("producer")
+    if not isinstance(base_producer, dict) or not isinstance(base_producer.get("revision"), str):
+        raise RuntimeError("runtime-manifest.json producer revision is missing")
 
     marker = runtime_root / "RUNTIME_PROFILE"
     if marker.is_file():
@@ -168,7 +188,15 @@ def _configure(package_root_text: str, runtime_root_text: str, expected_profile:
 
     if profile == "fenics":
         overlay = _read_json(runtime_root / "fenics-embed-manifest.json")
-        _validate_fenics_manifest(overlay)
+        try:
+            base_manifest_sha256 = hashlib.sha256(base_manifest_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise RuntimeError(f"cannot hash verified runtime identity runtime-manifest.json: {exc}") from exc
+        _validate_fenics_manifest(
+            overlay,
+            base_manifest_sha256=base_manifest_sha256,
+            base_producer_revision=base_producer["revision"],
+        )
 
     _validate_isolation(package_root, runtime_root)
 

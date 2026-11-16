@@ -298,6 +298,7 @@ def main() -> int:
             compiler, "-std=c11", "-O2", "-fPIC", "-fvisibility=hidden",
             "-arch", arch, "-bundle", "-Wl,-undefined,error",
             "-Wl,-exported_symbol,_mexFunction",
+            "-Wl,-exported_symbol,___octave_mex_soversion__",
         ]
         command_record += [f"-I{path}" for path in all_includes]
         command_record += [str(path) for path in sources]

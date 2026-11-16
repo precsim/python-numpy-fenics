@@ -38,10 +38,10 @@ int mock_host_load(MockHostApi *host, char *error, size_t error_size)
     memset(host, 0, sizeof(*host));
     MOCK_RESOLVE_HOST(host, mexErrMsgIdAndTxt,
                       void (*)(const char *, const char *, ...));
-    MOCK_RESOLVE_HOST(host, mxIsChar, int (*)(const mxArray *));
-    MOCK_RESOLVE_HOST(host, mxIsDouble, int (*)(const mxArray *));
-    MOCK_RESOLVE_HOST(host, mxIsComplex, int (*)(const mxArray *));
-    MOCK_RESOLVE_HOST(host, mxIsSparse, int (*)(const mxArray *));
+    MOCK_RESOLVE_HOST(host, mxIsChar, bool (*)(const mxArray *));
+    MOCK_RESOLVE_HOST(host, mxIsDouble, bool (*)(const mxArray *));
+    MOCK_RESOLVE_HOST(host, mxIsComplex, bool (*)(const mxArray *));
+    MOCK_RESOLVE_HOST(host, mxIsSparse, bool (*)(const mxArray *));
     MOCK_RESOLVE_HOST(host, mxGetNumberOfElements, size_t (*)(const mxArray *));
     MOCK_RESOLVE_HOST(host, mxGetM, size_t (*)(const mxArray *));
     MOCK_RESOLVE_HOST(host, mxGetN, size_t (*)(const mxArray *));
@@ -70,7 +70,8 @@ int mock_host_operation(const MockHostApi *host, const mxArray *array,
         return -1;
     }
     if (!host->mxIsChar(array) || host->mxGetNumberOfElements(array) == 0 ||
-        host->mxGetNumberOfElements(array) > 31) {
+        host->mxGetNumberOfElements(array) > 31 ||
+        (host->mxGetM(array) != 1 && host->mxGetN(array) != 1)) {
         mock_host_set_error(error, error_size,
                             "operation must be a non-empty character vector of at most 31 characters");
         return -1;
