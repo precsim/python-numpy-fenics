@@ -32,6 +32,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.qualification_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           case "$RUN_ID" in
@@ -40,10 +41,20 @@ jobs:
               exit 2
               ;;
           esac
+          if [[ ! "$RELEASE_TAG" =~ ^reference-bridge-v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]]; then
+            echo "invalid reference bridge release tag: $RELEASE_TAG" >&2
+            exit 2
+          fi
           run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
           conclusion="$(jq -r '.conclusion' <<<"$run_json")"
           workflow_name="$(jq -r '.name' <<<"$run_json")"
+          workflow_path="$(jq -r '.path' <<<"$run_json")"
           head_sha="$(jq -r '.head_sha' <<<"$run_json")"
+          head_branch="$(jq -r '.head_branch' <<<"$run_json")"
+          head_repository="$(jq -r '.head_repository.full_name' <<<"$run_json")"
+          event="$(jq -r '.event' <<<"$run_json")"
+          run_attempt="$(jq -r '.run_attempt' <<<"$run_json")"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
           if [[ "$conclusion" != "success" ]]; then
             echo "qualification run is not successful: $conclusion" >&2
             exit 1
@@ -52,11 +63,32 @@ jobs:
             echo "unexpected source workflow: $workflow_name" >&2
             exit 1
           fi
+          if [[ "$workflow_path" != ".github/workflows/qualify-reference-bridge.yml" ]]; then
+            echo "unexpected source workflow path: $workflow_path" >&2
+            exit 1
+          fi
+          if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then
+            echo "qualification run has non-promotable event: $event" >&2
+            exit 1
+          fi
+          if [[ "$head_branch" != "$default_branch" ]]; then
+            echo "qualification run is from $head_branch, expected $default_branch" >&2
+            exit 1
+          fi
+          if [[ "$head_repository" != "$GITHUB_REPOSITORY" ]]; then
+            echo "qualification run is from unexpected repository: $head_repository" >&2
+            exit 1
+          fi
           if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "qualification run has invalid head SHA: $head_sha" >&2
             exit 1
           fi
+          if [[ ! "$run_attempt" =~ ^[1-9][0-9]*$ ]]; then
+            echo "qualification run has invalid run attempt: $run_attempt" >&2
+            exit 1
+          fi
           echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "attempt=$run_attempt" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact qualified source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -68,14 +100,80 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate qualified package artifact matrix
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.qualification_run_id }}
+        run: |
+          set -euo pipefail
+          package_names=()
+          while IFS=$'\t' read -r name expired; do
+            [[ -n "$name" ]] || continue
+            if [[ "$expired" != "false" ]]; then
+              echo "qualified package artifact is expired: $name" >&2
+              exit 1
+            fi
+            package_names+=("$name")
+          done < <(
+            gh api --paginate \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.name | startswith("reference-package-")) | [.name, (.expired | tostring)] | @tsv'
+          )
+          if [[ "${#package_names[@]}" -eq 0 ]]; then
+            echo "qualification run has no reference-package artifacts" >&2
+            exit 1
+          fi
+          duplicate="$(printf '%s\n' "${package_names[@]}" | sort | uniq -d | head -n 1)"
+          if [[ -n "$duplicate" ]]; then
+            echo "qualification run has duplicate package artifact name: $duplicate" >&2
+            exit 1
+          fi
+
+          core_numpy=()
+          full=()
+          for target in linux-x64 macos-arm64 macos-x64 win-x64; do
+            for profile in core numpy; do
+              core_numpy+=("reference-package-$target-$profile")
+              full+=("reference-package-$target-$profile")
+            done
+            full+=("reference-package-$target-fenics")
+          done
+          matches() {
+            diff -q \
+              <(printf '%s\n' "$@" | sort) \
+              <(printf '%s\n' "${package_names[@]}" | sort) >/dev/null
+          }
+          if matches "${core_numpy[@]}"; then
+            echo "qualified package artifact matrix: core+numpy"
+          elif matches "${full[@]}"; then
+            echo "qualified package artifact matrix: core+numpy+fenics"
+          else
+            echo "qualification run has an incomplete or unexpected reference-package artifact matrix:" >&2
+            printf '  %s\n' "${package_names[@]}" | sort >&2
+            exit 1
+          fi
+
       - name: Download qualified package artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: reference-package-*
-          path: build/reference/promotion
+          path: build/reference/promotion/packages
           merge-multiple: true
           run-id: ${{ inputs.qualification_run_id }}
           github-token: ${{ github.token }}
+
+      - name: Put qualification records beside the package directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          records=(build/reference/promotion/packages/qualification-reference-*.json)
+          if [[ "${#records[@]}" -eq 0 ]]; then
+            echo 'downloaded artifacts have no qualification records' >&2
+            exit 1
+          fi
+          mv -- "${records[@]}" build/reference/promotion/
 
       - name: Reverify complete release set offline
         shell: bash
@@ -87,7 +185,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python consumer-kit/tools/write-release-index.py --root build/reference/promotion --source-revision "${{ steps.qualification.outputs.sha }}" --qualification-run-id "${{ inputs.qualification_run_id }}" --output build/reference/promotion/reference-release-index.json
+          python consumer-kit/tools/write-release-index.py --root build/reference/promotion --source-revision "${{ steps.qualification.outputs.sha }}" --qualification-run-id "${{ inputs.qualification_run_id }}" --qualification-run-attempt "${{ steps.qualification.outputs.attempt }}" --output build/reference/promotion/reference-release-index.json
           python consumer-kit/tools/write-sha256.py build/reference/promotion/reference-release-index.json
 
       - name: Refuse an existing tag or release
@@ -112,21 +210,74 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ steps.qualification.outputs.attempt }}
           QUALIFIED_SHA: ${{ steps.qualification.outputs.sha }}
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(
-            find build/reference/promotion -type f \( -name 'reference-bridge-*.zip' -o -name 'reference-bridge-*.tar.gz' -o -name 'reference-bridge-*.sha256' -o -name 'qualification-reference-*.json' -o -name 'reference-release-index.json' -o -name 'reference-release-index.json.sha256' \) -print0 | sort -z
+          root="build/reference/promotion"
+          index="$root/reference-release-index.json"
+          index_sidecar="$index.sha256"
+          test -f "$index"
+          test -f "$index_sidecar"
+          (cd "$root" && sha256sum -c reference-release-index.json.sha256)
+          jq -e \
+            --arg source "$QUALIFIED_SHA" \
+            --arg run "$QUALIFICATION_RUN_ID" \
+            --arg attempt "$QUALIFICATION_RUN_ATTEMPT" \
+            '.source_revision == $source and .qualification_run_id == $run and .qualification_run_attempt == $attempt' \
+            "$index" >/dev/null
+          (
+            cd "$root"
+            jq -r '.files[] | "\(.sha256)  \(.path)"' reference-release-index.json | sha256sum -c -
           )
-          if [[ "${#assets[@]}" -lt 19 ]]; then
-            echo "promotion set is unexpectedly small: ${#assets[@]} files" >&2
+          if find "$root" -type l -print -quit | grep -q .; then
+            echo "promotion directory contains a symlink" >&2
+            exit 1
+          fi
+          package_version="$(jq -r '.version' "$index")"
+          if [[ "$RELEASE_TAG" != "reference-bridge-$package_version" ]]; then
+            echo "release tag does not match qualified package version: $RELEASE_TAG != reference-bridge-$package_version" >&2
+            exit 1
+          fi
+          mapfile -t indexed_paths < <(jq -r '.files[].path' "$index")
+          assets=()
+          expected_paths=()
+          expected_asset_names=()
+          for path in "${indexed_paths[@]}"; do
+            if [[ -z "$path" || "$path" == /* || "$path" == *\\* || "$path" == *../* || "$path" == ../* || "$path" == */.. ]]; then
+              echo "release index contains unsafe asset path: $path" >&2
+              exit 1
+            fi
+            case "$path" in
+              packages/reference-bridge-*.zip|packages/reference-bridge-*.tar.gz|packages/reference-bridge-*.sha256|qualification-reference-*.json)
+                ;;
+              *)
+                echo "release index contains unexpected asset path: $path" >&2
+                exit 1
+                ;;
+            esac
+            test -f "$root/$path"
+            test ! -L "$root/$path"
+            assets+=("$root/$path")
+            expected_paths+=("$path")
+            expected_asset_names+=("${path##*/}")
+          done
+          assets+=("$index" "$index_sidecar")
+          expected_paths+=("reference-release-index.json" "reference-release-index.json.sha256")
+          expected_asset_names+=("reference-release-index.json" "reference-release-index.json.sha256")
+          mapfile -t actual_paths < <(find "$root" -type f -printf '%P\n' | sort)
+          if ! diff -u \
+              <(printf '%s\n' "${expected_paths[@]}" | sort) \
+              <(printf '%s\n' "${actual_paths[@]}" | sort); then
+            echo "promotion directory differs from the release index asset set" >&2
             exit 1
           fi
           notes_file="$RUNNER_TEMP/reference-bridge-release-notes.md"
           {
             printf '%s\n\n' 'Public reference bridge packages qualified by GitHub Actions.'
             printf '%s\n' "- Source revision: $QUALIFIED_SHA"
-            printf '%s\n' "- Qualification workflow run: $QUALIFICATION_RUN_ID"
+            printf '%s\n' "- Qualification workflow run: $QUALIFICATION_RUN_ID (attempt $QUALIFICATION_RUN_ATTEMPT)"
+            printf '%s\n' "- Profiles: $(jq -r '.profiles | join(", ")' "$index")"
             printf '%s\n' '- Python ABI: cp314 / CPython 3.14.10'
             printf '%s\n\n' '- Host qualification: GNU Octave'
             printf '%s\n' 'Each package contains the exact qualified MEX candidate, immutable producer'
@@ -134,4 +285,41 @@ jobs:
             printf '%s\n' 'launcher. MATLAB-style MEX aliases are filename-compatible copies only; this'
             printf '%s\n' 'release does not claim MATLAB qualification.'
           } >"$notes_file"
-          gh release create "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --target "$QUALIFIED_SHA" --title "$RELEASE_TAG" --notes-file "$notes_file" --prerelease
+          tag_created=false
+          cleanup_failed_promotion() {
+            status=$?
+            trap - EXIT
+            if [[ "$status" -ne 0 && "$tag_created" == "true" ]]; then
+              gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" >/dev/null 2>&1 || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_promotion EXIT
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" \
+            -f sha="$QUALIFIED_SHA" >/dev/null
+          tag_created=true
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          if [[ "$tag_sha" != "$QUALIFIED_SHA" ]]; then
+            echo "created tag target mismatch: $tag_sha != $QUALIFIED_SHA" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --title "$RELEASE_TAG" --notes-file "$notes_file"
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
+          mapfile -t uploaded_names < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" --jq '.[].name' | sort
+          )
+          if ! diff -u \
+              <(printf '%s\n' "${expected_asset_names[@]}" | sort) \
+              <(printf '%s\n' "${uploaded_names[@]}" | sort); then
+            echo "uploaded draft release assets differ from the verified promotion set" >&2
+            exit 1
+          fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=true >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            --jq 'select(.draft == false and .prerelease == true) | .tag_name' | grep -Fx "$RELEASE_TAG" >/dev/null
+          trap - EXIT

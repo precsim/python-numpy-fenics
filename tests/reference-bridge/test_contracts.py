@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
+import sys
 import unittest
 
 
@@ -13,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "consumer-kit" / "contracts"
 BRIDGE_BUILD = ROOT / "reference-bridge" / "bridge-build.json"
 REFERENCE_RECEIPT = ROOT / "locks" / "consumer" / "reference-runtime-v1.json"
+RUNTIME_LIB = ROOT / "consumer-kit" / "tools" / "runtime_lib.py"
 
 
 class ContractError(ValueError):
@@ -21,6 +24,19 @@ class ContractError(ValueError):
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_runtime_lib():
+    spec = importlib.util.spec_from_file_location("reference_bridge_runtime_lib", RUNTIME_LIB)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load runtime contract resolver: {RUNTIME_LIB}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
 
 
 def _resolve_ref(root_schema: dict, ref: str) -> dict:
@@ -306,6 +322,59 @@ class PhaseOneContractTests(unittest.TestCase):
             self.assertEqual(fenics["base"]["release_tag"], "runtime-v0.1.0-rc1")
             self.assertEqual(fenics["overlay"]["release_tag"], "runtime-v0.1.0-rc2")
             self.assertEqual(fenics["archive"], fenics["overlay"]["archive"])
+
+    def test_checked_in_runtime_receipt_resolves_every_contract_layer(self) -> None:
+        runtime = load_runtime_lib()
+        receipt = load_json(REFERENCE_RECEIPT)
+        expected_manifest = {
+            "core": "runtime-manifest.json",
+            "numpy": "runtime-manifest.json",
+            "fenics": "fenics-embed-manifest.json",
+        }
+
+        for target, profiles in receipt["profiles"].items():
+            for profile in ("core", "numpy", "fenics"):
+                record = profiles[profile]
+                with self.subTest(target=target, profile=profile, layer="current"):
+                    pin = runtime._contract_layer(
+                        record,
+                        profile=profile,
+                        context=f"{target}/{profile}",
+                    )
+                    self.assertEqual(pin.profile, profile)
+                    self.assertEqual(pin.manifest.name, expected_manifest[profile])
+                    self.assertEqual(pin.manifest.sha256, record["archive"]["manifest_sha256"])
+                    self.assertFalse(pin.manifest_external)
+
+                if profile != "fenics":
+                    continue
+
+                for layer_name, layer_profile in (("base", "numpy"), ("overlay", "fenics")):
+                    layer = record[layer_name]
+                    with self.subTest(
+                        target=target,
+                        profile=profile,
+                        layer=layer_name,
+                    ):
+                        pin = runtime._contract_layer(
+                            layer,
+                            profile=layer_profile,
+                            context=f"{target}/fenics {layer_name}",
+                        )
+                        self.assertEqual(pin.profile, layer_profile)
+                        self.assertEqual(pin.manifest.name, expected_manifest[layer_profile])
+                        self.assertEqual(pin.manifest.sha256, layer["archive"]["manifest_sha256"])
+                        self.assertFalse(pin.manifest_external)
+
+            for profile in ("core", "numpy", "fenics"):
+                with self.subTest(target=target, profile=profile, resolver="plan"):
+                    plan = runtime.resolve_contract_plan(
+                        receipt,
+                        platform=target,
+                        profile=profile,
+                    )
+                    self.assertEqual(plan.platform, target)
+                    self.assertEqual(plan.profile, profile)
 
     def test_reference_package_inventory_rejects_traversal_and_duplicate_paths(self) -> None:
         mex_sha = "d" * 64

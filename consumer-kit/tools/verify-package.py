@@ -524,7 +524,19 @@ def verify_package(root: Path) -> dict[str, Any]:
     }
     require(set(expected) == set(actual_payload), "manifest inventory differs from extracted package inventory")
     for rel, entry in expected.items():
-        require(entry == actual_payload[rel], f"package entry differs from manifest: {rel}")
+        observed = actual_payload[rel]
+        if platform == "win-x64":
+            # Windows ZIP extractors do not preserve POSIX permission bits,
+            # including when the Windows archive is inspected on Unix.
+            # Retain byte/hash/type/symlink attestation but do not reject an
+            # otherwise identical Windows package on host-dependent st_mode.
+            require(
+                {key: value for key, value in entry.items() if key != "mode"}
+                == {key: value for key, value in observed.items() if key != "mode"},
+                f"package entry differs from manifest: {rel}",
+            )
+        else:
+            require(entry == observed, f"package entry differs from manifest: {rel}")
 
     checksums = _parse_sha256sums(root / "SHA256SUMS.txt")
     checkable = {
