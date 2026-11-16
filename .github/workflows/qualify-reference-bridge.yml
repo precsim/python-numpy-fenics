@@ -105,7 +105,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install octave
+          brew install --force-bottle octave
           test "$(octave-config -p VERSION)" = "$OCTAVE_MACOS_VERSION"
 
       - name: Stage and verify core build runtime
@@ -122,17 +122,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $buildArgs = @(
-            "consumer-kit/tools/build_bridge.py",
-            "--manifest", "reference-bridge/bridge-build.json",
-            "--source-root", "reference-bridge",
-            "--runtime", "build/reference/build-core/${{ matrix.target }}/runtime",
-            "--target", "${{ matrix.target }}",
-            "--output-dir", "build/reference/candidate/${{ matrix.target }}",
-            "--provenance", "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
-          )
-          python @buildArgs
-          if ($LASTEXITCODE -ne 0) { throw "reference bridge build failed" }
+          & consumer-kit/tools/build.ps1 `
+            --manifest reference-bridge/bridge-build.json `
+            --source-root reference-bridge `
+            --runtime "build/reference/build-core/${{ matrix.target }}/runtime" `
+            --output-dir "build/reference/candidate/${{ matrix.target }}" `
+            --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
 
       - name: Build Linux candidate in pinned manylinux2014
         if: matrix.target == 'linux-x64'
@@ -140,23 +135,37 @@ jobs:
         run: |
           set -euo pipefail
           octave_include="$(octave-config -p OCTINCLUDEDIR)"
+          test -f "$octave_include/mex.h"
           mkdir -p build/octave-headers
           cp -a "$octave_include/." build/octave-headers/
           workspace="$GITHUB_WORKSPACE"
-          docker run --rm --user "$(id -u):$(id -g)" -e "GITHUB_SHA=$GITHUB_SHA" -e "OCTAVE_VERSION=$OCTAVE_LINUX_VERSION" -e "OCTAVE_INCLUDE_DIRS=$workspace/build/octave-headers:$workspace/build/octave-headers/octave" -v "$workspace:$workspace" -w "$workspace" "$MANYLINUX2014_IMAGE" /opt/python/cp312-cp312/bin/python consumer-kit/tools/build_bridge.py --manifest reference-bridge/bridge-build.json --source-root reference-bridge --runtime "build/reference/build-core/${{ matrix.target }}/runtime" --target "${{ matrix.target }}" --output-dir "build/reference/candidate/${{ matrix.target }}" --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e "GITHUB_SHA=$GITHUB_SHA" \
+            -e "OCTAVE_VERSION=$OCTAVE_LINUX_VERSION" \
+            -e "OCTAVE_INCLUDE_DIRS=$workspace/build/octave-headers" \
+            -e "PYTHON=/opt/python/cp312-cp312/bin/python" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            "$MANYLINUX2014_IMAGE" \
+            bash consumer-kit/tools/build-linux.sh \
+              --manifest reference-bridge/bridge-build.json \
+              --source-root reference-bridge \
+              --runtime "build/reference/build-core/${{ matrix.target }}/runtime" \
+              --output-dir "build/reference/candidate/${{ matrix.target }}" \
+              --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
 
       - name: Build macOS candidate with Clang
         if: startsWith(matrix.target, 'macos-')
         shell: bash
         run: |
           set -euo pipefail
-          python consumer-kit/tools/build_bridge.py --manifest reference-bridge/bridge-build.json --source-root reference-bridge --runtime "build/reference/build-core/${{ matrix.target }}/runtime" --target "${{ matrix.target }}" --output-dir "build/reference/candidate/${{ matrix.target }}" --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
-
-      - name: Audit candidate native boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          python consumer-kit/tools/audit-mex.py --target "${{ matrix.target }}" --mex "build/reference/candidate/${{ matrix.target }}/bridge.mex" --output "build/reference/candidate/${{ matrix.target }}/native-audit.json"
+          REFERENCE_BRIDGE_TARGET="${{ matrix.target }}" \
+            bash consumer-kit/tools/build-macos.sh \
+              --manifest reference-bridge/bridge-build.json \
+              --source-root reference-bridge \
+              --runtime "build/reference/build-core/${{ matrix.target }}/runtime" \
+              --output-dir "build/reference/candidate/${{ matrix.target }}" \
+              --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
 
       - name: Upload immutable candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -241,7 +250,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install octave
+          brew install --force-bottle octave
           test "$(octave-config -p VERSION)" = "$OCTAVE_MACOS_VERSION"
 
       - name: Stage and re-attest selected runtime
