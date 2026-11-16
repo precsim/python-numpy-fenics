@@ -171,10 +171,13 @@ def normalize_exports(platform: str, raw_exports: list[str]) -> list[str]:
 
 def require_exact_exports(platform: str, raw_exports: list[str]) -> list[str]:
     normalized = normalize_exports(platform, raw_exports)
-    observed = set(normalized)
+    # GNU ld emits these CRT entry points into ELF shared objects even when
+    # all application symbols use hidden visibility. They are not MEX APIs.
+    platform_crt = {"_init", "_fini"} if platform == "linux-x64" else set()
+    observed = set(normalized) - platform_crt
     missing = sorted(EXPECTED_EXPORTS - observed)
     unexpected = sorted(observed - EXPECTED_EXPORTS)
-    duplicates = sorted({symbol for symbol in normalized if normalized.count(symbol) > 1})
+    duplicates = sorted({symbol for symbol in normalized if symbol not in platform_crt and normalized.count(symbol) > 1})
     if missing or unexpected or duplicates:
         raise ValueError(
             f"{platform} export table differs from required MEX ABI: "

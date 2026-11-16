@@ -55,6 +55,13 @@ File Type: DLL
         with self.assertRaisesRegex(ValueError, "unexpected=.*accidentalPublicApi"):
             audit.require_exact_exports("linux-x64", raw)
 
+    def test_elf_crt_init_fini_exports_are_not_m_ex_api(self) -> None:
+        raw = ["_init", "_fini", "mexFunction", "__octave_mex_soversion__"]
+        self.assertEqual(
+            audit.require_exact_exports("linux-x64", raw),
+            ["__octave_mex_soversion__", "mexFunction"],
+        )
+
     def test_exports_reject_missing_octave_metadata(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing=.*__octave_mex_soversion__"):
             audit.require_exact_exports("linux-x64", ["mexFunction"])
