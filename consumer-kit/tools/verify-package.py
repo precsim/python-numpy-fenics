@@ -249,6 +249,51 @@ def _actual_inventory(root: Path) -> dict[str, dict[str, Any]]:
     return entries
 
 
+def _current_umask() -> int:
+    """Return the process umask while restoring it immediately."""
+
+    value = os.umask(0)
+    os.umask(value)
+    return value
+
+
+def _regular_file_mode_matches(expected: int, observed: int, platform: str) -> bool:
+    if platform == "win-x64":
+        return True
+    if expected == observed:
+        return True
+    if os.name == "nt":
+        return False
+    # Non-root tar extraction applies the caller's umask to archived regular-file
+    # modes. The archive/manifest mode remains authoritative; accept only the
+    # deterministic permission bits that the current extraction umask may clear.
+    return observed == (expected & ~_current_umask() & 0o7777)
+
+
+def _entry_matches_manifest(
+    expected: dict[str, Any], observed: dict[str, Any], platform: str
+) -> bool:
+    expected_without_mode = {key: value for key, value in expected.items() if key != "mode"}
+    observed_without_mode = {key: value for key, value in observed.items() if key != "mode"}
+    if expected_without_mode != observed_without_mode:
+        return False
+    if expected["kind"] == "file":
+        return _regular_file_mode_matches(expected["mode"], observed["mode"], platform)
+    if platform == "win-x64":
+        return True
+    return expected["mode"] == observed["mode"]
+
+
+def _entry_mismatch_message(
+    rel: str, expected: dict[str, Any], observed: dict[str, Any]
+) -> str:
+    return (
+        f"package entry differs from manifest: {rel}; "
+        f"expected={json.dumps(expected, sort_keys=True, separators=(',', ':'))}; "
+        f"observed={json.dumps(observed, sort_keys=True, separators=(',', ':'))}"
+    )
+
+
 def _manifest_mode(raw: Any, label: str) -> int | None:
     if raw is None:
         return None
@@ -341,7 +386,7 @@ def verify_embedded_runtime_manifests(
 
     actual = _actual_inventory(runtime)
     require(set(actual) == set(expected), "packaged runtime inventory differs from embedded producer manifests")
-    check_modes = os.name != "nt" and platform != "win-x64"
+    check_modes = platform != "win-x64"
     for rel, wanted in expected.items():
         observed = actual[rel]
         require(observed["kind"] == wanted["kind"], f"packaged runtime entry kind differs: {rel}")
@@ -362,7 +407,17 @@ def verify_embedded_runtime_manifests(
                     f"packaged runtime symlink target differs: {rel}",
                 )
         if check_modes and wanted.get("mode") is not None:
-            require(observed["mode"] == wanted["mode"], f"packaged runtime mode differs from embedded producer manifest: {rel}")
+            expected_mode = wanted["mode"]
+            observed_mode = observed["mode"]
+            if wanted["kind"] == "file":
+                mode_matches = _regular_file_mode_matches(expected_mode, observed_mode, platform)
+            else:
+                mode_matches = expected_mode == observed_mode
+            require(
+                mode_matches,
+                f"packaged runtime mode differs from embedded producer manifest: {rel}; "
+                f"expected={oct(expected_mode)} observed={oct(observed_mode)}",
+            )
 
 
 def _normalize_manifest_entry(raw: Any) -> dict[str, Any]:
@@ -525,18 +580,10 @@ def verify_package(root: Path) -> dict[str, Any]:
     require(set(expected) == set(actual_payload), "manifest inventory differs from extracted package inventory")
     for rel, entry in expected.items():
         observed = actual_payload[rel]
-        if platform == "win-x64":
-            # Windows ZIP extractors do not preserve POSIX permission bits,
-            # including when the Windows archive is inspected on Unix.
-            # Retain byte/hash/type/symlink attestation but do not reject an
-            # otherwise identical Windows package on host-dependent st_mode.
-            require(
-                {key: value for key, value in entry.items() if key != "mode"}
-                == {key: value for key, value in observed.items() if key != "mode"},
-                f"package entry differs from manifest: {rel}",
-            )
-        else:
-            require(entry == observed, f"package entry differs from manifest: {rel}")
+        require(
+            _entry_matches_manifest(entry, observed, platform),
+            _entry_mismatch_message(rel, entry, observed),
+        )
 
     checksums = _parse_sha256sums(root / "SHA256SUMS.txt")
     checkable = {

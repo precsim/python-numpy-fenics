@@ -187,7 +187,7 @@ jobs:
           - linux-x64
           - macos-arm64
           - macos-x64
-        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profiles == 'core' && '["core"]' || github.event_name == 'workflow_dispatch' && inputs.profiles == 'core+numpy+fenics' && '["core","numpy","fenics"]' || '["core","numpy"]') }}
+        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profiles == 'core' && '["core"]' || github.event_name == 'workflow_dispatch' && inputs.profiles == 'core+numpy' && '["core","numpy"]' || '["core","numpy","fenics"]') }}
         include:
           - target: win-x64
             runner: windows-2022
@@ -242,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y octave=6.4.0-2 octave-dev=6.4.0-2
+          sudo apt-get install -y octave=6.4.0-2 octave-dev=6.4.0-2 gdb
           test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
 
       - name: Install pinned GNU Octave on macOS
@@ -265,6 +265,14 @@ jobs:
           python consumer-kit/tools/stage-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --cache build/reference-cache --output "$root/runtime" --record "$record"
           python consumer-kit/tools/verify-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --cache build/reference-cache --runtime "$root/runtime" --record "$verify_record"
           python consumer-kit/tools/prepare-test-layout.py --package-root "$root" --mex "build/reference/candidate/${{ matrix.target }}/bridge.mex" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --runtime-record "$record" --backend reference-bridge/python/mock_backend.py --host-fixture reference-bridge/host/mock_smoke.m
+
+      - name: Smoke standalone staged NumPy on Linux
+        if: matrix.target == 'linux-x64' && matrix.profile != 'core'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="build/reference/test/${{ matrix.target }}/${{ matrix.profile }}/runtime"
+          "$runtime/bin/python3.14" -I -c 'import numpy as np; assert np.__version__ == "2.5.2"; assert int(np.arange(6, dtype=np.int64).sum()) == 15; print(f"reference_numpy_standalone=pass:{np.__file__}")'
 
       - name: Execute GNU Octave host acceptance on Windows
         if: matrix.target == 'win-x64'

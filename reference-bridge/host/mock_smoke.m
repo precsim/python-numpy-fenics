@@ -25,6 +25,14 @@ assert(!isempty(info.runtime_root));
 assert(bridge("scalar", 5.0) == 11.0);
 
 if (strcmp(getenv("REFERENCE_BRIDGE_FRESH_ONLY"), "1"))
+  % A fresh process must exercise the selected native capability, not just
+  % CPython startup: NumPy/FFCx/PETSc loader faults may occur only on import.
+  if (strcmp(profile, "numpy"))
+    assert(bridge("numpy", 5.0) == 55.0);
+  elseif (strcmp(profile, "fenics"))
+    assert(bridge("numpy", 5.0) == 55.0);
+    assert(bridge("fenics") <= 5.0e-2);
+  endif
   fprintf("reference_bridge_result=pass\n");
   return;
 endif

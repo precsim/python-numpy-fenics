@@ -39,7 +39,8 @@ smoke="$relocated_root/host/mock_smoke.m"
 run_smoke() {
   local fresh="$1"
   local output
-  output="$(
+  local status
+  if output="$(
     REFERENCE_BRIDGE_ROOT="$relocated_root" \
     REFERENCE_BRIDGE_FRESH_ONLY="$fresh" \
     PYTHONHOME="$poison/home" \
@@ -49,8 +50,39 @@ run_smoke() {
     PYTHONNOUSERSITE=1 \
     XDG_CACHE_HOME="$poison/jit cache" \
     "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
-  )"
+  )"; then
+    status=0
+  else
+    status=$?
+  fi
   printf '%s\n' "$output"
+  if [[ "$status" -ne 0 ]]; then
+    if [[ "$status" -eq 139 ]] && command -v gdb >/dev/null 2>&1; then
+      local gdb_output
+      echo "reference_bridge_gdb_backtrace=begin" >&2
+      if gdb_output="$(
+        gdb --quiet --batch \
+          -ex "set environment REFERENCE_BRIDGE_ROOT $relocated_root" \
+          -ex "set environment REFERENCE_BRIDGE_FRESH_ONLY $fresh" \
+          -ex "set environment PYTHONHOME $poison/home" \
+          -ex "set environment PYTHONPATH $poison/python" \
+          -ex "set environment PYTHONUSERBASE $poison/user" \
+          -ex 'set environment PYTHONDONTWRITEBYTECODE 1' \
+          -ex 'set environment PYTHONNOUSERSITE 1' \
+          -ex "set environment XDG_CACHE_HOME $poison/jit cache" \
+          -ex run \
+          -ex 'thread apply all bt' \
+          --args "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
+      )"; then
+        :
+      else
+        :
+      fi
+      printf '%s\n' "$gdb_output" >&2
+      echo "reference_bridge_gdb_backtrace=end" >&2
+    fi
+    return "$status"
+  fi
   grep -q '^reference_bridge_result=pass$' <<<"$output"
 }
 

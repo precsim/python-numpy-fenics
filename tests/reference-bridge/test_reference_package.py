@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tarfile
@@ -374,6 +376,84 @@ class ReferencePackageTests(unittest.TestCase):
             )
             self.assertNotEqual(verify.returncode, 0)
             self.assertIn("manifest inventory differs", verify.stdout)
+
+    @unittest.skipIf(os.name == "nt", "requires POSIX tar permission semantics")
+    def test_tar_extraction_umask_preserves_strict_inventory_and_reports_mode_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self.make_inputs(root)
+            runtime = Path(inputs["runtime"])
+            license_path = runtime / "LICENSES" / "OpenSSL.txt"
+            license_path.parent.mkdir()
+            license_path.write_text("OpenSSL redistribution notice\n", encoding="utf-8")
+            license_path.chmod(0o664)
+
+            manifest_path = runtime / "runtime-manifest.json"
+            runtime_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            files = []
+            for path in sorted(runtime.rglob("*")):
+                if not path.is_file() or path == manifest_path:
+                    continue
+                files.append(
+                    {
+                        "path": path.relative_to(runtime).as_posix(),
+                        "bytes": path.stat().st_size,
+                        "sha256": digest(path),
+                        "mode": stat.S_IMODE(path.stat().st_mode),
+                    }
+                )
+            runtime_manifest["files"] = files
+            manifest_path.write_text(
+                json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+
+            archive = root / "package.tar.gz"
+            packaged = subprocess.run(
+                self.package_command(inputs, archive), text=True, capture_output=True, check=False
+            )
+            self.assertEqual(packaged.returncode, 0, packaged.stdout + packaged.stderr)
+            with tarfile.open(archive, "r:gz") as bundle:
+                member = bundle.getmember(
+                    "reference-bridge-linux-x64-cp314-core-test/runtime/LICENSES/OpenSSL.txt"
+                )
+                self.assertEqual(member.mode & 0o7777, 0o664)
+
+            extract_root = root / "gnu tar extraction"
+            extract_root.mkdir()
+            original_umask = os.umask(0o022)
+            try:
+                extracted = subprocess.run(
+                    ["tar", "-xzf", str(archive), "-C", str(extract_root)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(extracted.returncode, 0, extracted.stdout + extracted.stderr)
+                package_root = extract_root / "reference-bridge-linux-x64-cp314-core-test"
+                extracted_license = package_root / "runtime" / "LICENSES" / "OpenSSL.txt"
+                self.assertEqual(stat.S_IMODE(extracted_license.stat().st_mode), 0o644)
+
+                verify = subprocess.run(
+                    [sys.executable, str(package_root / "verify-package.py")],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+
+                extracted_license.chmod(0o755)
+                bad_mode = subprocess.run(
+                    [sys.executable, str(package_root / "verify-package.py")],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(bad_mode.returncode, 0)
+                self.assertIn("runtime/LICENSES/OpenSSL.txt", bad_mode.stdout)
+                self.assertIn("expected=", bad_mode.stdout)
+                self.assertIn("observed=", bad_mode.stdout)
+            finally:
+                os.umask(original_umask)
 
 
 if __name__ == "__main__":
