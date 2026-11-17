@@ -98,7 +98,8 @@ jobs:
         run: |
           set -euo pipefail
           workspace="$GITHUB_WORKSPACE"
-          docker run --rm --platform linux/amd64 \
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
             -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
             -v "$workspace:$workspace" \
             -w "$workspace" \
@@ -289,7 +290,8 @@ jobs:
         run: |
           set -euo pipefail
           workspace="$GITHUB_WORKSPACE"
-          docker run --rm --platform linux/amd64 \
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
             -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
             -v "$workspace:$workspace" \
             -w "$workspace" \
@@ -347,7 +349,8 @@ jobs:
           tar -xzf "$package" -C "$destination"
           workspace="$GITHUB_WORKSPACE"
           root="$workspace/$destination/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
-          docker run --rm --platform linux/amd64 \
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
             -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
             -e "PACKAGE_ROOT=$root" \
             -v "$workspace:$workspace" \

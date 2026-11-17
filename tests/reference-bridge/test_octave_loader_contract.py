@@ -46,7 +46,8 @@ class OctaveLoaderContractTests(unittest.TestCase):
         )
 
         headers = workflow_step(workflow, "Source pinned GNU Octave headers on Linux")
-        self.assertIn("docker run --rm --platform linux/amd64", headers)
+        self.assertIn('docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)"', headers)
+        self.assertIn("-e HOME=/tmp", headers)
         self.assertIn('"$OCTAVE_LINUX_IMAGE"', headers)
         self.assertIn('octave-config -p OCTINCLUDEDIR', headers)
         self.assertIn('cp -a "$octave_include/." build/octave-headers/', headers)
@@ -57,7 +58,8 @@ class OctaveLoaderContractTests(unittest.TestCase):
 
         acceptance = workflow_step(workflow, "Execute GNU Octave host acceptance on Linux")
         self.assertIn("if: matrix.target == 'linux-x64'", acceptance)
-        self.assertIn("docker run --rm --platform linux/amd64", acceptance)
+        self.assertIn('docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)"', acceptance)
+        self.assertIn("-e HOME=/tmp", acceptance)
         self.assertIn('"$OCTAVE_LINUX_IMAGE"', acceptance)
         self.assertIn('test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"', acceptance)
         self.assertIn("test-octave-linux.sh", acceptance)
@@ -65,7 +67,8 @@ class OctaveLoaderContractTests(unittest.TestCase):
 
         packaged = workflow_step(workflow, "Extract and test packaged bytes on Linux")
         self.assertIn("if: matrix.target == 'linux-x64'", packaged)
-        self.assertIn("docker run --rm --platform linux/amd64", packaged)
+        self.assertIn('docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)"', packaged)
+        self.assertIn("-e HOME=/tmp", packaged)
         self.assertIn('"$OCTAVE_LINUX_IMAGE"', packaged)
         self.assertIn('"$PACKAGE_ROOT/run-local-test.sh"', packaged)
         self.assertIn('--octave "$(command -v octave-cli)"', packaged)
