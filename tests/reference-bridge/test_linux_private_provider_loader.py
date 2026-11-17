@@ -68,7 +68,6 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
             ],
             check=True,
             text=True,
-            capture_output=True,
         )
 
     def _fixture(
@@ -143,7 +142,7 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
         harness_source = root / "harness.c"
         harness_source.write_text(
             textwrap.dedent(
-                """\
+                r"""
                 #define _GNU_SOURCE 1
                 #include "mock_platform.h"
                 #include <dlfcn.h>
@@ -228,7 +227,6 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
             ],
             check=True,
             text=True,
-            capture_output=True,
         )
         return harness, host, python, private, consumer
 

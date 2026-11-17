@@ -323,6 +323,9 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
         linux = (TOOLS / "test-octave-linux.sh").read_text(encoding="utf-8")
         self.assertIn("command -v lldb", linux)
         self.assertIn("reference_bridge_lldb_backtrace=begin", linux)
+        self.assertIn("env -u PYTHONHOME -u PYTHONPATH -u PYTHONUSERBASE -u PYTHONSTARTUP", linux)
+        self.assertIn(r'-- /usr/bin/env "${host_env[@]}"', linux)
+        self.assertNotIn(r'env "${host_env[@]}" lldb --batch', linux)
         self.assertIn("'thread backtrace all'", linux)
         self.assertIn("reference_bridge_lldb_backtrace=end", linux)
 

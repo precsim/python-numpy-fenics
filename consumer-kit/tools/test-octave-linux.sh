@@ -129,10 +129,12 @@ run_smoke() {
       local lldb_output
       echo "reference_bridge_lldb_backtrace=begin" >&2
       if lldb_output="$(
-        env "${host_env[@]}" lldb --batch \
+        env -u PYTHONHOME -u PYTHONPATH -u PYTHONUSERBASE -u PYTHONSTARTUP \
+          lldb --batch \
           -o run \
           -o 'thread backtrace all' \
-          -- "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
+          -- /usr/bin/env "${host_env[@]}" \
+          "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
       )"; then
         :
       else
