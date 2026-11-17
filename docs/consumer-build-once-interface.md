@@ -1,92 +1,119 @@
-# Producer support for a build-once embedded consumer
+# Consumer-kit handoff for downstream MEX bridges
 
-## Goal
+## Current public interface
 
-The public producer publishes immutable runtime components that downstream
-embedded CPython applications can reuse without rebuilding CPython, Tcl/Tk,
-NumPy, FEniCS or their native dependencies. A downstream MATLAB/GNU Octave
-bridge can compile its own native module once per platform and exact native
-build inputs, then independently qualify and package the same module with the
-producer's profiles.
-
-The producer **does not build, cache, or distribute any private consumer MEX
-implementation**. The bridge's source, MEX compiler, qualification, artifact
-registry, and release remain downstream responsibilities.
-
-## Existing producer handoff
-
-The producer already exposes the essential public runtime inputs:
-
-1. A fixed release tag, producer commit and platform/profile asset identity.
-2. SHA-256 of the archive and embedded runtime manifest, plus qualification
-   evidence for the supported platform/profile.
-3. Native dependency/ABI and relocation evidence, with core, NumPy and FEniCS
-   profile ownership and overlay rules.
-
-Downstream consumers pin these identities, verify archive and per-file
-manifest hashes, and stage the runtime offline for build/test/package steps.
-The published rc2 artifact and reference staging integration are documented
-in [consumer-integration-rc2.md](consumer-integration-rc2.md) and
+`consumer-kit/` is the reusable consumer tooling maintained by
+`precsim/python-numpy-fenics`. The producer builds and qualifies immutable
+CPython, NumPy and FEniCS runtime artifacts; the kit verifies and stages those
+artifacts, builds a source-configured MEX, audits it and verifies a reference
+package. See [consumer-kit/README.md](../consumer-kit/README.md) and
 [producer-consumer-boundary.md](producer-consumer-boundary.md).
 
-## Improvement contract for future producer releases
+The public `reference-bridge/` is an executable contract probe, not the
+implementation or qualification evidence of `python-matlab-octave-bridge`.
+The downstream repository supplies its own MEX source-selection manifest,
+private C/Python/MATLAB or Octave sources, host acceptance tests, capability
+claims, packaging policy and release artifacts.
 
-To make reuse across consumer CI runs easier, publish a small machine-readable
-**embedded build compatibility record** per platform, independently of each
-runtime archive, either in the existing release manifest or as a versioned
-sidecar with its own SHA-256. The record should have:
+## Source-control pins and versions
 
-- schema version, target OS/architecture, CPython version/ABI and minimum
-  supported host OS/deployment target;
-- exact core archive name/SHA-256 and runtime-manifest SHA-256;
-- ABI-relevant CPython header/library/framework file names and SHA-256,
-  including any required include/link/search path metadata expressed relative
-  to the staged producer root;
-- Tcl/Tk runtime/ABI version and native-provider constraints;
-- per-profile inheritance contract: whether NumPy/FEniCS changes leave the
-  core interpreter/library/headers unchanged, and the immutable shared-file
-  manifest to prove it;
-- provider and native-closure metadata needed for a consumer's independent
-  ELF/PE/Mach-O audit;
-- a `build_compatibility_sha256` computed from canonical ABI-relevant
-  content so unchanged compatible core bytes yield an unchanged compatibility
-  identity even when a release tag changes.
+Keep **two independent pins** in the downstream repository:
 
-This sidecar is **advisory input identity**, not authorization to skip
-qualification. Every consumer must still independently verify all downloaded
-runtime bytes and run its own real embedded-host acceptance tests.
-An ABI-compatible core cannot promise compatibility with arbitrary consumer
-source, compiler flags, or Octave/MATLAB ABI settings.
+1. **Tooling pin:** immutable producer Git commit that includes `consumer-kit/`,
+   the kit's deterministic `tree_sha256`, and the three `v1` schema formats
+   used by that revision (`bridge-build`, `consumer-runtime-receipt`, and
+   `reference-package`). The schemas have explicit format versions; there is
+   no independent semantic-version release for `consumer-kit/`. Do not select
+   tooling from a moving `main` checkout.
+2. **Runtime pin:** immutable producer release tag and revision, exact asset
+   names, archive and embedded-manifest SHA-256 values, and qualification
+   identities recorded in the consumer-owned runtime receipt. Upgrading the
+   kit does not silently change any runtime release or asset.
 
-The producer's compatibility record must not include a downstream bridge
-source digest, compiler selection, MEX artifacts, private token, private
-repository URL, or consumer publication state. Consumer build keys combine
-the producer identity with the exact consumer C source, toolchain and host ABI.
+For example, the audited producer tree at commit
+`2e27104f006a40c40094156d55f78e2e712898fd` (merge of PR #14) has
+`consumer_kit_tree_sha256=5669aff3517d7e16227547db63e90ce4cc8c54d4161a333323fdc02194bec74a`
+and `consumer_kit_files=28`. These values identify that **example revision**,
+not a floating latest-kit version. Verify both after vendoring.
 
-## Suggested independent producer tests
+The currently published producer runtime family is
+`runtime-v0.1.0-rc2` at producer revision
+`88f36aaa09fb8a84ea528d5823d9b0be043cfa3e`, with
+`prerelease-manifest.json` SHA-256
+`dff3909366f2c57e3765226399fb867282a3e253ac3ece065f28e26713489e29`.
+It supplies `cp314` core/NumPy and opt-in FEniCS inputs on Windows x64,
+Linux x86_64, macOS arm64 and macOS x86_64. The FEniCS overlay's NumPy base
+is **the separately receipt-bound rc1 NumPy runtime**, not the independent
+rc2 NumPy profile; use `locks/consumer/runtime-v0.1.0-rc2.json` to bind it.
+Never infer runtime input identities from an unpinned release listing.
 
-- Render the sidecar twice from the same pinned runtime manifest and assert
-  byte-for-byte deterministic canonical JSON and stable SHA-256.
-- Change a CPython development header/library, target ABI or native-provider
-  constraint in a mock producer manifest: the compatibility identity changes.
-- Change only release notes, qualification log metadata, or an optional
-  profile-local payload while preserving core runtime bytes: the core
-  compatibility identity stays stable.
-- Compare the proposed shared-file membership against the already published
-  per-platform runtime and overlay ownership manifests.
-- Verify the public mock consumer can stage a core runtime by immutable
-  identity without access to any private consumer code or credentials.
+## Initial adoption in python-matlab-octave-bridge
 
-## Consumer-side requirement
+1. Select an exact reviewed producer commit with passing public
+   `qualify-reference-bridge` checks. Copy the complete
+   `consumer-kit/` directory from that commit into
+   `vendor/python-runtime-consumer-kit/` using a clean checkout or Git
+   archive. Preserve its relative file layout and do not mix revisions.
+2. Record outside that vendored directory the producer repository, full
+   commit SHA, kit tree SHA-256, and schema format versions. Run the vendored
+   `tools/check-vendored-kit.py` with `--root` pointed at the vendored
+   directory and `--expect` set to the recorded tree hash. Run this check in
+   CI and before any downstream build; it must fail when the tree drifts.
+3. Keep the downstream runtime receipt, `bridge-build.json`, real bridge
+   source, backend/host fixtures and release configuration outside the
+   vendored directory. Populate the consumer runtime receipt from a verified
+   immutable producer release, following
+   `consumer-kit/contracts/consumer-runtime-receipt-v1.schema.json`.
+4. Delegate download/cache/transactional staging to
+   `consumer-kit/tools/stage-runtime.py` and network-free full-tree
+   verification to `consumer-kit/tools/verify-runtime.py`. Private command
+   wrappers may supply arguments and paths but should not keep independent
+   archive extraction, manifest verification or marker formats. Never modify
+   producer-owned runtime entries.
+5. Validate the private source manifest with the kit's build entry points,
+   compile one MEX candidate per target/source/toolchain identity against
+   verified core CPython headers, and reuse **exactly those bytes** for each
+   selected profile. Audit the candidate before qualifying or packaging it.
+   Keep build provenance, runtime receipt, native audit, qualification record
+   and final package inventory tied by their recorded SHA-256 values.
+6. Run the actual private GNU Octave → MEX → CPython tests on each supported
+   target/profile, including relocation and hostile ambient state. NumPy and
+   FEniCS need their own functional/native-provider tests. Passing public mock
+   qualification does not validate the private MEX or authorize a support
+   claim. Packaging uses only the previously qualified candidate.
 
-The producer cannot guarantee that a consumer builds only once; that requires
-the consumer CI to separate native compilation from qualification,
-repackaging and publication, and to preserve the compiled binary in an
-immutable content-addressed store. Its cache key must include the consumer
-native inputs in addition to this producer compatibility record. A release
-may reuse a previously compiled MEX while retaining independent package
-revision and exact final-artifact provenance.
+The public kit is built and exercised by GitHub Actions. Its workflow files
+are not a private CI or product release policy; the downstream repository may
+orchestrate the vendored scripts in its existing CI system.
 
-No existing producer release needs rebuilding just to implement the
-consumer-side separation. The current pinned runtime manifest and hashes are
-sufficient as an interim build key until the sidecar contract is implemented.
+## Upgrading the vendored kit
+
+1. Choose a new immutable producer commit and inspect its changes to
+   `consumer-kit/`, contracts and tests. Confirm the public reference
+   qualification for that commit; a runtime-only tag is not a kit version.
+2. Replace the **entire** vendored kit with the new upstream tree, without
+   modifying private source, receipts or product policy. Recompute the
+   deterministic tree digest with `check-vendored-kit.py`; review and commit
+   the new upstream SHA, digest and format versions together with the copy.
+3. Adapt the private wrappers and source manifest to any changed v1 contract
+   requirements (or deliberately migrate to a newly versioned contract).
+   Run the kit identity check, staging verification and relevant negative
+   tests, target MEX build/native audits, actual host qualification,
+   relocation/offline package checks and final archive verification.
+4. Treat a changed private source/build manifest/toolchain or ABI-sensitive
+   kit behavior as a new MEX candidate that requires qualification.
+   Compare the old/new candidate hashes; preserve old published packages and
+   their evidence. Separately review changes to producer runtime receipts.
+
+The helper reports a deterministic content-tree identity, not a Git tree object
+ID. Compute it with (from either repository, using its own copy):
+
+```sh
+python vendor/python-runtime-consumer-kit/tools/check-vendored-kit.py --root vendor/python-runtime-consumer-kit
+python vendor/python-runtime-consumer-kit/tools/check-vendored-kit.py --root vendor/python-runtime-consumer-kit --expect <recorded-sha256>
+```
+
+Future releases may add a per-target ABI-compatibility sidecar to simplify
+cross-release caching. Such a sidecar would be advisory; it cannot replace
+exact native input hashes or private host qualification, and is not required
+for the current build-once contract.

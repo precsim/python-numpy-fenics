@@ -99,8 +99,9 @@ assembly run on GitHub Actions runners. A published reference package is already
 built and may be downloaded and tested independently on a compatible local host
 with GNU Octave; local execution is not a build or qualification path.
 
-See [the consumer kit](consumer-kit/README.md) and
-[the producer/consumer boundary](docs/producer-consumer-boundary.md).
+See [the consumer kit](consumer-kit/README.md),
+[the producer/consumer boundary](docs/producer-consumer-boundary.md), and
+[the downstream vendoring and upgrade handoff](docs/consumer-build-once-interface.md).
 
 ## FEniCS package policy
 
