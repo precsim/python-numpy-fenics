@@ -52,6 +52,13 @@ QUALIFICATION_FIELDS = {
     "native_audit_sha256",
     "checks",
 }
+EXPECTED_QUALIFICATION_CHECKS = {
+    "octave_host",
+    "repeated_calls",
+    "fresh_process",
+    "relocated_runtime",
+    "native_boundary",
+}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
@@ -167,10 +174,14 @@ def validate_qualification(
         value = record.get(key)
         require(isinstance(value, str) and HEX64.fullmatch(value) is not None, f"invalid {key}: {path.name}")
     checks = record.get("checks")
-    require(isinstance(checks, dict) and checks, f"qualification checks are missing: {path.name}")
+    require(isinstance(checks, dict), f"qualification checks are missing: {path.name}")
     require(
-        all(isinstance(name, str) and name and value in {"pass", "not-applicable"} for name, value in checks.items()),
-        f"qualification checks contain an invalid result: {path.name}",
+        set(checks) == EXPECTED_QUALIFICATION_CHECKS,
+        f"qualification check contract mismatch: {path.name}",
+    )
+    require(
+        all(checks[name] == "pass" for name in EXPECTED_QUALIFICATION_CHECKS),
+        f"qualification checks must all pass: {path.name}",
     )
     return record
 

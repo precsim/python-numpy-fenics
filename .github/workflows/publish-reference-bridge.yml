@@ -130,29 +130,20 @@ jobs:
             exit 1
           fi
 
-          core_numpy=()
-          full=()
+          expected=()
           for target in linux-x64 macos-arm64 macos-x64 win-x64; do
-            for profile in core numpy; do
-              core_numpy+=("reference-package-$target-$profile")
-              full+=("reference-package-$target-$profile")
+            for profile in core numpy fenics; do
+              expected+=("reference-package-$target-$profile")
             done
-            full+=("reference-package-$target-fenics")
           done
-          matches() {
-            diff -q \
-              <(printf '%s\n' "$@" | sort) \
-              <(printf '%s\n' "${package_names[@]}" | sort) >/dev/null
-          }
-          if matches "${core_numpy[@]}"; then
-            echo "qualified package artifact matrix: core+numpy"
-          elif matches "${full[@]}"; then
-            echo "qualified package artifact matrix: core+numpy+fenics"
-          else
+          if ! diff -q \
+              <(printf '%s\n' "${expected[@]}" | sort) \
+              <(printf '%s\n' "${package_names[@]}" | sort) >/dev/null; then
             echo "qualification run has an incomplete or unexpected reference-package artifact matrix:" >&2
             printf '  %s\n' "${package_names[@]}" | sort >&2
             exit 1
           fi
+          echo "qualified package artifact matrix: core+numpy+fenics"
 
       - name: Download qualified package artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -242,7 +233,6 @@ jobs:
           mapfile -t indexed_paths < <(jq -r '.files[].path' "$index")
           assets=()
           expected_paths=()
-          expected_asset_names=()
           for path in "${indexed_paths[@]}"; do
             if [[ -z "$path" || "$path" == /* || "$path" == *\\* || "$path" == *../* || "$path" == ../* || "$path" == */.. ]]; then
               echo "release index contains unsafe asset path: $path" >&2
@@ -260,11 +250,9 @@ jobs:
             test ! -L "$root/$path"
             assets+=("$root/$path")
             expected_paths+=("$path")
-            expected_asset_names+=("${path##*/}")
           done
           assets+=("$index" "$index_sidecar")
           expected_paths+=("reference-release-index.json" "reference-release-index.json.sha256")
-          expected_asset_names+=("reference-release-index.json" "reference-release-index.json.sha256")
           mapfile -t actual_paths < <(find "$root" -type f -printf '%P\n' | sort)
           if ! diff -u \
               <(printf '%s\n' "${expected_paths[@]}" | sort) \
@@ -308,13 +296,20 @@ jobs:
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --title "$RELEASE_TAG" --notes-file "$notes_file"
           gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
           release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
-          mapfile -t uploaded_names < <(
-            gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" --jq '.[].name' | sort
-          )
-          if ! diff -u \
-              <(printf '%s\n' "${expected_asset_names[@]}" | sort) \
-              <(printf '%s\n' "${uploaded_names[@]}" | sort); then
-            echo "uploaded draft release assets differ from the verified promotion set" >&2
+          expected_uploaded="$RUNNER_TEMP/reference-bridge-expected-uploaded-assets.tsv"
+          actual_uploaded="$RUNNER_TEMP/reference-bridge-actual-uploaded-assets.tsv"
+          for asset in "${assets[@]}"; do
+            name="${asset##*/}"
+            size="$(stat -c '%s' "$asset")"
+            sha="$(sha256sum "$asset" | awk '{print $1}')"
+            printf '%s\t%s\tsha256:%s\n' "$name" "$size" "$sha"
+          done | sort >"$expected_uploaded"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            --jq '.[] | [.name, (.size | tostring), (.digest // "")] | @tsv' \
+            | sort >"$actual_uploaded"
+          if ! diff -u "$expected_uploaded" "$actual_uploaded"; then
+            echo "uploaded draft release assets differ in name, size, or SHA-256 from the verified promotion set" >&2
             exit 1
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \

@@ -51,7 +51,13 @@ def qualification_record(target: str, profile: str, mex_sha256: str) -> dict[str
         "build_provenance_sha256": "b" * 64,
         "runtime_receipt_sha256": "c" * 64,
         "native_audit_sha256": "d" * 64,
-        "checks": {"octave_host": "pass", "native_boundary": "pass"},
+        "checks": {
+            "octave_host": "pass",
+            "repeated_calls": "pass",
+            "fresh_process": "pass",
+            "relocated_runtime": "pass",
+            "native_boundary": "pass",
+        },
     }
 
 
@@ -73,6 +79,40 @@ def write_archive(path: Path, manifest: dict[str, object]) -> None:
     info.mode = 0o644
     with tarfile.open(path, "w:gz") as archive:
         archive.addfile(info, io.BytesIO(data))
+
+
+def read_archive_manifest(path: Path) -> dict[str, object]:
+    package = path.name[: -len(".zip")] if path.name.endswith(".zip") else path.name[: -len(".tar.gz")]
+    member = f"{package}/reference-manifest.json"
+    if path.name.endswith(".zip"):
+        with zipfile.ZipFile(path) as archive:
+            return json.loads(archive.read(member).decode("utf-8"))
+    with tarfile.open(path, "r:gz") as archive:
+        source = archive.extractfile(member)
+        assert source is not None
+        with source:
+            return json.loads(source.read().decode("utf-8"))
+
+
+def rewrite_qualification_checks(
+    root: Path, target: str, profile: str, checks: dict[str, str]
+) -> None:
+    qualification_path = root / f"qualification-reference-{target}-{profile}.json"
+    qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+    qualification["checks"] = checks
+    qualification_path.write_text(
+        json.dumps(qualification, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    name = archive_name(target, profile)
+    archive = root / "packages" / name
+    manifest = read_archive_manifest(archive)
+    manifest["qualification"]["evidence_sha256"] = sha256_file(qualification_path)
+    write_archive(archive, manifest)
+    (root / "packages" / f"{name}.sha256").write_text(
+        f"{sha256_file(archive)}  {name}\n", encoding="utf-8", newline="\n"
+    )
 
 
 def create_package(root: Path, target: str, profile: str, *, mex_sha256: str | None = None) -> None:
@@ -198,7 +238,7 @@ class ReleaseIndexTests(unittest.TestCase):
             record = json.loads(path.read_text(encoding="utf-8"))
             record["checks"]["octave_host"] = "fail"
             path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(release_index.ReleaseIndexError, "invalid result"):
+            with self.assertRaisesRegex(release_index.ReleaseIndexError, "must all pass"):
                 build(root)
 
         with tempfile.TemporaryDirectory() as raw:
@@ -208,7 +248,24 @@ class ReleaseIndexTests(unittest.TestCase):
             record = json.loads(path.read_text(encoding="utf-8"))
             record["checks"]["extra"] = "pass"
             path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(release_index.ReleaseIndexError, "external qualification differs"):
+            with self.assertRaisesRegex(release_index.ReleaseIndexError, "check contract mismatch"):
+                build(root)
+
+    def test_rejects_incomplete_or_nonpassing_qualification_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            create_matrix(root, ("core", "numpy"))
+            rewrite_qualification_checks(root, "linux-x64", "core", {"native_boundary": "pass"})
+            with self.assertRaisesRegex(release_index.ReleaseIndexError, "check contract mismatch"):
+                build(root)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            create_matrix(root, ("core", "numpy"))
+            checks = {name: "pass" for name in release_index.EXPECTED_QUALIFICATION_CHECKS}
+            checks["octave_host"] = "not-applicable"
+            rewrite_qualification_checks(root, "linux-x64", "core", checks)
+            with self.assertRaisesRegex(release_index.ReleaseIndexError, "must all pass"):
                 build(root)
 
     def test_rejects_different_mex_bytes_across_profiles_and_bad_sidecar(self) -> None:
@@ -240,16 +297,26 @@ class ReleaseIndexTests(unittest.TestCase):
         self.assertIn('head_branch" != "$default_branch"', workflow)
         self.assertIn('head_repository" != "$GITHUB_REPOSITORY"', workflow)
         self.assertIn("Validate qualified package artifact matrix", workflow)
+        self.assertIn("for profile in core numpy fenics", workflow)
+        self.assertNotIn("qualified package artifact matrix: core+numpy\"", workflow)
         self.assertIn("--qualification-run-attempt", workflow)
         self.assertIn(".files[].path", workflow)
         self.assertIn("--verify-tag --draft --prerelease", workflow)
         self.assertIn("gh release upload", workflow)
+        self.assertIn("(.digest // \"\")", workflow)
+        self.assertIn("stat -c '%s'", workflow)
+        self.assertIn('sha256sum "$asset"', workflow)
+        self.assertIn('diff -u "$expected_uploaded" "$actual_uploaded"', workflow)
         self.assertIn("-F draft=false", workflow)
         self.assertNotIn('"${#assets[@]}" -lt 19', workflow)
 
-        # This task owns only the publisher; qualification remains a separate workflow.
         qualify = QUALIFY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("name: qualify-reference-bridge", qualify)
+        self.assertIn("reference_release_set=non-promotable-core+numpy", qualify)
+        self.assertIn("full publication requires FEniCS qualification on every target", qualify)
+        self.assertIn('if [[ "$PROFILE_SET" != "core+numpy+fenics" ]]', qualify)
+        self.assertIn("profiles=(core numpy fenics)", qualify)
+        self.assertNotIn("core+numpy|core+numpy+fenics)", qualify)
 
 
 if __name__ == "__main__":

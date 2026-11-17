@@ -9,6 +9,10 @@ import tempfile
 
 from scripts.common.validate_repo import (
     EXPECTED_WINDOWS_CPYTHON_LOCK,
+    REFERENCE_BRIDGE_EXPORTS,
+    REFERENCE_BRIDGE_TARGETS,
+    REFERENCE_OCTAVE_ABI,
+    bridge_build_contract_errors,
     private_source_directories,
     unpinned_actions,
     windows_cpython_lock_errors,
@@ -16,6 +20,37 @@ from scripts.common.validate_repo import (
 
 
 class WorkflowActionPinTests(unittest.TestCase):
+    def test_reference_bridge_requires_octave_abi_metadata_and_two_exports(self) -> None:
+        payload = {
+            "format_version": 1,
+            "mex_name": "bridge",
+            "octave_abi": copy.deepcopy(REFERENCE_OCTAVE_ABI),
+            "targets": {
+                target: {
+                    "output": "bridge.mex",
+                    "exports": list(REFERENCE_BRIDGE_EXPORTS),
+                }
+                for target in REFERENCE_BRIDGE_TARGETS
+            },
+        }
+        self.assertEqual(bridge_build_contract_errors(payload), [])
+
+        old_contract = copy.deepcopy(payload)
+        old_contract["targets"]["linux-x64"]["exports"] = ["mexFunction"]
+        self.assertEqual(
+            bridge_build_contract_errors(old_contract),
+            [
+                "reference bridge target has an invalid MEX/Octave ABI contract: linux-x64"
+            ],
+        )
+
+        wrong_abi = copy.deepcopy(payload)
+        wrong_abi["octave_abi"]["compatibility"] = "GNU Octave 10.1+"
+        self.assertEqual(
+            bridge_build_contract_errors(wrong_abi),
+            ["reference bridge build manifest has an invalid target contract"],
+        )
+
     def test_nested_private_directories_are_checked_even_under_named_build_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

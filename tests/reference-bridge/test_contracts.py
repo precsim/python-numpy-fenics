@@ -8,14 +8,17 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import sys
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "consumer-kit" / "contracts"
 BRIDGE_BUILD = ROOT / "reference-bridge" / "bridge-build.json"
+REFERENCE_BRIDGE = ROOT / "reference-bridge"
 REFERENCE_RECEIPT = ROOT / "locks" / "consumer" / "reference-runtime-v1.json"
 RUNTIME_LIB = ROOT / "consumer-kit" / "tools" / "runtime_lib.py"
+BUILD_BRIDGE_TOOL = ROOT / "consumer-kit" / "tools" / "build_bridge.py"
 
 
 class ContractError(ValueError):
@@ -36,6 +39,15 @@ def load_runtime_lib():
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(spec.name, None)
+    return module
+
+
+def load_build_bridge():
+    spec = importlib.util.spec_from_file_location("reference_bridge_build_tool", BUILD_BRIDGE_TOOL)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load bridge build tool: {BUILD_BRIDGE_TOOL}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     return module
 
 
@@ -244,6 +256,12 @@ class PhaseOneContractTests(unittest.TestCase):
         self.assertEqual(set(self.bridge_manifest["targets"]), {
             "win-x64", "linux-x64", "macos-arm64", "macos-x64"
         })
+        expected_exports = ["mexFunction", "__octave_mex_soversion__"]
+        expected_abi = {
+            "compatibility": "GNU Octave 10.2+",
+            "soversion_export": "__octave_mex_soversion__",
+        }
+        self.assertEqual(self.bridge_manifest["octave_abi"], expected_abi)
         expected_aliases = {
             "win-x64": "bridge.mexw64",
             "linux-x64": "bridge.mexa64",
@@ -252,8 +270,61 @@ class PhaseOneContractTests(unittest.TestCase):
         }
         for name, target in self.bridge_manifest["targets"].items():
             self.assertEqual(target["output"], "bridge.mex")
-            self.assertEqual(target["exports"], ["mexFunction"])
+            self.assertEqual(target["exports"], expected_exports)
             self.assertEqual(target["matlab_alias"], expected_aliases[name])
+
+        single_export = copy.deepcopy(self.bridge_manifest)
+        single_export["targets"]["linux-x64"]["exports"] = ["mexFunction"]
+        with self.assertRaisesRegex(ContractError, "expected constant"):
+            validate_bridge_contract(single_export, self.bridge_schema)
+
+    def test_build_tool_requires_octave_102_two_export_contract(self) -> None:
+        build = load_build_bridge()
+        expected_exports = ["mexFunction", "__octave_mex_soversion__"]
+        expected_abi = {
+            "compatibility": "GNU Octave 10.2+",
+            "soversion_export": "__octave_mex_soversion__",
+        }
+
+        self.assertEqual(build.REFERENCE_EXPORTS, expected_exports)
+        self.assertEqual(build.REFERENCE_OCTAVE_ABI, expected_abi)
+        for target in sorted(self.bridge_manifest["targets"]):
+            with self.subTest(target=target):
+                manifest, sources, includes = build.load_build(
+                    BRIDGE_BUILD,
+                    REFERENCE_BRIDGE,
+                    target,
+                )
+                self.assertTrue(sources)
+                self.assertTrue(includes)
+                self.assertEqual(
+                    build.build_contract_identity(manifest, target),
+                    {
+                        "octave_abi": expected_abi,
+                        "exports": expected_exports,
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "bridge-build.json"
+
+            single_export = copy.deepcopy(self.bridge_manifest)
+            single_export["targets"]["linux-x64"]["exports"] = ["mexFunction"]
+            manifest_path.write_text(json.dumps(single_export), encoding="utf-8")
+            with self.assertRaisesRegex(
+                build.BuildContractError,
+                "must export exactly mexFunction and __octave_mex_soversion__",
+            ):
+                build.load_build(manifest_path, REFERENCE_BRIDGE, "linux-x64")
+
+            wrong_abi = copy.deepcopy(self.bridge_manifest)
+            wrong_abi["octave_abi"]["compatibility"] = "GNU Octave 10.1+"
+            manifest_path.write_text(json.dumps(wrong_abi), encoding="utf-8")
+            with self.assertRaisesRegex(
+                build.BuildContractError,
+                r"GNU Octave 10\.2\+",
+            ):
+                build.load_build(manifest_path, REFERENCE_BRIDGE, "linux-x64")
 
     def test_bridge_build_rejects_path_traversal(self) -> None:
         manifest = copy.deepcopy(self.bridge_manifest)

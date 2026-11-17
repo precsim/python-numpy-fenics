@@ -44,6 +44,18 @@ fi
 
 "$python_cmd" "$script_dir/verify-package.py" --root "$script_dir"
 
+omp_override=""
+if [ "$(uname -s)" = "Darwin" ]; then
+    omp_provider="$script_dir/runtime/fenics-runtime/conda/lib/libomp.dylib"
+    if [ -f "$omp_provider" ]; then
+        omp_override=$(mktemp -d "${TMPDIR:-/tmp}/reference-bridge-libomp.XXXXXX")
+        ln -s "$omp_provider" "$omp_override/libomp.dylib"
+        DYLD_LIBRARY_PATH="$omp_override"
+        export DYLD_LIBRARY_PATH
+        echo "reference_bridge_macos_openmp_provider=$omp_provider"
+    fi
+fi
+
 if [ -z "$octave_cmd" ]; then
     if command -v octave-cli >/dev/null 2>&1; then
         octave_cmd=$(command -v octave-cli)
@@ -66,7 +78,13 @@ smoke="$script_dir/host/mock_smoke.m"
 [ -f "$smoke" ] || { echo "reference_bridge_error=host/mock_smoke.m is missing" >&2; exit 1; }
 
 poison=$(mktemp -d "${TMPDIR:-/tmp}/reference-bridge-poison.XXXXXX")
-trap 'rm -rf "$poison"' EXIT HUP INT TERM
+cleanup() {
+    rm -rf "$poison"
+    if [ -n "$omp_override" ]; then
+        rm -rf "$omp_override"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
 mkdir -p "$poison/python" "$poison/home" "$poison/user" "$poison/jit cache"
 printf '%s\n' 'raise RuntimeError("ambient numpy must not load")' > "$poison/python/numpy.py"
 

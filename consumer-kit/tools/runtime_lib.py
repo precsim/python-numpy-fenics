@@ -159,6 +159,7 @@ class RuntimeInputs:
 class ArchiveFacts:
     modes: dict[str, int]
     directories: dict[str, int | None]
+    symlinks: dict[str, str]
 
 
 def _record_parent_directories(path: str, directories: dict[str, int | None]) -> None:
@@ -814,6 +815,7 @@ def extract_layer(archive: Path, root: Path, occupied: dict[str, str]) -> Archiv
 
     modes: dict[str, int] = {}
     directories: dict[str, int | None] = {}
+    symlinks: dict[str, str] = {}
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as opened:
             for item in opened.infolist():
@@ -843,6 +845,7 @@ def extract_layer(archive: Path, root: Path, occupied: dict[str, str]) -> Archiv
                 if kind == "symlink":
                     target = opened.read(item).decode("utf-8")
                     _safe_symlink_target(root, path, target)
+                    symlinks[key] = target
                     path.symlink_to(target)
                     continue
                 with opened.open(item) as source, path.open("xb") as target_file:
@@ -876,6 +879,7 @@ def extract_layer(archive: Path, root: Path, occupied: dict[str, str]) -> Archiv
                 _ensure_parent_directories(root, path.parent)
                 if kind == "symlink":
                     _safe_symlink_target(root, path, member.linkname)
+                    symlinks[key] = member.linkname
                     path.symlink_to(member.linkname)
                     continue
                 source = opened.extractfile(member)
@@ -886,7 +890,7 @@ def extract_layer(archive: Path, root: Path, occupied: dict[str, str]) -> Archiv
                 modes[key] = mode
                 if os.name != "nt":
                     path.chmod(mode)
-    return ArchiveFacts(modes=modes, directories=directories)
+    return ArchiveFacts(modes=modes, directories=directories, symlinks=symlinks)
 
 
 def archive_facts(archive: Path) -> ArchiveFacts:
@@ -894,6 +898,7 @@ def archive_facts(archive: Path) -> ArchiveFacts:
 
     modes: dict[str, int] = {}
     directories: dict[str, int | None] = {}
+    symlinks: dict[str, str] = {}
     seen: set[str] = set()
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as opened:
@@ -912,6 +917,10 @@ def archive_facts(archive: Path) -> ArchiveFacts:
                     continue
                 _record_parent_directories(key, directories)
                 if file_type == stat.S_IFLNK:
+                    try:
+                        symlinks[key] = opened.read(item).decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise ConsumerRuntimeError(f"invalid ZIP symlink target encoding: {key}") from exc
                     continue
                 require(file_type in {0, stat.S_IFREG}, f"unsupported ZIP file type: {key}")
                 mode = stat.S_IMODE(raw_mode)
@@ -936,9 +945,11 @@ def archive_facts(archive: Path) -> ArchiveFacts:
                     _record_parent_directories(key, directories)
                     continue
                 _record_parent_directories(key, directories)
-                if member.isfile():
+                if member.issym():
+                    symlinks[key] = member.linkname
+                elif member.isfile():
                     modes[key] = member.mode & 0o777
-    return ArchiveFacts(modes=modes, directories=directories)
+    return ArchiveFacts(modes=modes, directories=directories, symlinks=symlinks)
 
 
 def _manifest_entries(material: LayerMaterial) -> dict[str, dict[str, Any]]:
@@ -1017,6 +1028,118 @@ def _walk_runtime(root: Path) -> dict[str, str]:
     return actual
 
 
+def _symlink_target_matches(record: dict[str, Any], target: str) -> bool:
+    if "target" in record:
+        return target == record["target"]
+    target_bytes = target.encode("utf-8")
+    return (
+        len(target_bytes) == record.get("target_bytes")
+        and sha256_bytes(target_bytes) == record.get("target_sha256")
+    )
+
+
+def _expected_runtime_entries(
+    inputs: RuntimeInputs,
+    facts: tuple[ArchiveFacts, ...],
+) -> dict[str, tuple[dict[str, Any], int]]:
+    """Combine manifest inventory with immutable archive-attested symlinks.
+
+    Producer manifests are the primary leaf inventory. Some published FEniCS
+    archives omit a small number of conda-created symlinks from their manifest,
+    while the SHA-256-pinned archive still attests their exact path and target.
+    Only symlinks may be supplied by this archive-derived supplement; regular
+    files absent from the manifest remain unexpected.
+    """
+
+    require(len(facts) == len(inputs.layers), "archive metadata does not match runtime layers")
+    expected: dict[str, tuple[dict[str, Any], int]] = {}
+    for layer_index, material in enumerate(inputs.layers):
+        manifest_entries = _manifest_entries(material)
+        for path, record in manifest_entries.items():
+            require(path not in expected, f"runtime layers claim the same file or symlink: {path}")
+            expected[path] = (record, layer_index)
+
+        archive_symlinks = facts[layer_index].symlinks
+        for path, record in manifest_entries.items():
+            if record["kind"] != "symlink":
+                continue
+            require(path in archive_symlinks, f"producer manifest symlink is missing from pinned archive: {path}")
+            require(
+                _symlink_target_matches(record, archive_symlinks[path]),
+                f"producer manifest/archive symlink target mismatch: {path}",
+            )
+
+        for path, target in archive_symlinks.items():
+            existing = expected.get(path)
+            if existing is not None:
+                record, owner_index = existing
+                require(
+                    owner_index == layer_index,
+                    f"runtime layers claim the same file or symlink: {path}",
+                )
+                require(record["kind"] == "symlink", f"producer manifest/archive entry kind mismatch: {path}")
+                require(
+                    _symlink_target_matches(record, target),
+                    f"producer manifest/archive symlink target mismatch: {path}",
+                )
+                continue
+            expected[path] = (
+                {
+                    "path": path,
+                    "kind": "symlink",
+                    "target": target,
+                },
+                layer_index,
+            )
+    return expected
+
+
+def _unique_casefold_index(paths: Iterable[str], context: str) -> dict[str, str]:
+    """Index Windows path spellings and reject ambiguous case-only aliases."""
+
+    index: dict[str, str] = {}
+    for path in paths:
+        folded = path.casefold()
+        previous = index.get(folded)
+        require(
+            previous is None or previous == path,
+            f"Windows runtime casefold collision in {context}: {previous!r} conflicts with {path!r}",
+        )
+        index[folded] = path
+    return index
+
+
+def _match_runtime_leaves(
+    expected: dict[str, tuple[dict[str, Any], int]],
+    actual: dict[str, str],
+    *,
+    windows_casefold: bool,
+) -> dict[str, str]:
+    """Map each expected leaf to its unique actual spelling."""
+
+    if not windows_casefold:
+        if set(actual) != set(expected):
+            missing = sorted(set(expected) - set(actual))
+            extra = sorted(set(actual) - set(expected))
+            raise ConsumerRuntimeError(
+                f"staged runtime inventory differs from producer manifests: missing={missing!r} extra={extra!r}"
+            )
+        return {path: path for path in expected}
+
+    expected_index = _unique_casefold_index(expected, "producer leaf inventory")
+    actual_index = _unique_casefold_index(actual, "staged leaf inventory")
+    if set(actual_index) != set(expected_index):
+        missing = sorted(expected_index[key] for key in set(expected_index) - set(actual_index))
+        extra = sorted(actual_index[key] for key in set(actual_index) - set(expected_index))
+        raise ConsumerRuntimeError(
+            f"staged runtime inventory differs from producer manifests: missing={missing!r} extra={extra!r}"
+        )
+    return {
+        expected_path: actual_index[folded]
+        for folded, expected_path in expected_index.items()
+    }
+
+
 def verify_staged_runtime(
     inputs: RuntimeInputs,
     root: Path,
@@ -1029,16 +1152,10 @@ def verify_staged_runtime(
     require(root.is_dir(), f"staged runtime does not exist: {root}")
     _validate_fenics_binding(inputs)
 
-    expected: dict[str, tuple[dict[str, Any], int]] = {}
-    for layer_index, material in enumerate(inputs.layers):
-        for path, record in _manifest_entries(material).items():
-            require(path not in expected, f"runtime layers claim the same file or symlink: {path}")
-            expected[path] = (record, layer_index)
-
     facts = tuple(archive_metadata) if archive_metadata is not None else tuple(
         archive_facts(material.archive_path) for material in inputs.layers
     )
-    require(len(facts) == len(inputs.layers), "archive metadata does not match runtime layers")
+    expected = _expected_runtime_entries(inputs, facts)
     expected_directories: set[str] = set()
     expected_directory_modes: dict[str, int] = {}
     for layer_facts in facts:
@@ -1050,32 +1167,49 @@ def verify_staged_runtime(
     actual = _walk_runtime(root)
     actual_leaves = {path: kind for path, kind in actual.items() if kind != "dir"}
     actual_directories = {path for path, kind in actual.items() if kind == "dir"}
-    if set(actual_leaves) != set(expected):
-        missing = sorted(set(expected) - set(actual_leaves))
-        extra = sorted(set(actual_leaves) - set(expected))
-        raise ConsumerRuntimeError(f"staged runtime inventory differs from producer manifests: missing={missing!r} extra={extra!r}")
-    if actual_directories != expected_directories:
+    windows_casefold = inputs.plan.platform == "win-x64"
+    matched_leaves = _match_runtime_leaves(
+        expected,
+        actual_leaves,
+        windows_casefold=windows_casefold,
+    )
+    if windows_casefold:
+        actual_directory_index = _unique_casefold_index(
+            actual_directories, "staged directory inventory"
+        )
+        expected_directory_index = {
+            path.casefold(): path for path in expected_directories
+        }
+        if set(actual_directory_index) != set(expected_directory_index):
+            missing = sorted(
+                expected_directory_index[key]
+                for key in set(expected_directory_index) - set(actual_directory_index)
+            )
+            extra = sorted(
+                actual_directory_index[key]
+                for key in set(actual_directory_index) - set(expected_directory_index)
+            )
+            raise ConsumerRuntimeError(
+                f"staged runtime directory tree differs from producer archives: missing={missing!r} extra={extra!r}"
+            )
+    elif actual_directories != expected_directories:
         missing = sorted(expected_directories - actual_directories)
         extra = sorted(actual_directories - expected_directories)
         raise ConsumerRuntimeError(f"staged runtime directory tree differs from producer archives: missing={missing!r} extra={extra!r}")
     check_posix_modes = os.name != "nt" and inputs.plan.platform != "win-x64"
     root_resolved = root.resolve()
     for relative, (record, layer_index) in expected.items():
-        path = root.joinpath(*PurePosixPath(relative).parts)
+        actual_relative = matched_leaves[relative]
+        path = root.joinpath(*PurePosixPath(actual_relative).parts)
         kind = record["kind"]
-        require(actual_leaves[relative] == kind, f"staged runtime entry kind mismatch: {relative}")
+        require(actual_leaves[actual_relative] == kind, f"staged runtime entry kind mismatch: {relative}")
         if kind == "symlink":
             target = os.readlink(path)
             _safe_symlink_target(root, path, target)
-            if "target" in record:
-                require(target == record["target"], f"staged runtime symlink target mismatch: {relative}")
-            else:
-                target_bytes = target.encode("utf-8")
-                require(
-                    len(target_bytes) == record["target_bytes"]
-                    and sha256_bytes(target_bytes) == record["target_sha256"],
-                    f"staged runtime symlink target mismatch: {relative}",
-                )
+            require(
+                _symlink_target_matches(record, target),
+                f"staged runtime symlink target mismatch: {relative}",
+            )
             continue
         require(not path.is_symlink() and path.is_file(), f"staged runtime regular file is missing: {relative}")
         require(

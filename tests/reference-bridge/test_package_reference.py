@@ -277,6 +277,23 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
             for token in forbidden:
                 self.assertNotIn(token.lower(), lowered)
 
+    def test_macos_fenics_launcher_unifies_verified_libomp_before_octave(self) -> None:
+        shell = (TOOLS / "run-local-test.sh").read_text(encoding="utf-8")
+        macos = (TOOLS / "test-octave-macos.sh").read_text(encoding="utf-8")
+        provider = "runtime/fenics-runtime/conda/lib/libomp.dylib"
+
+        self.assertIn(provider, shell)
+        self.assertIn("reference-bridge-libomp.XXXXXX", shell)
+        self.assertIn('ln -s "$omp_provider" "$omp_override/libomp.dylib"', shell)
+        self.assertIn('DYLD_LIBRARY_PATH="$omp_override"', shell)
+        self.assertLess(shell.index("verify-package.py"), shell.index("DYLD_LIBRARY_PATH"))
+
+        self.assertIn(provider, macos)
+        self.assertIn('ln -s "$omp_provider" "$omp_override/libomp.dylib"', macos)
+        self.assertIn('export DYLD_LIBRARY_PATH="$omp_override"', macos)
+        self.assertNotIn("KMP_DUPLICATE_LIB_OK", shell)
+        self.assertNotIn("KMP_DUPLICATE_LIB_OK", macos)
+
 
 if __name__ == "__main__":
     unittest.main()

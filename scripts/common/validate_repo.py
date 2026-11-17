@@ -26,6 +26,12 @@ GENERATED_ROOTS = {
 
 ACTION_USE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
 PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[a-fA-F0-9]{40}\Z")
+REFERENCE_BRIDGE_TARGETS = {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
+REFERENCE_BRIDGE_EXPORTS = ["mexFunction", "__octave_mex_soversion__"]
+REFERENCE_OCTAVE_ABI = {
+    "compatibility": "GNU Octave 10.2+",
+    "soversion_export": "__octave_mex_soversion__",
+}
 
 EXPECTED_WINDOWS_CPYTHON_LOCK = {
     "schema_version": 1,
@@ -76,6 +82,34 @@ def windows_cpython_lock_errors(payload: object) -> list[str]:
     if payload == EXPECTED_WINDOWS_CPYTHON_LOCK:
         return []
     return ["Windows core CPython binary lock differs from the pinned 3.14.10 x64 asset identity"]
+
+
+def bridge_build_contract_errors(payload: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["reference bridge build manifest has an invalid target contract"]
+
+    targets = payload.get("targets", {})
+    if (
+        payload.get("format_version") != 1
+        or payload.get("mex_name") != "bridge"
+        or payload.get("octave_abi") != REFERENCE_OCTAVE_ABI
+        or not isinstance(targets, dict)
+        or set(targets) != REFERENCE_BRIDGE_TARGETS
+    ):
+        errors.append("reference bridge build manifest has an invalid target contract")
+
+    if not isinstance(targets, dict):
+        return errors
+    for target, record in targets.items():
+        if not isinstance(record, dict) or (
+            record.get("output") != "bridge.mex"
+            or record.get("exports") != REFERENCE_BRIDGE_EXPORTS
+        ):
+            errors.append(
+                f"reference bridge target has an invalid MEX/Octave ABI contract: {target}"
+            )
+    return errors
 
 
 def main() -> int:
@@ -145,21 +179,7 @@ def main() -> int:
     bridge_build_path = ROOT / "reference-bridge" / "bridge-build.json"
     if bridge_build_path.is_file():
         bridge_build = json.loads(bridge_build_path.read_text(encoding="utf-8"))
-        if (
-            bridge_build.get("format_version") != 1
-            or bridge_build.get("mex_name") != "bridge"
-            or set(bridge_build.get("targets", {}))
-            != {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
-        ):
-            errors.append("reference bridge build manifest has an invalid target contract")
-        for target, record in bridge_build.get("targets", {}).items():
-            if (
-                record.get("output") != "bridge.mex"
-                or record.get("exports") != ["mexFunction"]
-            ):
-                errors.append(
-                    f"reference bridge target has an invalid MEX contract: {target}"
-                )
+        errors.extend(bridge_build_contract_errors(bridge_build))
 
     receipt_path = ROOT / "locks" / "consumer" / "reference-runtime-v1.json"
     if receipt_path.is_file():

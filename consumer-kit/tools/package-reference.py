@@ -241,6 +241,45 @@ def _runtime_manifest_entries(payload: dict[str, Any], label: str) -> dict[str, 
     return entries
 
 
+def _reconcile_runtime_inventory(
+    expected: dict[str, dict[str, Any]],
+    actual: dict[str, dict[str, Any]],
+    *,
+    platform: str,
+    label: str,
+) -> tuple[dict[str, str], list[str]]:
+    """Map producer-manifest paths to extracted paths without weakening identity."""
+
+    if platform != "win-x64":
+        missing = sorted(set(expected) - set(actual))
+        require(not missing, f"{label} is missing entries from embedded producer manifests: {missing!r}")
+        return {rel: rel for rel in expected}, sorted(set(actual) - set(expected))
+
+    def unique_casefold(paths: Any, namespace: str) -> dict[str, str]:
+        folded: dict[str, str] = {}
+        for rel in paths:
+            key = rel.casefold()
+            previous = folded.get(key)
+            require(
+                previous is None or previous == rel,
+                f"{label} has case-insensitive {namespace} path collision: {previous!r} vs {rel!r}",
+            )
+            folded[key] = rel
+        return folded
+
+    expected_folded = unique_casefold(expected, "producer-manifest")
+    actual_folded = unique_casefold(actual, "runtime")
+    missing_keys = sorted(set(expected_folded) - set(actual_folded))
+    missing = [expected_folded[key] for key in missing_keys]
+    require(not missing, f"{label} is missing entries from embedded producer manifests: {missing!r}")
+    matched = {
+        expected_rel: actual_folded[folded]
+        for folded, expected_rel in expected_folded.items()
+    }
+    extra = [actual_folded[key] for key in sorted(set(actual_folded) - set(expected_folded))]
+    return matched, extra
+
+
 def verify_staged_runtime_tree(
     runtime: Path, *, platform: str, profile: str, manifest_sha256s: list[str]
 ) -> None:
@@ -287,12 +326,34 @@ def verify_staged_runtime_tree(
         return
 
     actual = {entry["path"]: entry for entry in _tree_entries(runtime)}
-    require(set(actual) == set(expected), "staged runtime inventory differs from embedded producer manifests")
+    matched, extra = _reconcile_runtime_inventory(
+        expected,
+        actual,
+        platform=platform,
+        label="staged runtime",
+    )
+    if extra:
+        # The producer's published FEniCS manifests omit a small set of conda
+        # symlinks that the immutable pinned archives do contain. runtime_lib
+        # re-attests those archive-only symlinks before this packaging step.
+        # Never extend that exception to regular files or non-FEniCS profiles.
+        require(
+            platform == "linux-x64"
+            and profile == "fenics"
+            and all(actual[rel]["kind"] == "symlink" for rel in extra),
+            f"staged runtime has entries absent from embedded producer manifests: {extra!r}",
+        )
+        for rel in extra:
+            path = runtime / rel
+            target = os.readlink(path)
+            resolved = (path.parent / target).resolve(strict=False)
+            require(_inside(runtime_root, resolved), f"staged runtime symlink escapes runtime root: {rel} -> {target}")
     check_modes = os.name != "nt" and platform != "win-x64"
     for rel, wanted in expected.items():
-        observed = actual[rel]
+        actual_rel = matched[rel]
+        observed = actual[actual_rel]
         require(observed["kind"] == wanted["kind"], f"staged runtime entry kind differs: {rel}")
-        path = runtime / rel
+        path = runtime / actual_rel
         if wanted["kind"] == "file":
             require(
                 observed["bytes"] == wanted["bytes"] and observed["sha256"] == wanted["sha256"],

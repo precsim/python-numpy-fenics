@@ -16,13 +16,18 @@
   "host_fixtures": [
     "host/mock_smoke.m"
   ],
+  "octave_abi": {
+    "compatibility": "GNU Octave 10.2+",
+    "soversion_export": "__octave_mex_soversion__"
+  },
   "targets": {
     "win-x64": {
       "sources": [],
       "output": "bridge.mex",
       "matlab_alias": "bridge.mexw64",
       "exports": [
-        "mexFunction"
+        "mexFunction",
+        "__octave_mex_soversion__"
       ]
     },
     "linux-x64": {
@@ -30,7 +35,8 @@
       "output": "bridge.mex",
       "matlab_alias": "bridge.mexa64",
       "exports": [
-        "mexFunction"
+        "mexFunction",
+        "__octave_mex_soversion__"
       ]
     },
     "macos-arm64": {
@@ -38,7 +44,8 @@
       "output": "bridge.mex",
       "matlab_alias": "bridge.mexmaca64",
       "exports": [
-        "mexFunction"
+        "mexFunction",
+        "__octave_mex_soversion__"
       ]
     },
     "macos-x64": {
@@ -46,7 +53,8 @@
       "output": "bridge.mex",
       "matlab_alias": "bridge.mexmaci64",
       "exports": [
-        "mexFunction"
+        "mexFunction",
+        "__octave_mex_soversion__"
       ]
     }
   }

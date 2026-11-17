@@ -42,7 +42,8 @@ env:
   RC2_PRODUCER_REVISION: 88f36aaa09fb8a84ea528d5823d9b0be043cfa3e
   OCTAVE_WINDOWS_VERSION: "11.3.0"
   OCTAVE_MACOS_VERSION: "11.3.0"
-  OCTAVE_LINUX_VERSION: "6.4.0"
+  OCTAVE_LINUX_VERSION: "11.3.0"
+  OCTAVE_LINUX_IMAGE: ghcr.io/gnu-octave/octave:11.3.0@sha256:185db7993e000d4f3f6e7bbbf7fb3f999f52e799ea52231ad8a15353381e0dcb
   MANYLINUX2014_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:0d25b049964b2549b83384036abdff06789a8c0b1e9ff003ec80f0d531f79e50
 
 jobs:
@@ -91,14 +92,27 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "REFERENCE_OCTAVE=$($octave.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Install pinned GNU Octave on Linux
+      - name: Source pinned GNU Octave headers on Linux
         if: matrix.target == 'linux-x64'
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y octave=6.4.0-2 octave-dev=6.4.0-2
-          test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+          workspace="$GITHUB_WORKSPACE"
+          docker run --rm --platform linux/amd64 \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              octave_include="$(octave-config -p OCTINCLUDEDIR)"
+              test -f "$octave_include/mex.h"
+              rm -rf build/octave-headers
+              mkdir -p build/octave-headers
+              cp -a "$octave_include/." build/octave-headers/
+            '
 
       - name: Install pinned GNU Octave on macOS
         if: startsWith(matrix.target, 'macos-')
@@ -134,10 +148,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          octave_include="$(octave-config -p OCTINCLUDEDIR)"
-          test -f "$octave_include/mex.h"
-          mkdir -p build/octave-headers
-          cp -a "$octave_include/." build/octave-headers/
+          test -f build/octave-headers/mex.h
           workspace="$GITHUB_WORKSPACE"
           docker run --rm --user "$(id -u):$(id -g)" \
             -e "GITHUB_SHA=$GITHUB_SHA" \
@@ -236,15 +247,6 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "REFERENCE_OCTAVE=$($octave.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Install pinned GNU Octave on Linux
-        if: matrix.target == 'linux-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y octave=6.4.0-2 octave-dev=6.4.0-2 gdb
-          test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
-
       - name: Install pinned GNU Octave on macOS
         if: startsWith(matrix.target, 'macos-')
         shell: bash
@@ -286,7 +288,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash consumer-kit/tools/test-octave-linux.sh --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" --octave "$(command -v octave-cli)"
+          workspace="$GITHUB_WORKSPACE"
+          docker run --rm --platform linux/amd64 \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              bash consumer-kit/tools/test-octave-linux.sh \
+                --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" \
+                --octave "$(command -v octave-cli)"
+            '
 
       - name: Execute GNU Octave host acceptance on macOS
         if: startsWith(matrix.target, 'macos-')
@@ -321,8 +336,34 @@ jobs:
           $root = Join-Path $destination "reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$env:REFERENCE_VERSION"
           & (Join-Path $root "run-local-test.ps1") -Octave $env:REFERENCE_OCTAVE
 
-      - name: Extract and test packaged bytes on Unix
-        if: matrix.target != 'win-x64'
+      - name: Extract and test packaged bytes on Linux
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION.tar.gz"
+          destination="build/reference/relocated package with spaces"
+          mkdir -p "$destination"
+          tar -xzf "$package" -C "$destination"
+          workspace="$GITHUB_WORKSPACE"
+          root="$workspace/$destination/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
+          docker run --rm --platform linux/amd64 \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -e "PACKAGE_ROOT=$root" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              "$PACKAGE_ROOT/run-local-test.sh" \
+                --octave "$(command -v octave-cli)" \
+                --python "$PACKAGE_ROOT/runtime/bin/python3.14"
+            '
+
+      - name: Extract and test packaged bytes on macOS
+        if: startsWith(matrix.target, 'macos-')
         shell: bash
         run: |
           set -euo pipefail
@@ -348,5 +389,211 @@ jobs:
             build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-${{ env.REFERENCE_VERSION }}.${{ matrix.archive_ext }}
             build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-${{ env.REFERENCE_VERSION }}.${{ matrix.archive_ext }}.sha256
             build/reference/qualification-reference-${{ matrix.target }}-${{ matrix.profile }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate-release-set:
+    name: aggregate verified release set
+    needs:
+      - qualify
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Require successful profile qualification matrix
+        shell: bash
+        env:
+          QUALIFY_RESULT: ${{ needs.qualify.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$QUALIFY_RESULT" != "success" ]]; then
+            echo "qualification matrix did not succeed: $QUALIFY_RESULT" >&2
+            exit 1
+          fi
+
+      - name: Classify release-set promotion scope
+        id: release_scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PROFILES: ${{ github.event_name == 'workflow_dispatch' && inputs.profiles || 'core+numpy+fenics' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_PROFILES" in
+            core)
+              if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+                echo "core-only qualification is valid only for explicit workflow_dispatch" >&2
+                exit 1
+              fi
+              echo "promotable=false" >> "$GITHUB_OUTPUT"
+              echo "profiles=core" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=non-promotable-core-only"
+              echo "reference_release_set_reason=core-only lacks required numpy packages"
+              ;;
+            core+numpy)
+              echo "promotable=false" >> "$GITHUB_OUTPUT"
+              echo "profiles=core+numpy" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=non-promotable-core+numpy"
+              echo "reference_release_set_reason=full publication requires FEniCS qualification on every target"
+              ;;
+            core+numpy+fenics)
+              echo "promotable=true" >> "$GITHUB_OUTPUT"
+              echo "profiles=$REQUESTED_PROFILES" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=promotable-$REQUESTED_PROFILES"
+              ;;
+            *)
+              echo "unexpected qualification profile set: $REQUESTED_PROFILES" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Confirm partial qualification is non-promotable
+        if: steps.release_scope.outputs.promotable == 'false'
+        shell: bash
+        env:
+          PROFILE_SET: ${{ steps.release_scope.outputs.profiles }}
+        run: |
+          set -euo pipefail
+          case "$PROFILE_SET" in
+            core|core+numpy)
+              echo "reference_release_set_index=skipped-non-promotable-$PROFILE_SET"
+              ;;
+            *)
+              echo "unexpected non-promotable aggregate profile set: $PROFILE_SET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout exact qualified source
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up verification Python
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Download qualified package artifacts
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: reference-package-*
+          path: build/reference/release-set/incoming
+          merge-multiple: true
+
+      - name: Normalize and validate exact release-set inputs
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        env:
+          PROFILE_SET: ${{ steps.release_scope.outputs.profiles }}
+        run: |
+          set -euo pipefail
+          incoming="build/reference/release-set/incoming"
+          promotion="build/reference/release-set/promotion"
+          test -d "$incoming"
+          if find "$incoming" -type l -print -quit | grep -q .; then
+            echo "downloaded qualification artifacts contain a symlink" >&2
+            exit 1
+          fi
+          mkdir -p "$promotion/packages"
+
+          if [[ "$PROFILE_SET" != "core+numpy+fenics" ]]; then
+            echo "aggregate job received non-promotable profile set: $PROFILE_SET" >&2
+            exit 1
+          fi
+          profiles=(core numpy fenics)
+
+          take_exact_file() {
+            local name="$1"
+            local destination="$2"
+            local matches=()
+            mapfile -d '' matches < <(find "$incoming" -type f -name "$name" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "expected exactly one downloaded file named $name, found ${#matches[@]}" >&2
+              exit 1
+            fi
+            mv -- "${matches[0]}" "$destination"
+          }
+
+          expected_packages=0
+          for target in linux-x64 macos-arm64 macos-x64 win-x64; do
+            if [[ "$target" == "win-x64" ]]; then
+              extension="zip"
+            else
+              extension="tar.gz"
+            fi
+            for profile in "${profiles[@]}"; do
+              archive="reference-bridge-$target-cp314-$profile-$REFERENCE_VERSION.$extension"
+              qualification="qualification-reference-$target-$profile.json"
+              take_exact_file "$archive" "$promotion/packages/$archive"
+              take_exact_file "$archive.sha256" "$promotion/packages/$archive.sha256"
+              take_exact_file "$qualification" "$promotion/$qualification"
+              expected_packages=$((expected_packages + 1))
+            done
+          done
+
+          leftover="$(find "$incoming" -type f -print -quit)"
+          if [[ -n "$leftover" ]]; then
+            echo "downloaded qualification artifacts contain an unexpected file: $leftover" >&2
+            exit 1
+          fi
+          actual_packages="$(find "$promotion/packages" -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) | wc -l | tr -d ' ')"
+          if [[ "$actual_packages" -ne "$expected_packages" ]]; then
+            echo "canonical release set has $actual_packages packages, expected $expected_packages" >&2
+            exit 1
+          fi
+          echo "reference_release_set_packages=$actual_packages"
+
+      - name: Reverify complete release set offline
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python consumer-kit/tools/verify-release-set.py \
+            --root build/reference/release-set/promotion \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Write and reverify exact current-run release index
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="build/reference/release-set/promotion"
+          index="$root/reference-release-index.json"
+          python consumer-kit/tools/write-release-index.py \
+            --root "$root" \
+            --source-revision "$GITHUB_SHA" \
+            --qualification-run-id "$GITHUB_RUN_ID" \
+            --qualification-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$index"
+          python consumer-kit/tools/write-sha256.py "$index"
+          (
+            cd "$root"
+            sha256sum -c reference-release-index.json.sha256
+            jq -r '.files[] | "\(.sha256)  \(.path)"' reference-release-index.json | sha256sum -c -
+          )
+          jq -e \
+            --arg source "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg profiles "${{ steps.release_scope.outputs.profiles }}" \
+            '.source_revision == $source
+             and .qualification_run_id == $run
+             and .qualification_run_attempt == $attempt
+             and (.profiles | join("+")) == $profiles' \
+            "$index" >/dev/null
+          echo "reference_release_set_index=verified"
+
+      - name: Upload verified release-set index
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reference-release-set-index
+          path: |
+            build/reference/release-set/promotion/reference-release-index.json
+            build/reference/release-set/promotion/reference-release-index.json.sha256
           if-no-files-found: error
           retention-days: 14

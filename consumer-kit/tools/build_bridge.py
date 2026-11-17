@@ -21,6 +21,11 @@ import tempfile
 
 TARGETS = {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
 SAFE_BASENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+REFERENCE_EXPORTS = ["mexFunction", "__octave_mex_soversion__"]
+REFERENCE_OCTAVE_ABI = {
+    "compatibility": "GNU Octave 10.2+",
+    "soversion_export": "__octave_mex_soversion__",
+}
 
 
 class BuildContractError(ValueError):
@@ -66,6 +71,11 @@ def load_build(manifest_path: Path, source_root: Path, target: str) -> tuple[dic
     common_includes = unique_paths(manifest.get("include_dirs", []), "include_dirs")
     unique_paths(manifest.get("python_helpers", []), "python_helpers")
     unique_paths(manifest.get("host_fixtures", []), "host_fixtures")
+    require(
+        manifest.get("octave_abi") == REFERENCE_OCTAVE_ABI,
+        "reference bridge octave_abi must declare GNU Octave 10.2+ "
+        "with __octave_mex_soversion__ metadata",
+    )
     targets = manifest.get("targets")
     require(isinstance(targets, dict) and target in targets, f"manifest has no target {target}")
     target_record = targets[target]
@@ -78,8 +88,11 @@ def load_build(manifest_path: Path, source_root: Path, target: str) -> tuple[dic
     require(output == "bridge.mex", f"{target} output must be bridge.mex")
     require(isinstance(alias, str) and SAFE_BASENAME.fullmatch(alias) is not None,
             f"{target} has unsafe MATLAB alias")
-    require(target_record.get("exports") == ["mexFunction"],
-            f"{target} must export only mexFunction")
+    require(
+        target_record.get("exports") == REFERENCE_EXPORTS,
+        f"{target} must export exactly mexFunction and __octave_mex_soversion__ "
+        "for GNU Octave 10.2+ ABI compatibility",
+    )
 
     root = source_root.resolve()
     source_paths: list[Path] = []
@@ -95,6 +108,16 @@ def load_build(manifest_path: Path, source_root: Path, target: str) -> tuple[dic
                 f"declared include directory does not exist: {relative}")
         include_paths.append(resolved)
     return manifest, source_paths, include_paths
+
+
+def build_contract_identity(manifest: dict, target: str) -> dict:
+    """Return the ABI/export identity embedded in build provenance."""
+
+    target_record = manifest["targets"][target]
+    return {
+        "octave_abi": dict(manifest["octave_abi"]),
+        "exports": list(target_record["exports"]),
+    }
 
 
 def python_include(runtime: Path, target: str) -> Path:
@@ -277,7 +300,12 @@ def main() -> int:
         ]
         cl_args += [f"/I{path}" for path in all_includes]
         cl_args += [str(path) for path in sources]
-        cl_args += ["/link", f"/OUT:{output}", "/EXPORT:mexFunction"]
+        cl_args += [
+            "/link",
+            f"/OUT:{output}",
+            "/EXPORT:mexFunction",
+            "/EXPORT:__octave_mex_soversion__",
+        ]
         compiler, version = run_msvc(cl_args)
         command_record = ["cl", *cl_args]
     elif args.target == "linux-x64":
@@ -309,7 +337,7 @@ def main() -> int:
     require(output.is_file() and output.stat().st_size > 0, "compiler produced no bridge.mex")
     runtime_manifest = runtime / "runtime-manifest.json"
     require(runtime_manifest.is_file(), "verified runtime has no runtime-manifest.json")
-    target_record = manifest["targets"][args.target]
+    contract_identity = build_contract_identity(manifest, args.target)
     provenance = {
         "format_version": 1,
         "target": args.target,
@@ -321,6 +349,7 @@ def main() -> int:
         "compiler": compiler,
         "compiler_version": version,
         "command": command_record,
+        "octave_abi": contract_identity["octave_abi"],
         "sources": [
             {
                 "path": path.relative_to(source_root).as_posix(),
@@ -328,7 +357,7 @@ def main() -> int:
             }
             for path in sources
         ],
-        "exports": target_record["exports"],
+        "exports": contract_identity["exports"],
         "mex_sha256": sha256(output),
         "mex_bytes": output.stat().st_size,
     }

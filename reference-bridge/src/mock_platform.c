@@ -19,6 +19,9 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <dirent.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -484,6 +487,220 @@ static int mock_python_collision(const char *expected,
     return 0;
 }
 
+#ifdef __linux__
+#define MOCK_LINUX_NUMPY_PROVIDER "libopenblasbridge_np252_.so.0"
+#define MOCK_LINUX_NUMPY_IDENTITY_SYMBOL "openblas_get_corenamebridge_np252_"
+
+static void *mock_linux_numpy_provider;
+static char mock_linux_numpy_provider_path[MOCK_PATH_MAX];
+
+static int mock_linux_private_provider_loaded(const char *expected,
+                                              char *error, size_t error_size)
+{
+    FILE *maps = fopen("/proc/self/maps", "rb");
+    char line[MOCK_PATH_MAX + 256];
+
+    if (maps == NULL) {
+        mock_set_error(error, error_size,
+                       "cannot inspect loaded private NumPy providers: %s",
+                       strerror(errno));
+        return -1;
+    }
+    while (fgets(line, sizeof(line), maps) != NULL) {
+        char *path = strchr(line, '/');
+        char *newline;
+        char *basename;
+        char loaded[MOCK_PATH_MAX];
+        if (path == NULL) {
+            continue;
+        }
+        newline = strpbrk(path, "\r\n");
+        if (newline != NULL) {
+            *newline = '\0';
+        }
+        basename = strrchr(path, '/');
+        basename = basename != NULL ? basename + 1 : path;
+        if (strcmp(basename, MOCK_LINUX_NUMPY_PROVIDER) != 0) {
+            continue;
+        }
+        if (mock_platform_canonical_path(path, loaded, sizeof(loaded), NULL, 0) != 0) {
+            fclose(maps);
+            mock_set_error(error, error_size,
+                           "cannot identify loaded private NumPy provider: %s", path);
+            return -1;
+        }
+        fclose(maps);
+        mock_set_error(error, error_size,
+                       "private NumPy provider was loaded before bridge isolation: %s%s",
+                       loaded,
+                       strcmp(loaded, expected) == 0 ? "" : " (foreign path)");
+        return 1;
+    }
+    fclose(maps);
+    return 0;
+}
+
+static int mock_linux_preload_numpy_provider(const char *python_provider,
+                                             char *error, size_t error_size)
+{
+    char runtime_lib[MOCK_PATH_MAX];
+    char private_root[MOCK_PATH_MAX];
+    char private_root_canonical[MOCK_PATH_MAX];
+    char provider[MOCK_PATH_MAX];
+    char provider_canonical[MOCK_PATH_MAX];
+    char expected_canonical[MOCK_PATH_MAX];
+    char *separator;
+    DIR *directory;
+    struct dirent *entry;
+    struct stat st;
+    int matching_entries = 0;
+    int loaded;
+    void *identity;
+    Dl_info info;
+    char identity_path[MOCK_PATH_MAX];
+
+    if (mock_copy_string(python_provider, runtime_lib, sizeof(runtime_lib),
+                         error, error_size) != 0) {
+        return -1;
+    }
+    separator = strrchr(runtime_lib, '/');
+    if (separator == NULL || separator == runtime_lib) {
+        mock_set_error(error, error_size,
+                       "CPython provider has no runtime lib directory: %s",
+                       python_provider);
+        return -1;
+    }
+    *separator = '\0';
+    if (mock_platform_join(runtime_lib, "numpy-private", private_root,
+                           sizeof(private_root), error, error_size) != 0) {
+        return -1;
+    }
+    if (lstat(private_root, &st) != 0) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        mock_set_error(error, error_size,
+                       "cannot inspect private NumPy provider directory %s: %s",
+                       private_root, strerror(errno));
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        mock_set_error(error, error_size,
+                       "private NumPy provider root must be a real directory: %s",
+                       private_root);
+        return -1;
+    }
+    if (mock_platform_canonical_path(private_root, private_root_canonical,
+                                     sizeof(private_root_canonical),
+                                     error, error_size) != 0 ||
+        mock_platform_join(private_root_canonical, MOCK_LINUX_NUMPY_PROVIDER,
+                           expected_canonical, sizeof(expected_canonical),
+                           error, error_size) != 0) {
+        return -1;
+    }
+
+    directory = opendir(private_root_canonical);
+    if (directory == NULL) {
+        mock_set_error(error, error_size,
+                       "cannot inspect private NumPy provider directory %s: %s",
+                       private_root_canonical, strerror(errno));
+        return -1;
+    }
+    while ((entry = readdir(directory)) != NULL) {
+        if (strncmp(entry->d_name, "libopenblas", 11) != 0) {
+            continue;
+        }
+        matching_entries += 1;
+        if (strcmp(entry->d_name, MOCK_LINUX_NUMPY_PROVIDER) != 0) {
+            closedir(directory);
+            mock_set_error(error, error_size,
+                           "unexpected private NumPy OpenBLAS provider: %s/%s",
+                           private_root_canonical, entry->d_name);
+            return -1;
+        }
+    }
+    closedir(directory);
+    if (matching_entries != 1) {
+        mock_set_error(error, error_size,
+                       "expected exactly one pinned private NumPy OpenBLAS provider in %s",
+                       private_root_canonical);
+        return -1;
+    }
+    if (mock_platform_join(private_root_canonical, MOCK_LINUX_NUMPY_PROVIDER,
+                           provider, sizeof(provider), error, error_size) != 0) {
+        return -1;
+    }
+    if (lstat(provider, &st) != 0 || !S_ISREG(st.st_mode)) {
+        mock_set_error(error, error_size,
+                       "private NumPy provider must be a regular non-symlink file: %s",
+                       provider);
+        return -1;
+    }
+    if (mock_platform_canonical_path(provider, provider_canonical,
+                                     sizeof(provider_canonical),
+                                     error, error_size) != 0 ||
+        strcmp(provider_canonical, expected_canonical) != 0) {
+        mock_set_error(error, error_size,
+                       "private NumPy provider escaped its pinned runtime path: %s",
+                       provider);
+        return -1;
+    }
+
+    if (mock_linux_numpy_provider != NULL) {
+        if (strcmp(mock_linux_numpy_provider_path, provider_canonical) != 0) {
+            mock_set_error(error, error_size,
+                           "bridge private NumPy provider identity changed: %s != %s",
+                           mock_linux_numpy_provider_path, provider_canonical);
+            return -1;
+        }
+        return 0;
+    }
+    loaded = mock_linux_private_provider_loaded(provider_canonical, error, error_size);
+    if (loaded != 0) {
+        return -1;
+    }
+    if (dlsym(RTLD_DEFAULT, MOCK_LINUX_NUMPY_IDENTITY_SYMBOL) != NULL) {
+        mock_set_error(error, error_size,
+                       "private NumPy OpenBLAS identity symbol is already globally visible: %s",
+                       MOCK_LINUX_NUMPY_IDENTITY_SYMBOL);
+        return -1;
+    }
+
+    mock_linux_numpy_provider =
+        dlopen(provider_canonical, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+    if (mock_linux_numpy_provider == NULL) {
+        const char *message = dlerror();
+        mock_set_error(error, error_size,
+                       "cannot isolate private NumPy provider %s: %s",
+                       provider_canonical,
+                       message != NULL ? message : "unknown loader error");
+        return -1;
+    }
+    identity = dlsym(mock_linux_numpy_provider, MOCK_LINUX_NUMPY_IDENTITY_SYMBOL);
+    if (identity == NULL ||
+        dladdr(identity, &info) == 0 ||
+        info.dli_fname == NULL ||
+        mock_platform_canonical_path(info.dli_fname, identity_path,
+                                     sizeof(identity_path), error, error_size) != 0 ||
+        strcmp(identity_path, provider_canonical) != 0) {
+        dlclose(mock_linux_numpy_provider);
+        mock_linux_numpy_provider = NULL;
+        mock_set_error(error, error_size,
+                       "private NumPy provider identity validation failed: %s",
+                       provider_canonical);
+        return -1;
+    }
+    if (mock_copy_string(provider_canonical, mock_linux_numpy_provider_path,
+                         sizeof(mock_linux_numpy_provider_path),
+                         error, error_size) != 0) {
+        dlclose(mock_linux_numpy_provider);
+        mock_linux_numpy_provider = NULL;
+        return -1;
+    }
+    return 0;
+}
+#endif
+
 MockLibrary mock_platform_load_python(const char *path,
                                       char *error, size_t error_size)
 {
@@ -494,6 +711,11 @@ MockLibrary mock_platform_load_python(const char *path,
     if (mock_python_collision(path, error, error_size) != 0) {
         return NULL;
     }
+#ifdef __linux__
+    if (mock_linux_preload_numpy_provider(path, error, error_size) != 0) {
+        return NULL;
+    }
+#endif
 #ifdef _WIN32
     {
         wchar_t wide_path[MOCK_PATH_MAX];

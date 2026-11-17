@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -39,6 +42,85 @@ def write_zip(path: Path, members: list[tuple[str, bytes]]) -> bytes:
         for name, content in members:
             archive.writestr(name, content)
     return path.read_bytes()
+
+
+def write_tar_with_omitted_symlink(
+    path: Path,
+    *,
+    manifest_name: str,
+    manifest_bytes: bytes,
+    payload_path: str,
+    payload: bytes,
+    symlink_path: str,
+    symlink_target: str,
+) -> bytes:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(path, "w:gz") as archive:
+        for name, content, mode in (
+            (manifest_name, manifest_bytes, 0o644),
+            (payload_path, payload, 0o644),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mode = mode
+            archive.addfile(info, io.BytesIO(content))
+        link = tarfile.TarInfo(symlink_path)
+        link.type = tarfile.SYMTYPE
+        link.linkname = symlink_target
+        link.mode = 0o777
+        archive.addfile(link)
+    return path.read_bytes()
+
+
+def make_casefold_verification_inputs(
+    root: Path,
+    *,
+    platform: str,
+    relative: str = "include/ufcx.h",
+    content: bytes = b"qualified ufcx header\n",
+) -> tuple[runtime.RuntimeInputs, runtime.ArchiveFacts]:
+    manifest = {"files": [file_record(relative, content)]}
+    manifest_bytes = json_bytes(manifest)
+    pin = runtime.LayerPin(
+        profile="core",
+        producer_revision="a" * 40,
+        artifact=runtime.AssetPin("runtime-v0.1.0-rc2", "runtime.zip", "c" * 64),
+        manifest=runtime.AssetPin(
+            "runtime-v0.1.0-rc2", "runtime-manifest.json", digest(manifest_bytes)
+        ),
+        qualification=runtime.AssetPin(
+            "runtime-v0.1.0-rc2", f"qualification-{platform}-core.json", "b" * 64
+        ),
+        manifest_external=False,
+    )
+    material = runtime.LayerMaterial(
+        pin=pin,
+        archive_path=root / "runtime.zip",
+        manifest_path=None,
+        qualification_path=root / "qualification.json",
+        manifest_bytes=manifest_bytes,
+        manifest=manifest,
+        qualification={},
+    )
+    plan = runtime.RuntimePlan(
+        repository=runtime.PRODUCER_REPOSITORY,
+        release_tag=pin.artifact.tag,
+        release_revision=pin.producer_revision,
+        version="0.1.0",
+        platform=platform,
+        profile="core",
+        release_manifest=None,
+        layers=(pin,),
+        base_binding=None,
+    )
+    receipt = root / "receipt.json"
+    receipt.write_text("{}\n", encoding="utf-8")
+    facts = runtime.ArchiveFacts(
+        modes={relative: 0o644},
+        directories={str(PurePosixPath(relative).parent): None},
+        symlinks={},
+    )
+    return runtime.RuntimeInputs(receipt, plan, None, None, (material,)), facts
 
 
 class RuntimeFixture:
@@ -465,6 +547,80 @@ class RuntimeStagingTests(unittest.TestCase):
             with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "directory tree differs"):
                 runtime.verify_staged_runtime(self.prepare(fixture, "fenics"), output)
 
+    def test_windows_verifier_casefolds_unique_leaf_and_directory_spelling_but_checks_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inputs, facts = make_casefold_verification_inputs(root, platform="win-x64")
+            output = root / "runtime"
+            (output / "Include").mkdir(parents=True)
+            header = output / "Include" / "ufcx.h"
+            header.write_bytes(b"qualified ufcx header\n")
+            (output / "runtime-manifest.json").write_bytes(inputs.layers[0].manifest_bytes)
+
+            result = runtime.verify_staged_runtime(
+                inputs,
+                output,
+                archive_metadata=(facts,),
+            )
+            self.assertEqual(result["entry_count"], 2)
+            self.assertEqual(result["directory_count"], 1)
+
+            header.write_bytes(b"tampered ufcx header!\n")
+            with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "differs from producer manifest"):
+                runtime.verify_staged_runtime(inputs, output, archive_metadata=(facts,))
+
+            header.write_bytes(b"qualified ufcx header\n")
+            with mock.patch.object(
+                runtime,
+                "_walk_runtime",
+                return_value={
+                    "Include": "dir",
+                    "Include/ufcx.h": "symlink",
+                    "runtime-manifest.json": "file",
+                },
+            ):
+                with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "entry kind mismatch"):
+                    runtime.verify_staged_runtime(inputs, output, archive_metadata=(facts,))
+
+    def test_windows_casefold_leaf_matching_rejects_expected_and_actual_collisions(self) -> None:
+        record = {
+            "path": "include/ufcx.h",
+            "kind": "file",
+            "bytes": 1,
+            "sha256": digest(b"x"),
+        }
+        with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "casefold collision"):
+            runtime._match_runtime_leaves(
+                {
+                    "include/ufcx.h": (record, 0),
+                    "Include/UFCX.H": ({**record, "path": "Include/UFCX.H"}, 0),
+                },
+                {"Include/ufcx.h": "file"},
+                windows_casefold=True,
+            )
+
+        with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "casefold collision"):
+            runtime._match_runtime_leaves(
+                {"include/ufcx.h": (record, 0)},
+                {
+                    "include/ufcx.h": "file",
+                    "Include/UFCX.H": "file",
+                },
+                windows_casefold=True,
+            )
+
+    def test_posix_verifier_remains_case_sensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inputs, facts = make_casefold_verification_inputs(root, platform="linux-x64")
+            output = root / "runtime"
+            (output / "Include").mkdir(parents=True)
+            (output / "Include" / "ufcx.h").write_bytes(b"qualified ufcx header\n")
+            (output / "runtime-manifest.json").write_bytes(inputs.layers[0].manifest_bytes)
+
+            with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "inventory differs"):
+                runtime.verify_staged_runtime(inputs, output, archive_metadata=(facts,))
+
     def test_offline_missing_asset_does_not_attempt_download(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = RuntimeFixture(Path(raw))
@@ -554,6 +710,159 @@ class RuntimeStagingTests(unittest.TestCase):
             self.assertEqual(verify_payload["manifest"], disk_record["manifest"])
             self.assertEqual(verify_payload["qualification"], disk_record["qualification"])
             self.assertNotIn("runtime", verify_payload)
+
+    def test_pinned_archive_symlink_omitted_from_manifest_is_attested_from_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            payload_path = "fenics-runtime/conda/lib/icu/78.3/data.bin"
+            payload = b"icu payload"
+            symlink_path = "fenics-runtime/conda/lib/icu/current"
+            symlink_target = "78.3"
+            manifest = {"files": [file_record(payload_path, payload)]}
+            manifest_bytes = json_bytes(manifest)
+            archive_path = root / "overlay.tar.gz"
+            archive_bytes = write_tar_with_omitted_symlink(
+                archive_path,
+                manifest_name="runtime-manifest.json",
+                manifest_bytes=manifest_bytes,
+                payload_path=payload_path,
+                payload=payload,
+                symlink_path=symlink_path,
+                symlink_target=symlink_target,
+            )
+            pin = runtime.LayerPin(
+                profile="core",
+                producer_revision="a" * 40,
+                artifact=runtime.AssetPin("runtime-v0.1.0-rc2", archive_path.name, digest(archive_bytes)),
+                manifest=runtime.AssetPin("runtime-v0.1.0-rc2", "runtime-manifest.json", digest(manifest_bytes)),
+                qualification=runtime.AssetPin(
+                    "runtime-v0.1.0-rc2", "qualification-linux-x64-core.json", "b" * 64
+                ),
+                manifest_external=False,
+            )
+            material = runtime.LayerMaterial(
+                pin=pin,
+                archive_path=archive_path,
+                manifest_path=None,
+                qualification_path=root / "qualification.json",
+                manifest_bytes=manifest_bytes,
+                manifest=manifest,
+                qualification={},
+            )
+            plan = runtime.RuntimePlan(
+                repository=runtime.PRODUCER_REPOSITORY,
+                release_tag=pin.artifact.tag,
+                release_revision=pin.producer_revision,
+                version="0.1.0",
+                platform="linux-x64",
+                profile="core",
+                release_manifest=None,
+                layers=(pin,),
+                base_binding=None,
+            )
+            receipt = root / "receipt.json"
+            receipt.write_text("{}\n", encoding="utf-8")
+            inputs = runtime.RuntimeInputs(receipt, plan, None, None, (material,))
+
+            facts = runtime.archive_facts(archive_path)
+            self.assertEqual(facts.symlinks[symlink_path], symlink_target)
+            expected = runtime._expected_runtime_entries(inputs, (facts,))
+            self.assertEqual(expected[symlink_path][0]["kind"], "symlink")
+            self.assertEqual(expected[symlink_path][0]["target"], symlink_target)
+            self.assertNotIn(symlink_path, runtime._manifest_entries(material))
+
+            conflicting_manifest = {
+                "files": [
+                    file_record(payload_path, payload),
+                    {"path": symlink_path, "kind": "symlink", "target": "79.0"},
+                ]
+            }
+            conflicting_material = runtime.LayerMaterial(
+                pin=pin,
+                archive_path=archive_path,
+                manifest_path=None,
+                qualification_path=root / "qualification.json",
+                manifest_bytes=json_bytes(conflicting_manifest),
+                manifest=conflicting_manifest,
+                qualification={},
+            )
+            conflicting_inputs = runtime.RuntimeInputs(
+                receipt,
+                plan,
+                None,
+                None,
+                (conflicting_material,),
+            )
+            with self.assertRaisesRegex(
+                runtime.ConsumerRuntimeError, "manifest/archive symlink target mismatch"
+            ):
+                runtime._expected_runtime_entries(conflicting_inputs, (facts,))
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink staging regression")
+    def test_manifest_omitted_archive_symlink_stages_and_target_tamper_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            payload_path = "fenics-runtime/conda/lib/icu/78.3/data.bin"
+            payload = b"icu payload"
+            symlink_path = "fenics-runtime/conda/lib/icu/current"
+            symlink_target = "78.3"
+            manifest = {"files": [file_record(payload_path, payload)]}
+            manifest_bytes = json_bytes(manifest)
+            archive_path = root / "overlay.tar.gz"
+            archive_bytes = write_tar_with_omitted_symlink(
+                archive_path,
+                manifest_name="runtime-manifest.json",
+                manifest_bytes=manifest_bytes,
+                payload_path=payload_path,
+                payload=payload,
+                symlink_path=symlink_path,
+                symlink_target=symlink_target,
+            )
+            pin = runtime.LayerPin(
+                profile="core",
+                producer_revision="a" * 40,
+                artifact=runtime.AssetPin("runtime-v0.1.0-rc2", archive_path.name, digest(archive_bytes)),
+                manifest=runtime.AssetPin("runtime-v0.1.0-rc2", "runtime-manifest.json", digest(manifest_bytes)),
+                qualification=runtime.AssetPin(
+                    "runtime-v0.1.0-rc2", "qualification-linux-x64-core.json", "b" * 64
+                ),
+                manifest_external=False,
+            )
+            material = runtime.LayerMaterial(
+                pin=pin,
+                archive_path=archive_path,
+                manifest_path=None,
+                qualification_path=root / "qualification.json",
+                manifest_bytes=manifest_bytes,
+                manifest=manifest,
+                qualification={},
+            )
+            plan = runtime.RuntimePlan(
+                repository=runtime.PRODUCER_REPOSITORY,
+                release_tag=pin.artifact.tag,
+                release_revision=pin.producer_revision,
+                version="0.1.0",
+                platform="linux-x64",
+                profile="core",
+                release_manifest=None,
+                layers=(pin,),
+                base_binding=None,
+            )
+            receipt = root / "receipt.json"
+            receipt.write_text("{}\n", encoding="utf-8")
+            inputs = runtime.RuntimeInputs(receipt, plan, None, None, (material,))
+            output = root / "runtime"
+
+            result = runtime.stage_runtime(inputs, output)
+            link = output.joinpath(*symlink_path.split("/"))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), symlink_target)
+            self.assertEqual(result["entry_count"], 3)
+
+            link.unlink()
+            link.symlink_to("79.0")
+            with self.assertRaisesRegex(runtime.ConsumerRuntimeError, "symlink target mismatch"):
+                runtime.verify_staged_runtime(inputs, output)
 
     def test_macos_overlay_manifest_size_mode_and_hashed_symlink_are_normalized(self) -> None:
         target = "../lib/libexample.dylib"
