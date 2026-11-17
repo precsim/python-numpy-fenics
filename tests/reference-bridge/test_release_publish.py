@@ -10,6 +10,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -166,6 +167,21 @@ def build(root: Path) -> dict[str, object]:
 
 
 class ReleaseIndexTests(unittest.TestCase):
+    def test_large_runtime_inventory_manifest_is_bounded_but_accepted(self) -> None:
+        # A full FEniCS inventory exceeds the former 4 MiB index-reader cap.
+        # Exercise both archive readers without allocating a large runtime.
+        for target in ("linux-x64", "win-x64"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as raw:
+                archive = Path(raw) / archive_name(target, "fenics")
+                package = release_index.package_root_name(archive)
+                manifest = {"package": package, "inventory": "x" * (4 * 1024 * 1024)}
+                write_archive(archive, manifest)
+                self.assertGreater(len(release_index.embedded_manifest_bytes(archive)), 4 * 1024 * 1024)
+                self.assertEqual(release_index.load_embedded_manifest(archive), manifest)
+                with patch.object(release_index, "MAX_MANIFEST_BYTES", 1024):
+                    with self.assertRaisesRegex(release_index.ReleaseIndexError, "manifest is too large"):
+                        release_index.load_embedded_manifest(archive)
+
     def test_accepts_only_complete_core_numpy_or_full_profile_matrices(self) -> None:
         for profiles in (("core", "numpy"), ("core", "numpy", "fenics")):
             with self.subTest(profiles=profiles), tempfile.TemporaryDirectory() as raw:

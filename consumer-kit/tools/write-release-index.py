@@ -59,7 +59,9 @@ EXPECTED_QUALIFICATION_CHECKS = {
     "relocated_runtime",
     "native_boundary",
 }
-MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+# FEniCS runtime inventories can exceed 4 MiB even when their compressed
+# archives are compact. Keep a bounded read, but accommodate full inventories.
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 
 
 class ReleaseIndexError(ValueError):
