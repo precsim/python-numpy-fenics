@@ -62,18 +62,25 @@ class PinnedMacOSOctaveTests(unittest.TestCase):
                 archive.write_bytes((name + " binary archive").encode("utf-8"))
             hashes = {name: hashlib.sha256(archive.read_bytes()).hexdigest() for name, archive in archives.items()}
             prefix = root / "actual host"
-            spec_export = "@EXPLICIT\n" + "\n".join(
-                f"https://conda.anaconda.org/conda-forge/osx-arm64/{archive.name}"
-                for archive in archives.values()
-            ) + "\nhttps://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda\n"
             seen: list[list[str]] = []
 
             def fake_run(argv, *, env, check, **kwargs):
                 seen.append(argv)
                 self.assertEqual(env["CONDA_SUBDIR"], "osx-arm64")
                 self.assertTrue(check)
-                if "list" in argv:
-                    return SimpleNamespace(stdout=spec_export)
+                if "--file" not in argv:
+                    metadata = Path(argv[argv.index("-p") + 1]) / "conda-meta"
+                    metadata.mkdir(parents=True)
+                    for name, archive in archives.items():
+                        (metadata / f"{name}.json").write_text(json.dumps({
+                            "name": name,
+                            "url": f"https://conda.anaconda.org/conda-forge/osx-arm64/{archive.name}",
+                        }), encoding="utf-8")
+                    (metadata / "dependency.json").write_text(json.dumps({
+                        "name": "dependency",
+                        "url": "https://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda",
+                    }), encoding="utf-8")
+                    return SimpleNamespace(stdout="")
                 if "--file" in argv:
                     spec = Path(argv[argv.index("--file") + 1]).read_text(encoding="utf-8")
                     self.assertEqual(spec.count("file://"), 2)
@@ -102,10 +109,9 @@ class PinnedMacOSOctaveTests(unittest.TestCase):
                 ]
             with patch.object(sys, "argv", arguments), patch.object(subprocess, "run", side_effect=fake_run):
                 self.assertEqual(installer.main(), 0)
-            self.assertEqual(len(seen), 3)
+            self.assertEqual(len(seen), 2)
             self.assertEqual(seen[0][1], "create")
-            self.assertEqual(seen[1][1], "list")
-            self.assertEqual(seen[2][1], "create")
+            self.assertEqual(seen[1][1], "create")
 
             arguments[arguments.index(hashes["octave"])] = "f" * 64
             with patch.object(sys, "argv", arguments), patch.object(subprocess, "run") as run:

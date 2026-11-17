@@ -58,6 +58,26 @@ def pinned_explicit_spec(source: str, archives: dict[str, Path]) -> str:
     return "\n".join(output) + "\n"
 
 
+def resolved_explicit_spec(prefix: Path) -> str:
+    """Capture the solved closure from installed conda-meta records, not CLI output.
+
+    Micromamba's `list --explicit` output is not an explicit spec on all
+    supported versions; conda-meta URL records are the installed package inputs.
+    """
+    metadata = prefix / "conda-meta"
+    require(metadata.is_dir(), "resolver conda metadata is missing")
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(metadata.glob("*.json"))]
+    require(bool(records), "resolver environment contains no package metadata")
+    urls: list[str] = []
+    for record in records:
+        source = record.get("url")
+        require(isinstance(source, str) and urlsplit(source).scheme in {"https", "file"},
+                f"resolver package has no usable archive URL: {record.get('name')}")
+        urls.append(source)
+    require(len(urls) == len(set(urls)), "resolver package list contains duplicate archives")
+    return "@EXPLICIT\n" + "\n".join(urls) + "\n"
+
+
 def verify_installed(prefix: Path, archives: dict[str, Path], sha256s: dict[str, str],
                      versions: dict[str, str], builds: dict[str, str]) -> None:
     metadata = prefix / "conda-meta"
@@ -111,11 +131,8 @@ def main() -> int:
             "-c", "conda-forge", "--strict-channel-priority",
             *(f"{name}={versions[name]}={builds[name]}" for name in archives),
         ], env=env, check=True)
-        exported = subprocess.run([
-            str(args.micromamba), "list", "-p", str(resolver), "--explicit",
-        ], env=env, check=True, text=True, capture_output=True).stdout
         spec = Path(raw) / "verified-explicit.txt"
-        spec.write_text(pinned_explicit_spec(exported, archives), encoding="utf-8")
+        spec.write_text(pinned_explicit_spec(resolved_explicit_spec(resolver), archives), encoding="utf-8")
         subprocess.run([
             str(args.micromamba), "create", "-y", "-p", str(prefix),
             "--file", str(spec),

@@ -75,8 +75,8 @@ generic consumer path; it does not qualify another application's MEX binary.
 
 On macOS, hosted qualification downloads and SHA-256-checks exact GNU Octave and
 OpenSSL `.conda` archives. `install-pinned-octave-macos.py` resolves the rest of
-the environment against conda-forge in a temporary prefix, exports its explicit
-package list, replaces these two package URLs with the verified local archive
+the environment against conda-forge in a temporary prefix, constructs an explicit
+package list from its installed metadata, replaces these two package URLs with the verified local archive
 URLs, then creates the actual host prefix from that explicit file. It rejects
 installed package records not sourced from those local archives. Dependencies
 remain channel-resolved, not individually archive-hash-pinned by this step.
