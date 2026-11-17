@@ -20,6 +20,12 @@ assert SPEC is not None and SPEC.loader is not None
 release_set = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_set)
 
+PACKAGE_TOOL = ROOT / "consumer-kit" / "tools" / "verify-package.py"
+PACKAGE_SPEC = importlib.util.spec_from_file_location("verify_package", PACKAGE_TOOL)
+assert PACKAGE_SPEC is not None and PACKAGE_SPEC.loader is not None
+package_verifier = importlib.util.module_from_spec(PACKAGE_SPEC)
+PACKAGE_SPEC.loader.exec_module(package_verifier)
+
 
 def zip_symlink(name: str, target: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name)
@@ -149,6 +155,48 @@ class ReleaseSetExtractionTests(unittest.TestCase):
             release_set.validate_archive_namespace(
                 entries, "tar", case_insensitive=True
             )
+
+    def test_archive_symlink_modes_are_rebased_to_package_root(self) -> None:
+        self.assertEqual(
+            release_set.package_relative_symlink_modes(
+                {
+                    "package/runtime/Frameworks/Tcl.framework/Headers": 0o755,
+                    "package/runtime/lib/current": 0o777,
+                },
+                "package",
+            ),
+            {
+                "runtime/Frameworks/Tcl.framework/Headers": 0o755,
+                "runtime/lib/current": 0o777,
+            },
+        )
+        with self.assertRaisesRegex(SystemExit, "outside package root"):
+            release_set.package_relative_symlink_modes(
+                {"other/runtime/link": 0o755}, "package"
+            )
+
+    def test_archive_symlink_mode_evidence_must_cover_exact_symlink_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "target.txt"
+            target.write_text("payload\n", encoding="utf-8")
+            link = root / "current"
+            try:
+                link.symlink_to("target.txt")
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            overridden = package_verifier._actual_inventory(
+                root, symlink_modes={"current": 0o755}
+            )
+            self.assertEqual(overridden["current"]["mode"], 0o755)
+            self.assertEqual(overridden["current"]["target"], "target.txt")
+
+            with self.assertRaisesRegex(
+                package_verifier.VerificationError,
+                "archive symlink-mode evidence differs",
+            ):
+                package_verifier._actual_inventory(root, symlink_modes={})
 
 
 if __name__ == "__main__":

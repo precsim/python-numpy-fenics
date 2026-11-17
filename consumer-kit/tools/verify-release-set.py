@@ -111,7 +111,7 @@ def output_path(destination: Path, rel: PurePosixPath, label: str) -> Path:
 
 def extract_zip(
     archive_path: Path, destination: Path, *, case_insensitive: bool = True
-) -> None:
+) -> dict[str, int]:
     with zipfile.ZipFile(archive_path) as archive:
         entries: list[tuple[PurePosixPath, str, zipfile.ZipInfo]] = []
         for info in archive.infolist():
@@ -135,6 +135,7 @@ def extract_zip(
             entries.append((rel, kind, info))
 
         validate_archive_namespace(entries, "ZIP", case_insensitive=case_insensitive)
+        symlink_modes: dict[str, int] = {}
         for rel, kind, info in entries:
             output = output_path(destination, rel, "ZIP")
             mode = info.external_attr >> 16
@@ -145,15 +146,17 @@ def extract_zip(
             if kind == "symlink":
                 target = archive.read(info).decode("utf-8")
                 output.symlink_to(target)
+                symlink_modes[rel.as_posix()] = stat.S_IMODE(mode)
             else:
                 output.write_bytes(archive.read(info))
                 if mode:
                     output.chmod(stat.S_IMODE(mode))
+        return symlink_modes
 
 
 def extract_tar(
     archive_path: Path, destination: Path, *, case_insensitive: bool = False
-) -> None:
+) -> dict[str, int]:
     with tarfile.open(archive_path, "r:gz") as archive:
         entries: list[tuple[PurePosixPath, str, tarfile.TarInfo]] = []
         for member in archive.getmembers():
@@ -171,6 +174,7 @@ def extract_tar(
             entries.append((rel, kind, member))
 
         validate_archive_namespace(entries, "tar", case_insensitive=case_insensitive)
+        symlink_modes: dict[str, int] = {}
         for rel, kind, member in entries:
             output = output_path(destination, rel, "tar")
             if kind == "dir":
@@ -179,6 +183,7 @@ def extract_tar(
             output.parent.mkdir(parents=True, exist_ok=True)
             if kind == "symlink":
                 output.symlink_to(member.linkname)
+                symlink_modes[rel.as_posix()] = member.mode & 0o7777
             else:
                 source = archive.extractfile(member)
                 if source is None:
@@ -187,6 +192,23 @@ def extract_tar(
                     while block := source.read(1024 * 1024):
                         sink.write(block)
                 output.chmod(member.mode & 0o777)
+        return symlink_modes
+
+
+def package_relative_symlink_modes(
+    modes: dict[str, int], package_name: str
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for raw, mode in modes.items():
+        rel = safe_member(raw)
+        require_root = rel.parts and rel.parts[0] == package_name and len(rel.parts) > 1
+        if not require_root:
+            raise SystemExit(f"archive symlink is outside package root: {raw}")
+        package_rel = PurePosixPath(*rel.parts[1:]).as_posix()
+        if package_rel in result:
+            raise SystemExit(f"duplicate archive symlink-mode path: {package_rel}")
+        result[package_rel] = mode
+    return result
 
 
 def parse_sidecar(archive: Path) -> str:
@@ -235,16 +257,35 @@ def main() -> int:
             destination = Path(raw)
             case_insensitive = target != "linux-x64"
             if archive.name.endswith(".zip"):
-                extract_zip(archive, destination, case_insensitive=case_insensitive)
+                archived_symlink_modes = extract_zip(
+                    archive, destination, case_insensitive=case_insensitive
+                )
             else:
-                extract_tar(archive, destination, case_insensitive=case_insensitive)
+                archived_symlink_modes = extract_tar(
+                    archive, destination, case_insensitive=case_insensitive
+                )
             roots = [path for path in destination.iterdir() if path.is_dir()]
             if len(roots) != 1:
                 raise SystemExit(f"package has no unique root directory: {archive.name}")
             package_root = roots[0]
+            symlink_modes = package_relative_symlink_modes(
+                archived_symlink_modes, package_root.name
+            )
+            symlink_modes_path = destination / "archive-symlink-modes.json"
+            symlink_modes_path.write_text(
+                json.dumps(symlink_modes, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             verifier = package_root / "verify-package.py"
             result = subprocess.run(
-                [sys.executable, str(verifier), "--root", str(package_root)],
+                [
+                    sys.executable,
+                    str(verifier),
+                    "--root",
+                    str(package_root),
+                    "--archive-symlink-modes",
+                    str(symlink_modes_path),
+                ],
                 text=True,
                 capture_output=True,
             )

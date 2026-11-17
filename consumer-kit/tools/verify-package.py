@@ -224,11 +224,15 @@ def native_closure_summary(payload: dict[str, Any], platform: str) -> str:
     return f"native closure evidence recorded for {platform}"
 
 
-def _actual_inventory(root: Path) -> dict[str, dict[str, Any]]:
+def _actual_inventory(
+    root: Path, *, symlink_modes: dict[str, int] | None = None
+) -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {}
+    observed_symlinks: set[str] = set()
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         rel = path.relative_to(root).as_posix()
         if path.is_symlink():
+            observed_symlinks.add(rel)
             target = os.readlink(path)
             resolved = (path.parent / target).resolve(strict=False)
             require(_inside(root, resolved), f"package symlink escapes package root: {rel} -> {target}")
@@ -236,7 +240,11 @@ def _actual_inventory(root: Path) -> dict[str, dict[str, Any]]:
                 "path": rel,
                 "kind": "symlink",
                 "target": target,
-                "mode": stat.S_IMODE(path.lstat().st_mode),
+                "mode": (
+                    symlink_modes[rel]
+                    if symlink_modes is not None and rel in symlink_modes
+                    else stat.S_IMODE(path.lstat().st_mode)
+                ),
             }
         elif path.is_file():
             entries[rel] = {
@@ -246,7 +254,33 @@ def _actual_inventory(root: Path) -> dict[str, dict[str, Any]]:
                 "sha256": sha256_file(path),
                 "mode": stat.S_IMODE(path.stat().st_mode),
             }
+    if symlink_modes is not None:
+        require(
+            set(symlink_modes) == observed_symlinks,
+            "archive symlink-mode evidence differs from extracted package symlinks",
+        )
     return entries
+
+
+def load_archive_symlink_modes(path: Path) -> dict[str, int]:
+    require(path.is_file() and not path.is_symlink(), f"missing archive symlink-mode evidence: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VerificationError(f"invalid archive symlink-mode evidence: {path}: {exc}") from exc
+    require(isinstance(payload, dict), "archive symlink-mode evidence must be a JSON object")
+    result: dict[str, int] = {}
+    for raw_path, raw_mode in payload.items():
+        rel = safe_relative_path(raw_path).as_posix()
+        require(rel not in result, f"duplicate archive symlink-mode path: {rel}")
+        require(
+            isinstance(raw_mode, int)
+            and not isinstance(raw_mode, bool)
+            and 0 <= raw_mode <= 0o7777,
+            f"invalid archive symlink mode for {rel}",
+        )
+        result[rel] = raw_mode
+    return result
 
 
 def _current_umask() -> int:
@@ -380,7 +414,12 @@ def _reconcile_runtime_inventory(
 
 
 def verify_embedded_runtime_manifests(
-    runtime: Path, *, platform: str, profile: str, manifest_sha256s: list[str]
+    runtime: Path,
+    *,
+    platform: str,
+    profile: str,
+    manifest_sha256s: list[str],
+    archive_symlink_modes: dict[str, int] | None = None,
 ) -> None:
     manifest_names = ["runtime-manifest.json"]
     if profile == "fenics":
@@ -421,7 +460,15 @@ def verify_embedded_runtime_manifests(
     if not inventories_complete:
         return
 
-    actual = _actual_inventory(runtime)
+    runtime_symlink_modes = None
+    if archive_symlink_modes is not None:
+        prefix = "runtime/"
+        runtime_symlink_modes = {
+            rel[len(prefix) :]: mode
+            for rel, mode in archive_symlink_modes.items()
+            if rel.startswith(prefix)
+        }
+    actual = _actual_inventory(runtime, symlink_modes=runtime_symlink_modes)
     matched, extra = _reconcile_runtime_inventory(
         expected,
         actual,
@@ -613,7 +660,9 @@ def _validate_manifest_contract(manifest: dict[str, Any], root_name: str) -> Non
         seen.add(entry["path"])
 
 
-def verify_package(root: Path) -> dict[str, Any]:
+def verify_package(
+    root: Path, *, archive_symlink_modes: dict[str, int] | None = None
+) -> dict[str, Any]:
     root = root.resolve()
     require(root.is_dir(), f"package root does not exist: {root}")
     manifest = load_json(root / "reference-manifest.json", "reference manifest")
@@ -621,7 +670,7 @@ def verify_package(root: Path) -> dict[str, Any]:
     platform = str(manifest["platform"])
     profile = str(manifest["profile"])
 
-    actual = _actual_inventory(root)
+    actual = _actual_inventory(root, symlink_modes=archive_symlink_modes)
     expected: dict[str, dict[str, Any]] = {}
     for raw in manifest["files"]:
         entry = _normalize_manifest_entry(raw)
@@ -679,6 +728,7 @@ def verify_package(root: Path) -> dict[str, Any]:
         platform=platform,
         profile=profile,
         manifest_sha256s=receipt_facts["manifest_sha256s"],
+        archive_symlink_modes=archive_symlink_modes,
     )
 
     build_path = _hashed_evidence(
@@ -743,9 +793,21 @@ def verify_package(root: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
+    parser.add_argument(
+        "--archive-symlink-modes",
+        type=Path,
+        help="archive-derived symlink modes for cross-host release-set verification",
+    )
     args = parser.parse_args()
     try:
-        manifest = verify_package(Path(args.root))
+        archive_symlink_modes = (
+            load_archive_symlink_modes(args.archive_symlink_modes)
+            if args.archive_symlink_modes is not None
+            else None
+        )
+        manifest = verify_package(
+            Path(args.root), archive_symlink_modes=archive_symlink_modes
+        )
     except VerificationError as exc:
         print("reference_package_result=fail")
         print(f"reference_package_error={exc}")
