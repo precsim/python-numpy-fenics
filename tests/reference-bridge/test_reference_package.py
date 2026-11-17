@@ -24,6 +24,44 @@ def digest(path: Path) -> str:
 
 
 class ReferencePackageTests(unittest.TestCase):
+    @staticmethod
+    def rehash_package_inventory(root: Path) -> None:
+        """Rehash the *outer* package attestations to test inner evidence bindings."""
+        manifest_path = root / "reference-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        records = (
+            ("qualification", "evidence/qualification-evidence.json"),
+            ("native_closure", "evidence/native-closure-evidence.json"),
+        )
+        for key, relative in records:
+            manifest[key]["evidence_sha256"] = digest(root / relative)
+        for entry in manifest["files"]:
+            if entry["kind"] == "file":
+                path = root / entry["path"]
+                entry["sha256"] = digest(path)
+                entry["bytes"] = path.stat().st_size
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        lines = [
+            f"{digest(path)}  {path.relative_to(root).as_posix()}"
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and path.name != "SHA256SUMS.txt"
+        ]
+        (root / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def refresh_qualification_hashes(inputs: dict[str, Path | str]) -> None:
+        path = Path(inputs["qualification"])
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for key, input_key in (
+            ("build_provenance_sha256", "build"),
+            ("runtime_receipt_sha256", "receipt"),
+            ("native_audit_sha256", "closure"),
+        ):
+            record[key] = digest(Path(inputs[input_key]))
+        path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     def make_inputs(self, root: Path) -> dict[str, Path | str]:
         producer_revision = "a" * 40
         mock_revision = "b" * 40
@@ -90,6 +128,24 @@ class ReferencePackageTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
+        closure = root / "native-closure.json"
+        closure.write_text(
+            json.dumps(
+                {
+                    "format_version": 1,
+                    "target": "linux-x64",
+                    "mex_sha256": mex_sha,
+                    "checks": {
+                        "exports": "mexFunction",
+                        "load_time_dependencies": "system-only",
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         qualification = root / "qualification.json"
         qualification.write_text(
             json.dumps(
@@ -101,24 +157,10 @@ class ReferencePackageTests(unittest.TestCase):
                     "source_revision": mock_revision,
                     "workflow_run_id": "test-run-123",
                     "mex_sha256": mex_sha,
+                    "build_provenance_sha256": digest(build),
+                    "runtime_receipt_sha256": digest(receipt),
+                    "native_audit_sha256": digest(closure),
                     "checks": {"octave_smoke": "pass", "relocation": "pass"},
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        closure = root / "native-closure.json"
-        closure.write_text(
-            json.dumps(
-                {
-                    "format_version": 1,
-                    "target": "linux-x64",
-                    "checks": {
-                        "exports": "mexFunction",
-                        "load_time_dependencies": "system-only",
-                    },
                 },
                 indent=2,
                 sort_keys=True,
@@ -277,6 +319,41 @@ class ReferencePackageTests(unittest.TestCase):
             self.assertNotEqual(tampered.returncode, 0)
             self.assertIn("reference_package_result=fail", tampered.stdout)
 
+    def test_offline_verifier_rejects_cross_binding_even_with_rehashed_manifest(self) -> None:
+        for scenario in ("build_provenance_sha256", "runtime_receipt_sha256", "native_audit_sha256", "native_mex"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                inputs = self.make_inputs(root)
+                archive = root / "reference.tar.gz"
+                packaged = subprocess.run(self.package_command(inputs, archive), text=True, capture_output=True)
+                self.assertEqual(packaged.returncode, 0, packaged.stderr)
+                extracted = self.extract_package(archive, root / "extract")
+                qualification_path = extracted / "evidence" / "qualification-evidence.json"
+                qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+                if scenario == "native_mex":
+                    native_path = extracted / "evidence" / "native-closure-evidence.json"
+                    native = json.loads(native_path.read_text(encoding="utf-8"))
+                    native["mex_sha256"] = "f" * 64
+                    native_path.write_text(json.dumps(native, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                    qualification["native_audit_sha256"] = digest(native_path)
+                else:
+                    qualification[scenario] = "f" * 64
+                qualification_path.write_text(
+                    json.dumps(qualification, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                self.rehash_package_inventory(extracted)
+                result = subprocess.run(
+                    [sys.executable, str(extracted / "verify-package.py")],
+                    text=True, capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                expected = (
+                    "native audit MEX SHA-256 differs from qualified candidate"
+                    if scenario == "native_mex"
+                    else f"qualification {scenario} differs from packaged evidence"
+                )
+                self.assertIn(expected, result.stdout)
+
     def test_packaging_rejects_unqualified_mex_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -329,6 +406,7 @@ class ReferencePackageTests(unittest.TestCase):
             closure = json.loads(closure_path.read_text(encoding="utf-8"))
             closure["target"] = "win-x64"
             closure_path.write_text(json.dumps(closure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            self.refresh_qualification_hashes(inputs)
 
             first = root / "first.zip"
             second = root / "second.zip"
@@ -450,6 +528,7 @@ class ReferencePackageTests(unittest.TestCase):
                 receipt_path.write_text(
                     json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
+                self.refresh_qualification_hashes(inputs)
 
             output = root / "fenics.zip"
             command = self.package_command(inputs, output)
@@ -579,6 +658,7 @@ class ReferencePackageTests(unittest.TestCase):
                 evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
                 evidence["profile"] = "fenics"
                 evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            self.refresh_qualification_hashes(inputs)
 
             archive = root / "fenics.tar.gz"
             command = self.package_command(inputs, archive)

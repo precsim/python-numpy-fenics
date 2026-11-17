@@ -198,8 +198,8 @@ jobs:
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "octave=$OCTAVE_MACOS_VERSION=$build" \
-            "openssl=$OCTAVE_MACOS_OPENSSL_VERSION=$openssl_build"
+            "$download" \
+            "$openssl_download"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
@@ -460,8 +460,8 @@ jobs:
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "octave=$OCTAVE_MACOS_VERSION=$build" \
-            "openssl=$OCTAVE_MACOS_OPENSSL_VERSION=$openssl_build"
+            "$download" \
+            "$openssl_download"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json

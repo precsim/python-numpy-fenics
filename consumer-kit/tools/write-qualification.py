@@ -48,6 +48,8 @@ def main() -> int:
         raise SystemExit("build provenance MEX SHA-256 differs from candidate")
     if audit.get("target") != args.platform:
         raise SystemExit("native audit target differs from qualification platform")
+    if audit.get("mex_sha256") != mex_sha:
+        raise SystemExit("native audit MEX SHA-256 differs from qualified candidate")
     if receipt.get("platform") != args.platform or receipt.get("profile") != args.profile:
         raise SystemExit("runtime receipt identity differs from qualification")
 

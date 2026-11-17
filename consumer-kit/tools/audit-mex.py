@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -197,6 +198,7 @@ def main() -> int:
     mex = args.mex.resolve()
     if not mex.is_file():
         raise SystemExit(f"MEX is missing: {mex}")
+    mex_sha = hashlib.sha256(mex.read_bytes()).hexdigest()
 
     checks: dict[str, object] = {}
     if args.target == "win-x64":
@@ -262,10 +264,17 @@ def main() -> int:
             load_time_dependencies="system-only",
         )
 
+    if hashlib.sha256(mex.read_bytes()).hexdigest() != mex_sha:
+        raise SystemExit("MEX changed during native audit")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(
-            {"format_version": 1, "target": args.target, "checks": checks},
+            {
+                "format_version": 1,
+                "target": args.target,
+                "mex_sha256": mex_sha,
+                "checks": checks,
+            },
             indent=2, sort_keys=True,
         ) + "\n",
         encoding="utf-8",

@@ -88,8 +88,9 @@ NumPy, and optional FEniCS probes.
 
 The consumer kit verifies immutable producer release receipts, stages runtimes
 transactionally, compiles one target MEX from an explicit source manifest,
-audits load-time dependencies, executes host acceptance, binds qualification
-evidence to the exact MEX SHA-256, and assembles offline-verifiable reference
+audits load-time dependencies against the exact candidate MEX SHA-256, executes
+host acceptance, cross-binds qualification to the build, runtime receipt, and
+native audit evidence hashes, and assembles offline-verifiable reference
 packages. The same target MEX bytes are reused across the selected runtime
 profiles. Producer runtimes are never rebuilt by this path.
 

@@ -111,6 +111,17 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
 
         build = root / "build.json"
         write_json(build, {"format_version": 1, "target": "linux-x64", "mex_sha256": mex_sha})
+        closure = root / "closure.json"
+        write_json(
+            closure,
+            {
+                "format_version": 1,
+                "target": "linux-x64",
+                "mex_sha256": mex_sha,
+                "status": "pass",
+                "summary": "exports=mexFunction; load_time_dependencies=system-only",
+            },
+        )
         qualification = root / "qualification.json"
         write_json(
             qualification,
@@ -122,16 +133,9 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
                 "source_revision": mock_revision,
                 "workflow_run_id": "4242",
                 "mex_sha256": mex_sha,
-            },
-        )
-        closure = root / "closure.json"
-        write_json(
-            closure,
-            {
-                "format_version": 1,
-                "target": "linux-x64",
-                "status": "pass",
-                "summary": "exports=mexFunction; load_time_dependencies=system-only",
+                "build_provenance_sha256": digest_file(build),
+                "runtime_receipt_sha256": digest_file(receipt),
+                "native_audit_sha256": digest_file(closure),
             },
         )
         backend = root / "mock_backend.py"
@@ -213,6 +217,39 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("staged runtime file differs from embedded producer manifest", result.stderr)
 
+    def test_packager_rejects_missing_or_incorrect_qualification_evidence_hashes(self) -> None:
+        for key in ("build_provenance_sha256", "runtime_receipt_sha256", "native_audit_sha256"):
+            for invalid in ("f" * 64, None):
+                with self.subTest(key=key, invalid=invalid), tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    inputs = self.make_inputs(root)
+                    path = Path(inputs["qualification"])
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    if invalid is None:
+                        del record[key]
+                    else:
+                        record[key] = invalid
+                    write_json(path, record)
+                    result = self.package(inputs, root / "rejected.tar.gz")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"qualification {key} differs from supplied evidence", result.stderr)
+
+    def test_packager_rejects_native_audit_for_different_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inputs = self.make_inputs(root)
+            audit_path = Path(inputs["closure"])
+            record = json.loads(audit_path.read_text(encoding="utf-8"))
+            record["mex_sha256"] = "f" * 64
+            write_json(audit_path, record)
+            qualification_path = Path(inputs["qualification"])
+            qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+            qualification["native_audit_sha256"] = digest_file(audit_path)
+            write_json(qualification_path, qualification)
+            result = self.package(inputs, root / "rejected.tar.gz")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("native audit MEX SHA-256 differs from qualified candidate", result.stderr)
+
     def test_packager_rejects_runtime_manifest_not_bound_by_stage_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -221,6 +258,10 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             receipt["layers"][0]["manifest"]["sha256"] = "f" * 64
             write_json(receipt_path, receipt)
+            qualification_path = Path(inputs["qualification"])
+            qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+            qualification["runtime_receipt_sha256"] = digest_file(receipt_path)
+            write_json(qualification_path, qualification)
             result = self.package(inputs, root / "rejected.tar.gz")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("runtime-manifest.json is not bound by the runtime receipt", result.stderr)

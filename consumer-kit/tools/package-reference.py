@@ -674,6 +674,19 @@ def package_reference(args: argparse.Namespace) -> Path:
 
     require_mex_binding(build, mex_sha, "build evidence")
     require_mex_binding(qualification, mex_sha, "qualification evidence")
+    for key, evidence_path in (
+        ("build_provenance_sha256", build_path),
+        ("runtime_receipt_sha256", receipt_path),
+        ("native_audit_sha256", closure_path),
+    ):
+        require(
+            qualification.get(key) == sha256_file(evidence_path),
+            f"qualification {key} differs from supplied evidence",
+        )
+    require(
+        native_closure.get("mex_sha256") == mex_sha,
+        "native audit MEX SHA-256 differs from qualified candidate",
+    )
     if build.get("target") is not None:
         require(build.get("target") == args.platform, "build evidence target differs from package platform")
     validate_evidence_identity(

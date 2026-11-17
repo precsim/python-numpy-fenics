@@ -750,6 +750,15 @@ def verify_package(
     )
     qualification = load_json(qualification_path, "qualification evidence")
     require(mex_sha in evidence_mex_digests(qualification), "qualification evidence no longer binds bridge.mex")
+    for key, evidence_path in (
+        ("build_provenance_sha256", build_path),
+        ("runtime_receipt_sha256", receipt_path),
+        ("native_audit_sha256", root / "evidence" / "native-closure-evidence.json"),
+    ):
+        require(
+            qualification.get(key) == sha256_file(evidence_path),
+            f"qualification {key} differs from packaged evidence",
+        )
     if qualification.get("platform") is not None:
         require(qualification.get("platform") == platform, "qualification platform differs from package")
     if qualification.get("profile") is not None:
@@ -772,6 +781,10 @@ def verify_package(
         expected_path="evidence/native-closure-evidence.json",
     )
     native_closure = load_json(closure_path, "native closure evidence")
+    require(
+        native_closure.get("mex_sha256") == mex_sha,
+        "native audit MEX SHA-256 differs from qualified candidate",
+    )
     require(native_closure_summary(native_closure, platform) == manifest["native_closure"]["summary"], "native closure summary differs from evidence")
 
     require((root / "runtime").is_dir(), "packaged runtime is missing")
