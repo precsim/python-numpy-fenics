@@ -74,6 +74,28 @@ class OctaveLoaderContractTests(unittest.TestCase):
         self.assertIn('--octave "$(command -v octave-cli)"', packaged)
         self.assertNotIn("octave=6.4.0-2", workflow)
 
+    def test_windows_qualification_uses_sha_pinned_octave_release_archive(self) -> None:
+        workflow = QUALIFY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("OCTAVE_WINDOWS_RELEASE_TAG: release-11-3-0", workflow)
+        self.assertIn(
+            "OCTAVE_WINDOWS_ARCHIVE_SHA256: fd3cf0e885467a15211b8ceded42800432a5462481324d49a896ef257e05d1a0",
+            workflow,
+        )
+        self.assertNotIn("choco install octave", workflow)
+        steps = workflow.split("      - name: Install pinned GNU Octave on Windows\n")[1:]
+        self.assertEqual(len(steps), 2)
+        for raw in steps:
+            step = raw.split("\n      - name:", 1)[0]
+            self.assertIn("--repo gnu-octave/octave", step)
+            self.assertIn('"octave-$env:OCTAVE_WINDOWS_VERSION-w64.7z"', step)
+            self.assertIn("Get-FileHash -LiteralPath $archive -Algorithm SHA256", step)
+            self.assertIn("$sha -ne $env:OCTAVE_WINDOWS_ARCHIVE_SHA256", step)
+            self.assertIn("Get-ChildItem -LiteralPath $root -Recurse -File -Filter octave-cli.exe", step)
+            self.assertIn("Get-ChildItem -LiteralPath $root -Recurse -File -Filter mex.h", step)
+            self.assertIn("OCTAVE_VERSION=$env:OCTAVE_WINDOWS_VERSION", step)
+            self.assertIn("OCTAVE_INCLUDE_DIRS=$($mexHeader.Directory.FullName)", step)
+            self.assertNotIn("C:\\Program Files\\GNU Octave", step)
+
 
 if __name__ == "__main__":
     unittest.main()
