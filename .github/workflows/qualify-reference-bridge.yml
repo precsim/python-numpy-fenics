@@ -43,7 +43,11 @@ env:
   OCTAVE_WINDOWS_VERSION: "11.3.0"
   OCTAVE_WINDOWS_RELEASE_TAG: release-11-3-0
   OCTAVE_WINDOWS_ARCHIVE_SHA256: fd3cf0e885467a15211b8ceded42800432a5462481324d49a896ef257e05d1a0
-  OCTAVE_MACOS_VERSION: "11.3.0"
+  OCTAVE_MACOS_VERSION: "10.3.0"
+  OCTAVE_MACOS_ARM64_BUILD: pl5321hb61a5b2_4
+  OCTAVE_MACOS_ARM64_SHA256: 88d228e05ee9e5bf08038ddd9678d3073d2f40060e7ace5704676ce94027c89f
+  OCTAVE_MACOS_X64_BUILD: pl5321hf9cc832_4
+  OCTAVE_MACOS_X64_SHA256: 52627df280641aa38099a5f4aad797306852fa8fff2dd3001559fd1a6b6ac341
   OCTAVE_LINUX_VERSION: "11.3.0"
   OCTAVE_LINUX_IMAGE: ghcr.io/gnu-octave/octave:11.3.0@sha256:185db7993e000d4f3f6e7bbbf7fb3f999f52e799ea52231ad8a15353381e0dcb
   MANYLINUX2014_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:0d25b049964b2549b83384036abdff06789a8c0b1e9ff003ec80f0d531f79e50
@@ -73,6 +77,12 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
+
+      - name: Set up pinned micromamba for macOS Octave
+        if: startsWith(matrix.target, 'macos-')
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
+        with:
+          micromamba-version: '2.10.0-0'
 
       - name: Install pinned GNU Octave on Windows
         if: matrix.target == 'win-x64'
@@ -145,8 +155,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install --force-bottle octave
-          test "$(octave-config -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          case "${{ matrix.target }}" in
+            macos-arm64)
+              subdir=osx-arm64
+              build="$OCTAVE_MACOS_ARM64_BUILD"
+              expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              ;;
+            macos-x64)
+              subdir=osx-64
+              build="$OCTAVE_MACOS_X64_BUILD"
+              expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              ;;
+            *)
+              echo "unexpected macOS target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+          archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
+          url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
+          download="$RUNNER_TEMP/$archive"
+          prefix="$RUNNER_TEMP/reference-octave-$subdir"
+          rm -f "$download"
+          rm -rf "$prefix"
+          curl --fail --location --retry 3 --output "$download" "$url"
+          printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
+            -p "$prefix" \
+            -c conda-forge \
+            --strict-channel-priority \
+            "$download"
+          "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
+          python3 - "$RUNNER_TEMP/reference-octave-packages.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
+          present = sorted(
+              record["name"]
+              for record in packages
+              if str(record.get("name", "")).lower() in forbidden
+          )
+          if present:
+              raise SystemExit(f"GNU Octave host environment contains an MPI runtime: {present}")
+          PY
+          if find "$prefix" -type f \( -name 'libmpi*.dylib' -o -name 'libmpich*.dylib' \) -print -quit | grep -q .; then
+            echo "GNU Octave host environment contains an MPI shared library" >&2
+            exit 1
+          fi
+          octave="$prefix/bin/octave-cli"
+          octave_config="$prefix/bin/octave-config"
+          test -x "$octave"
+          test -x "$octave_config"
+          test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
 
       - name: Stage and verify core build runtime
         shell: bash
@@ -249,6 +313,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up pinned micromamba for macOS Octave
+        if: startsWith(matrix.target, 'macos-')
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
+        with:
+          micromamba-version: '2.10.0-0'
+
       - name: Download exact target candidate
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -299,8 +369,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install --force-bottle octave
-          test "$(octave-config -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          case "${{ matrix.target }}" in
+            macos-arm64)
+              subdir=osx-arm64
+              build="$OCTAVE_MACOS_ARM64_BUILD"
+              expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              ;;
+            macos-x64)
+              subdir=osx-64
+              build="$OCTAVE_MACOS_X64_BUILD"
+              expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              ;;
+            *)
+              echo "unexpected macOS target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+          archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
+          url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
+          download="$RUNNER_TEMP/$archive"
+          prefix="$RUNNER_TEMP/reference-octave-$subdir"
+          rm -f "$download"
+          rm -rf "$prefix"
+          curl --fail --location --retry 3 --output "$download" "$url"
+          printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
+            -p "$prefix" \
+            -c conda-forge \
+            --strict-channel-priority \
+            "$download"
+          "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
+          python3 - "$RUNNER_TEMP/reference-octave-packages.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
+          present = sorted(
+              record["name"]
+              for record in packages
+              if str(record.get("name", "")).lower() in forbidden
+          )
+          if present:
+              raise SystemExit(f"GNU Octave host environment contains an MPI runtime: {present}")
+          PY
+          if find "$prefix" -type f \( -name 'libmpi*.dylib' -o -name 'libmpich*.dylib' \) -print -quit | grep -q .; then
+            echo "GNU Octave host environment contains an MPI shared library" >&2
+            exit 1
+          fi
+          octave="$prefix/bin/octave-cli"
+          octave_config="$prefix/bin/octave-config"
+          test -x "$octave"
+          test -x "$octave_config"
+          test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
 
       - name: Stage and re-attest selected runtime
         shell: bash
@@ -321,7 +445,7 @@ jobs:
         run: |
           set -euo pipefail
           runtime="build/reference/test/${{ matrix.target }}/${{ matrix.profile }}/runtime"
-          "$runtime/bin/python3.14" -I -c 'import numpy as np; assert np.__version__ == "2.5.2"; assert int(np.arange(6, dtype=np.int64).sum()) == 15; print(f"reference_numpy_standalone=pass:{np.__file__}")'
+          "$runtime/bin/python3.14" -B -I -c 'import numpy as np; assert np.__version__ == "2.5.2"; assert int(np.arange(6, dtype=np.int64).sum()) == 15; print(f"reference_numpy_standalone=pass:{np.__file__}")'
 
       - name: Execute GNU Octave host acceptance on Windows
         if: matrix.target == 'win-x64'

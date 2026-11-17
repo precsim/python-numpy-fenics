@@ -35,22 +35,45 @@ cmp -s "$source_mex" "$relocated_mex" || {
   exit 1
 }
 smoke="$relocated_root/host/mock_smoke.m"
+openssl_preload=""
+openssl_conf=""
+openssl_modules=""
+openssl_root="$relocated_root/runtime/fenics-runtime/conda"
+crypto_provider="$openssl_root/lib/libcrypto.so.3"
+ssl_provider="$openssl_root/lib/libssl.so.3"
+if [[ -f "$crypto_provider" && -f "$ssl_provider" ]]; then
+  openssl_preload="$crypto_provider:$ssl_provider"
+  openssl_conf="$openssl_root/ssl/openssl.cnf"
+  openssl_modules="$openssl_root/lib/ossl-modules"
+  [[ -f "$openssl_conf" ]] || {
+    echo "missing FEniCS OpenSSL configuration: $openssl_conf" >&2
+    exit 1
+  }
+  echo "reference_bridge_linux_openssl_provider=$crypto_provider"
+fi
 
 run_smoke() {
   local fresh="$1"
   local output
   local status
-  if output="$(
-    REFERENCE_BRIDGE_ROOT="$relocated_root" \
-    REFERENCE_BRIDGE_FRESH_ONLY="$fresh" \
-    PYTHONHOME="$poison/home" \
-    PYTHONPATH="$poison/python" \
-    PYTHONUSERBASE="$poison/user" \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONNOUSERSITE=1 \
-    XDG_CACHE_HOME="$poison/jit cache" \
-    "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
-  )"; then
+  local host_env=(
+    "REFERENCE_BRIDGE_ROOT=$relocated_root"
+    "REFERENCE_BRIDGE_FRESH_ONLY=$fresh"
+    "PYTHONHOME=$poison/home"
+    "PYTHONPATH=$poison/python"
+    "PYTHONUSERBASE=$poison/user"
+    "PYTHONDONTWRITEBYTECODE=1"
+    "PYTHONNOUSERSITE=1"
+    "XDG_CACHE_HOME=$poison/jit cache"
+  )
+  if [[ -n "$openssl_preload" ]]; then
+    host_env+=(
+      "LD_PRELOAD=$openssl_preload"
+      "OPENSSL_CONF=$openssl_conf"
+      "OPENSSL_MODULES=$openssl_modules"
+    )
+  fi
+  if output="$(env "${host_env[@]}" "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1)"; then
     status=0
   else
     status=$?
@@ -59,7 +82,15 @@ run_smoke() {
   if [[ "$status" -ne 0 ]]; then
     if [[ "$status" -eq 139 ]] && command -v gdb >/dev/null 2>&1; then
       local gdb_output
+      local gdb_openssl=()
       echo "reference_bridge_gdb_backtrace=begin" >&2
+      if [[ -n "$openssl_preload" ]]; then
+        gdb_openssl=(
+          -ex "set environment LD_PRELOAD $openssl_preload"
+          -ex "set environment OPENSSL_CONF $openssl_conf"
+          -ex "set environment OPENSSL_MODULES $openssl_modules"
+        )
+      fi
       if gdb_output="$(
         gdb --quiet --batch \
           -ex "set environment REFERENCE_BRIDGE_ROOT $relocated_root" \
@@ -70,6 +101,7 @@ run_smoke() {
           -ex 'set environment PYTHONDONTWRITEBYTECODE 1' \
           -ex 'set environment PYTHONNOUSERSITE 1' \
           -ex "set environment XDG_CACHE_HOME $poison/jit cache" \
+          "${gdb_openssl[@]}" \
           -ex run \
           -ex 'thread apply all bt' \
           --args "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1

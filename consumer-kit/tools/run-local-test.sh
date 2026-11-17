@@ -42,9 +42,12 @@ if [ -z "$python_cmd" ]; then
     fi
 fi
 
-"$python_cmd" "$script_dir/verify-package.py" --root "$script_dir"
+"$python_cmd" -B "$script_dir/verify-package.py" --root "$script_dir"
 
 omp_override=""
+openssl_preload=""
+openssl_conf=""
+openssl_modules=""
 if [ "$(uname -s)" = "Darwin" ]; then
     omp_provider="$script_dir/runtime/fenics-runtime/conda/lib/libomp.dylib"
     if [ -f "$omp_provider" ]; then
@@ -53,6 +56,20 @@ if [ "$(uname -s)" = "Darwin" ]; then
         DYLD_LIBRARY_PATH="$omp_override"
         export DYLD_LIBRARY_PATH
         echo "reference_bridge_macos_openmp_provider=$omp_provider"
+    fi
+elif [ "$(uname -s)" = "Linux" ]; then
+    openssl_root="$script_dir/runtime/fenics-runtime/conda"
+    crypto_provider="$openssl_root/lib/libcrypto.so.3"
+    ssl_provider="$openssl_root/lib/libssl.so.3"
+    if [ -f "$crypto_provider" ] && [ -f "$ssl_provider" ]; then
+        openssl_preload="$crypto_provider:$ssl_provider"
+        openssl_conf="$openssl_root/ssl/openssl.cnf"
+        openssl_modules="$openssl_root/lib/ossl-modules"
+        [ -f "$openssl_conf" ] || {
+            echo "reference_bridge_error=FEniCS OpenSSL configuration is missing: $openssl_conf" >&2
+            exit 1
+        }
+        echo "reference_bridge_linux_openssl_provider=$crypto_provider"
     fi
 fi
 
@@ -90,21 +107,38 @@ printf '%s\n' 'raise RuntimeError("ambient numpy must not load")' > "$poison/pyt
 
 run_smoke() {
     fresh=$1
-    if output=$(
-        REFERENCE_BRIDGE_ROOT="$script_dir" \
-        REFERENCE_BRIDGE_FRESH_ONLY="$fresh" \
-        PYTHONHOME="$poison/home" \
-        PYTHONPATH="$poison/python" \
-        PYTHONSTARTUP= \
-        PYTHONUSERBASE="$poison/user" \
-        PYTHONDONTWRITEBYTECODE=1 \
-        PYTHONNOUSERSITE=1 \
-        XDG_CACHE_HOME="$poison/jit cache" \
-        "$octave_cmd" --quiet --no-gui --no-init-file "$smoke" 2>&1
-    ); then
-        :
+    status=0
+    if [ -n "$openssl_preload" ]; then
+        output=$(
+            REFERENCE_BRIDGE_ROOT="$script_dir" \
+            REFERENCE_BRIDGE_FRESH_ONLY="$fresh" \
+            PYTHONHOME="$poison/home" \
+            PYTHONPATH="$poison/python" \
+            PYTHONSTARTUP= \
+            PYTHONUSERBASE="$poison/user" \
+            PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONNOUSERSITE=1 \
+            XDG_CACHE_HOME="$poison/jit cache" \
+            LD_PRELOAD="$openssl_preload" \
+            OPENSSL_CONF="$openssl_conf" \
+            OPENSSL_MODULES="$openssl_modules" \
+            "$octave_cmd" --quiet --no-gui --no-init-file "$smoke" 2>&1
+        ) || status=$?
     else
-        status=$?
+        output=$(
+            REFERENCE_BRIDGE_ROOT="$script_dir" \
+            REFERENCE_BRIDGE_FRESH_ONLY="$fresh" \
+            PYTHONHOME="$poison/home" \
+            PYTHONPATH="$poison/python" \
+            PYTHONSTARTUP= \
+            PYTHONUSERBASE="$poison/user" \
+            PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONNOUSERSITE=1 \
+            XDG_CACHE_HOME="$poison/jit cache" \
+            "$octave_cmd" --quiet --no-gui --no-init-file "$smoke" 2>&1
+        ) || status=$?
+    fi
+    if [ "$status" -ne 0 ]; then
         printf '%s\n' "$output" >&2
         echo "reference_bridge_error=Octave smoke test failed" >&2
         exit "$status"

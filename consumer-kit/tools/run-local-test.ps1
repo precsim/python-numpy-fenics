@@ -25,7 +25,7 @@ $PythonArgs = @()
 if ([System.IO.Path]::GetFileNameWithoutExtension($Python) -eq "py") {
     $PythonArgs += "-3"
 }
-$PythonArgs += @((Join-Path $PackageRoot "verify-package.py"), "--root", $PackageRoot)
+$PythonArgs += @("-B", (Join-Path $PackageRoot "verify-package.py"), "--root", $PackageRoot)
 & $Python @PythonArgs
 if ($LASTEXITCODE -ne 0) {
     throw "reference_bridge_error=package verification failed"

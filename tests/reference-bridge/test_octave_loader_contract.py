@@ -96,6 +96,55 @@ class OctaveLoaderContractTests(unittest.TestCase):
             self.assertIn("OCTAVE_INCLUDE_DIRS=$($mexHeader.Directory.FullName)", step)
             self.assertNotIn("C:\\Program Files\\GNU Octave", step)
 
+    def test_macos_qualification_uses_sha_pinned_nompi_octave_10_3_host(self) -> None:
+        workflow = QUALIFY_WORKFLOW.read_text(encoding="utf-8")
+        version_match = re.search(
+            r'^  OCTAVE_MACOS_VERSION: "([0-9]+)\.([0-9]+)\.([0-9]+)"$',
+            workflow,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(version_match)
+        assert version_match is not None
+        version = tuple(int(part) for part in version_match.groups())
+        self.assertGreaterEqual(version[:2], (10, 2))
+        self.assertEqual(version, (10, 3, 0))
+        self.assertIn("OCTAVE_MACOS_ARM64_BUILD: pl5321hb61a5b2_4", workflow)
+        self.assertIn(
+            "OCTAVE_MACOS_ARM64_SHA256: 88d228e05ee9e5bf08038ddd9678d3073d2f40060e7ace5704676ce94027c89f",
+            workflow,
+        )
+        self.assertIn("OCTAVE_MACOS_X64_BUILD: pl5321hf9cc832_4", workflow)
+        self.assertIn(
+            "OCTAVE_MACOS_X64_SHA256: 52627df280641aa38099a5f4aad797306852fa8fff2dd3001559fd1a6b6ac341",
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count(
+                "uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39"
+            ),
+            2,
+        )
+        self.assertNotIn("brew install --force-bottle octave", workflow)
+
+        steps = workflow.split("      - name: Install pinned GNU Octave on macOS\n")[1:]
+        self.assertEqual(len(steps), 2)
+        for raw in steps:
+            step = raw.split("\n      - name:", 1)[0]
+            self.assertIn("https://conda.anaconda.org/conda-forge/$subdir/$archive", step)
+            self.assertIn("shasum -a 256 -c -", step)
+            self.assertIn('"$MAMBA_EXE" create -y', step)
+            self.assertIn("--strict-channel-priority", step)
+            self.assertIn('forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}', step)
+            self.assertIn("-name 'libmpi*.dylib'", step)
+            self.assertIn("-name 'libmpich*.dylib'", step)
+            self.assertIn('test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"', step)
+            self.assertIn('echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"', step)
+
+    def test_linux_standalone_numpy_probe_cannot_rewrite_runtime_bytecode(self) -> None:
+        workflow = QUALIFY_WORKFLOW.read_text(encoding="utf-8")
+        smoke = workflow_step(workflow, "Smoke standalone staged NumPy on Linux")
+        self.assertIn('"$runtime/bin/python3.14" -B -I -c', smoke)
+
 
 if __name__ == "__main__":
     unittest.main()

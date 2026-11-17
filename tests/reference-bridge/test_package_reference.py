@@ -271,6 +271,8 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
         powershell = (TOOLS / "run-local-test.ps1").read_text(encoding="utf-8")
         self.assertLess(shell.index("verify-package.py"), shell.index("octave_cmd" , shell.index("verify-package.py")))
         self.assertLess(powershell.index("verify-package.py"), powershell.index("$Octave", powershell.index("verify-package.py")))
+        self.assertIn('"$python_cmd" -B "$script_dir/verify-package.py"', shell)
+        self.assertIn('$PythonArgs += @("-B", (Join-Path $PackageRoot "verify-package.py")', powershell)
         forbidden = ("curl ", "wget ", "Invoke-WebRequest", "pip install", "conda ", "gcc ", "clang ", " cl ")
         for launcher in (shell, powershell):
             lowered = launcher.lower()
@@ -293,6 +295,19 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
         self.assertIn('export DYLD_LIBRARY_PATH="$omp_override"', macos)
         self.assertNotIn("KMP_DUPLICATE_LIB_OK", shell)
         self.assertNotIn("KMP_DUPLICATE_LIB_OK", macos)
+
+    def test_linux_fenics_launchers_bind_packaged_openssl_before_octave(self) -> None:
+        shell = (TOOLS / "run-local-test.sh").read_text(encoding="utf-8")
+        linux = (TOOLS / "test-octave-linux.sh").read_text(encoding="utf-8")
+        for launcher in (shell, linux):
+            self.assertIn("runtime/fenics-runtime/conda", launcher)
+            self.assertIn("lib/libcrypto.so.3", launcher)
+            self.assertIn("lib/libssl.so.3", launcher)
+            self.assertIn("ssl/openssl.cnf", launcher)
+            self.assertIn("lib/ossl-modules", launcher)
+            self.assertIn("LD_PRELOAD", launcher)
+            self.assertIn("OPENSSL_CONF", launcher)
+            self.assertIn("OPENSSL_MODULES", launcher)
 
 
 if __name__ == "__main__":
