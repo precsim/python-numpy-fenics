@@ -194,12 +194,12 @@ jobs:
           printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
           curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
           printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
-          CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
-            -p "$prefix" \
-            -c conda-forge \
-            --strict-channel-priority \
-            "$download" \
-            "$openssl_download"
+          python3 consumer-kit/tools/install-pinned-octave-macos.py \
+            --micromamba "$MAMBA_EXE" --prefix "$prefix" --subdir "$subdir" \
+            --octave-archive "$download" --octave-sha256 "$expected_sha" \
+            --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
+            --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
@@ -456,12 +456,12 @@ jobs:
           printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
           curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
           printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
-          CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
-            -p "$prefix" \
-            -c conda-forge \
-            --strict-channel-priority \
-            "$download" \
-            "$openssl_download"
+          python3 consumer-kit/tools/install-pinned-octave-macos.py \
+            --micromamba "$MAMBA_EXE" --prefix "$prefix" --subdir "$subdir" \
+            --octave-archive "$download" --octave-sha256 "$expected_sha" \
+            --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
+            --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
