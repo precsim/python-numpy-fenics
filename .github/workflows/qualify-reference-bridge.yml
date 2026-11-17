@@ -1,0 +1,873 @@
+name: qualify-reference-bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: Runtime profiles to qualify
+        required: true
+        default: core+numpy
+        type: choice
+        options:
+          - core
+          - core+numpy
+          - core+numpy+fenics
+  pull_request:
+    paths:
+      - ".github/workflows/qualify-reference-bridge.yml"
+      - "consumer-kit/**"
+      - "reference-bridge/**"
+      - "locks/consumer/reference-runtime-v1.json"
+      - "tests/reference-bridge/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/qualify-reference-bridge.yml"
+      - "consumer-kit/**"
+      - "reference-bridge/**"
+      - "locks/consumer/reference-runtime-v1.json"
+      - "tests/reference-bridge/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reference-bridge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REFERENCE_RUNTIME_RECEIPT: locks/consumer/reference-runtime-v1.json
+  REFERENCE_VERSION: v0.1.0-rc1
+  RC2_PRODUCER_REVISION: 88f36aaa09fb8a84ea528d5823d9b0be043cfa3e
+  OCTAVE_WINDOWS_VERSION: "11.3.0"
+  OCTAVE_WINDOWS_RELEASE_TAG: release-11-3-0
+  OCTAVE_WINDOWS_ARCHIVE_SHA256: fd3cf0e885467a15211b8ceded42800432a5462481324d49a896ef257e05d1a0
+  OCTAVE_MACOS_VERSION: "10.3.0"
+  OCTAVE_MACOS_ARM64_BUILD: pl5321hb61a5b2_4
+  OCTAVE_MACOS_ARM64_SHA256: 88d228e05ee9e5bf08038ddd9678d3073d2f40060e7ace5704676ce94027c89f
+  OCTAVE_MACOS_ARM64_OPENSSL_BUILD: h55eecbc_0
+  OCTAVE_MACOS_ARM64_OPENSSL_SHA256: a26829f8d4ed2631216a8543ef7704d2cff90ce43e381015530ab21cf762b681
+  OCTAVE_MACOS_X64_BUILD: pl5321hf9cc832_4
+  OCTAVE_MACOS_X64_SHA256: 52627df280641aa38099a5f4aad797306852fa8fff2dd3001559fd1a6b6ac341
+  OCTAVE_MACOS_X64_OPENSSL_BUILD: h332eb6d_0
+  OCTAVE_MACOS_X64_OPENSSL_SHA256: 4747221abec91a82a8ebd7e8b36eac90c21c74435f9473c86c0e41a9305f2183
+  OCTAVE_MACOS_OPENSSL_VERSION: "3.5.9"
+  OCTAVE_LINUX_VERSION: "11.3.0"
+  OCTAVE_LINUX_IMAGE: ghcr.io/gnu-octave/octave:11.3.0@sha256:185db7993e000d4f3f6e7bbbf7fb3f999f52e799ea52231ad8a15353381e0dcb
+  MANYLINUX2014_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:0d25b049964b2549b83384036abdff06789a8c0b1e9ff003ec80f0d531f79e50
+
+jobs:
+  build:
+    name: build-once / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win-x64
+            runner: windows-2022
+          - target: linux-x64
+            runner: ubuntu-22.04
+          - target: macos-arm64
+            runner: macos-15
+          - target: macos-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up bootstrap Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Set up pinned micromamba for macOS Octave
+        if: startsWith(matrix.target, 'macos-')
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
+        with:
+          micromamba-version: '2.10.0-0'
+
+      - name: Install pinned GNU Octave on Windows
+        if: matrix.target == 'win-x64'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archiveName = "octave-$env:OCTAVE_WINDOWS_VERSION-w64.7z"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $root = Join-Path $env:RUNNER_TEMP "octave-$env:OCTAVE_WINDOWS_VERSION"
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          gh release download $env:OCTAVE_WINDOWS_RELEASE_TAG --repo gnu-octave/octave --pattern $archiveName --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "failed to download pinned GNU Octave release asset" }
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $env:OCTAVE_WINDOWS_ARCHIVE_SHA256) {
+            throw "GNU Octave archive SHA-256 mismatch: $sha"
+          }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          & 7z x $archive "-o$root" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "failed to extract pinned GNU Octave archive" }
+          $octave = Get-ChildItem -LiteralPath $root -Recurse -File -Filter octave-cli.exe |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $octave) {
+            throw "GNU Octave executable was not found in pinned release archive"
+          }
+          $mexHeader = Get-ChildItem -LiteralPath $root -Recurse -File -Filter mex.h |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $mexHeader) {
+            throw "GNU Octave mex.h was not found in pinned release archive"
+          }
+          $version = (& $octave.FullName --version | Select-Object -First 1)
+          if ($version -notmatch [regex]::Escape($env:OCTAVE_WINDOWS_VERSION)) {
+            throw "unexpected GNU Octave version: $version"
+          }
+          $bin = Split-Path -Parent $octave.FullName
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "REFERENCE_OCTAVE=$($octave.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OCTAVE_VERSION=$env:OCTAVE_WINDOWS_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OCTAVE_INCLUDE_DIRS=$($mexHeader.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Source pinned GNU Octave headers on Linux
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$GITHUB_WORKSPACE"
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              octave_include="$(octave-config -p OCTINCLUDEDIR)"
+              test -f "$octave_include/mex.h"
+              rm -rf build/octave-headers
+              mkdir -p build/octave-headers
+              cp -a "$octave_include/." build/octave-headers/
+            '
+
+      - name: Install pinned GNU Octave on macOS
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            macos-arm64)
+              subdir=osx-arm64
+              build="$OCTAVE_MACOS_ARM64_BUILD"
+              expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              openssl_build="$OCTAVE_MACOS_ARM64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_ARM64_OPENSSL_SHA256"
+              ;;
+            macos-x64)
+              subdir=osx-64
+              build="$OCTAVE_MACOS_X64_BUILD"
+              expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              openssl_build="$OCTAVE_MACOS_X64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_X64_OPENSSL_SHA256"
+              ;;
+            *)
+              echo "unexpected macOS target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+          archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
+          url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
+          download="$RUNNER_TEMP/$archive"
+          openssl_archive="openssl-$OCTAVE_MACOS_OPENSSL_VERSION-$openssl_build.conda"
+          openssl_url="https://conda.anaconda.org/conda-forge/$subdir/$openssl_archive"
+          openssl_download="$RUNNER_TEMP/$openssl_archive"
+          prefix="$RUNNER_TEMP/reference-octave-$subdir"
+          rm -f "$download"
+          rm -f "$openssl_download"
+          rm -rf "$prefix"
+          curl --fail --location --retry 3 --output "$download" "$url"
+          printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
+          printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
+          python3 consumer-kit/tools/install-pinned-octave-macos.py \
+            --micromamba "$MAMBA_EXE" --prefix "$prefix" --subdir "$subdir" \
+            --octave-archive "$download" --octave-sha256 "$expected_sha" \
+            --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
+            --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
+          "$MAMBA_EXE" list -p "$prefix"
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          prefix = pathlib.Path(sys.argv[1])
+          expected_version = sys.argv[2]
+          expected_build = sys.argv[3]
+          expected_openssl_version = sys.argv[4]
+          expected_openssl_build = sys.argv[5]
+          packages = [
+              json.loads(path.read_text(encoding="utf-8"))
+              for path in sorted((prefix / "conda-meta").glob("*.json"))
+          ]
+          octave = [record for record in packages if record.get("name") == "octave"]
+          if len(octave) != 1:
+              raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")
+          octave_build = octave[0].get("build_string", octave[0].get("build"))
+          if octave[0].get("version") != expected_version or octave_build != expected_build:
+              raise SystemExit(
+                  "GNU Octave package identity mismatch: "
+                  f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
+          openssl = [record for record in packages if record.get("name") == "openssl"]
+          if len(openssl) != 1:
+              raise SystemExit(f"expected one OpenSSL package, found {len(openssl)}")
+          openssl_build = openssl[0].get("build_string", openssl[0].get("build"))
+          if (
+              openssl[0].get("version") != expected_openssl_version
+              or openssl_build != expected_openssl_build
+          ):
+              raise SystemExit(
+                  "GNU Octave OpenSSL identity mismatch: "
+                  f"{openssl[0].get('version')}={openssl_build} != "
+                  f"{expected_openssl_version}={expected_openssl_build}"
+              )
+          forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
+          present = sorted(
+              record["name"]
+              for record in packages
+              if str(record.get("name", "")).lower() in forbidden
+          )
+          if present:
+              raise SystemExit(f"GNU Octave host environment contains an MPI runtime: {present}")
+          PY
+          if find "$prefix" -type f \( -name 'libmpi*.dylib' -o -name 'libmpich*.dylib' \) -print -quit | grep -q .; then
+            echo "GNU Octave host environment contains an MPI shared library" >&2
+            exit 1
+          fi
+          octave="$prefix/bin/octave-cli"
+          octave_config="$prefix/bin/octave-config"
+          test -x "$octave"
+          test -x "$octave_config"
+          export OCTAVE_HOME="$prefix"
+          test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          test "$("$octave_config" -p OCTAVE_HOME)" = "$prefix"
+          mex_header="$(find "$prefix/include" -type f -name mex.h -print -quit)"
+          test -n "$mex_header"
+          test -f "$mex_header"
+          echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
+          echo "OCTAVE_HOME=$prefix" >> "$GITHUB_ENV"
+          echo "OCTAVE_VERSION=$OCTAVE_MACOS_VERSION" >> "$GITHUB_ENV"
+          echo "OCTAVE_INCLUDE_DIRS=$(dirname "$mex_header")" >> "$GITHUB_ENV"
+
+      - name: Stage and verify core build runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python consumer-kit/tools/stage-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile core --cache build/reference-cache --output "build/reference/build-core/${{ matrix.target }}/runtime" --record "build/reference/build-core/${{ matrix.target }}/runtime-receipt.json"
+          python consumer-kit/tools/verify-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile core --cache build/reference-cache --runtime "build/reference/build-core/${{ matrix.target }}/runtime" --record "build/reference/build-core/${{ matrix.target }}/runtime-verify.json"
+
+      - name: Build candidate with MSVC
+        if: matrix.target == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & consumer-kit/tools/build.ps1 `
+            --manifest reference-bridge/bridge-build.json `
+            --source-root reference-bridge `
+            --runtime "build/reference/build-core/${{ matrix.target }}/runtime" `
+            --output-dir "build/reference/candidate/${{ matrix.target }}" `
+            --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
+
+      - name: Build Linux candidate in pinned manylinux2014
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f build/octave-headers/mex.h
+          workspace="$GITHUB_WORKSPACE"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e "GITHUB_SHA=$GITHUB_SHA" \
+            -e "OCTAVE_VERSION=$OCTAVE_LINUX_VERSION" \
+            -e "OCTAVE_INCLUDE_DIRS=$workspace/build/octave-headers" \
+            -e "PYTHON=/opt/python/cp312-cp312/bin/python" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            "$MANYLINUX2014_IMAGE" \
+            bash consumer-kit/tools/build-linux.sh \
+              --manifest reference-bridge/bridge-build.json \
+              --source-root reference-bridge \
+              --runtime "build/reference/build-core/${{ matrix.target }}/runtime" \
+              --output-dir "build/reference/candidate/${{ matrix.target }}" \
+              --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
+
+      - name: Build macOS candidate with Clang
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          REFERENCE_BRIDGE_TARGET="${{ matrix.target }}" \
+            bash consumer-kit/tools/build-macos.sh \
+              --manifest reference-bridge/bridge-build.json \
+              --source-root reference-bridge \
+              --runtime "build/reference/build-core/${{ matrix.target }}/runtime" \
+              --output-dir "build/reference/candidate/${{ matrix.target }}" \
+              --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json"
+
+      - name: Upload immutable candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reference-bridge-candidate-${{ matrix.target }}
+          path: build/reference/candidate/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  qualify:
+    name: qualify / ${{ matrix.target }} / ${{ matrix.profile }}
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - win-x64
+          - linux-x64
+          - macos-arm64
+          - macos-x64
+        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profiles == 'core' && '["core"]' || github.event_name == 'workflow_dispatch' && inputs.profiles == 'core+numpy' && '["core","numpy"]' || '["core","numpy","fenics"]') }}
+        include:
+          - target: win-x64
+            runner: windows-2022
+            archive_ext: zip
+          - target: linux-x64
+            runner: ubuntu-22.04
+            archive_ext: tar.gz
+          - target: macos-arm64
+            runner: macos-15
+            archive_ext: tar.gz
+          - target: macos-x64
+            runner: macos-15-intel
+            archive_ext: tar.gz
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up bootstrap Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Set up pinned micromamba for macOS Octave
+        if: startsWith(matrix.target, 'macos-')
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
+        with:
+          micromamba-version: '2.10.0-0'
+
+      - name: Download exact target candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: reference-bridge-candidate-${{ matrix.target }}
+          path: build/reference/candidate/${{ matrix.target }}
+
+      - name: Install pinned GNU Octave on Windows
+        if: matrix.target == 'win-x64'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archiveName = "octave-$env:OCTAVE_WINDOWS_VERSION-w64.7z"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $root = Join-Path $env:RUNNER_TEMP "octave-$env:OCTAVE_WINDOWS_VERSION"
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          gh release download $env:OCTAVE_WINDOWS_RELEASE_TAG --repo gnu-octave/octave --pattern $archiveName --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "failed to download pinned GNU Octave release asset" }
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $env:OCTAVE_WINDOWS_ARCHIVE_SHA256) {
+            throw "GNU Octave archive SHA-256 mismatch: $sha"
+          }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          & 7z x $archive "-o$root" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "failed to extract pinned GNU Octave archive" }
+          $octave = Get-ChildItem -LiteralPath $root -Recurse -File -Filter octave-cli.exe |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $octave) { throw "GNU Octave executable was not found in pinned release archive" }
+          $mexHeader = Get-ChildItem -LiteralPath $root -Recurse -File -Filter mex.h |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $mexHeader) { throw "GNU Octave mex.h was not found in pinned release archive" }
+          $version = (& $octave.FullName --version | Select-Object -First 1)
+          if ($version -notmatch [regex]::Escape($env:OCTAVE_WINDOWS_VERSION)) {
+            throw "unexpected GNU Octave version: $version"
+          }
+          $bin = Split-Path -Parent $octave.FullName
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "REFERENCE_OCTAVE=$($octave.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OCTAVE_VERSION=$env:OCTAVE_WINDOWS_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OCTAVE_INCLUDE_DIRS=$($mexHeader.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install pinned GNU Octave on macOS
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            macos-arm64)
+              subdir=osx-arm64
+              build="$OCTAVE_MACOS_ARM64_BUILD"
+              expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              openssl_build="$OCTAVE_MACOS_ARM64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_ARM64_OPENSSL_SHA256"
+              ;;
+            macos-x64)
+              subdir=osx-64
+              build="$OCTAVE_MACOS_X64_BUILD"
+              expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              openssl_build="$OCTAVE_MACOS_X64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_X64_OPENSSL_SHA256"
+              ;;
+            *)
+              echo "unexpected macOS target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+          archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
+          url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
+          download="$RUNNER_TEMP/$archive"
+          openssl_archive="openssl-$OCTAVE_MACOS_OPENSSL_VERSION-$openssl_build.conda"
+          openssl_url="https://conda.anaconda.org/conda-forge/$subdir/$openssl_archive"
+          openssl_download="$RUNNER_TEMP/$openssl_archive"
+          prefix="$RUNNER_TEMP/reference-octave-$subdir"
+          rm -f "$download"
+          rm -f "$openssl_download"
+          rm -rf "$prefix"
+          curl --fail --location --retry 3 --output "$download" "$url"
+          printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
+          printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
+          python3 consumer-kit/tools/install-pinned-octave-macos.py \
+            --micromamba "$MAMBA_EXE" --prefix "$prefix" --subdir "$subdir" \
+            --octave-archive "$download" --octave-sha256 "$expected_sha" \
+            --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
+            --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
+          "$MAMBA_EXE" list -p "$prefix"
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          prefix = pathlib.Path(sys.argv[1])
+          expected_version = sys.argv[2]
+          expected_build = sys.argv[3]
+          expected_openssl_version = sys.argv[4]
+          expected_openssl_build = sys.argv[5]
+          packages = [
+              json.loads(path.read_text(encoding="utf-8"))
+              for path in sorted((prefix / "conda-meta").glob("*.json"))
+          ]
+          octave = [record for record in packages if record.get("name") == "octave"]
+          if len(octave) != 1:
+              raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")
+          octave_build = octave[0].get("build_string", octave[0].get("build"))
+          if octave[0].get("version") != expected_version or octave_build != expected_build:
+              raise SystemExit(
+                  "GNU Octave package identity mismatch: "
+                  f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
+          openssl = [record for record in packages if record.get("name") == "openssl"]
+          if len(openssl) != 1:
+              raise SystemExit(f"expected one OpenSSL package, found {len(openssl)}")
+          openssl_build = openssl[0].get("build_string", openssl[0].get("build"))
+          if (
+              openssl[0].get("version") != expected_openssl_version
+              or openssl_build != expected_openssl_build
+          ):
+              raise SystemExit(
+                  "GNU Octave OpenSSL identity mismatch: "
+                  f"{openssl[0].get('version')}={openssl_build} != "
+                  f"{expected_openssl_version}={expected_openssl_build}"
+              )
+          forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
+          present = sorted(
+              record["name"]
+              for record in packages
+              if str(record.get("name", "")).lower() in forbidden
+          )
+          if present:
+              raise SystemExit(f"GNU Octave host environment contains an MPI runtime: {present}")
+          PY
+          if find "$prefix" -type f \( -name 'libmpi*.dylib' -o -name 'libmpich*.dylib' \) -print -quit | grep -q .; then
+            echo "GNU Octave host environment contains an MPI shared library" >&2
+            exit 1
+          fi
+          octave="$prefix/bin/octave-cli"
+          octave_config="$prefix/bin/octave-config"
+          test -x "$octave"
+          test -x "$octave_config"
+          export OCTAVE_HOME="$prefix"
+          test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
+          test "$("$octave_config" -p OCTAVE_HOME)" = "$prefix"
+          mex_header="$(find "$prefix/include" -type f -name mex.h -print -quit)"
+          test -n "$mex_header"
+          test -f "$mex_header"
+          echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
+          echo "OCTAVE_HOME=$prefix" >> "$GITHUB_ENV"
+          echo "OCTAVE_VERSION=$OCTAVE_MACOS_VERSION" >> "$GITHUB_ENV"
+          echo "OCTAVE_INCLUDE_DIRS=$(dirname "$mex_header")" >> "$GITHUB_ENV"
+
+      - name: Stage and re-attest selected runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="build/reference/test/${{ matrix.target }}/${{ matrix.profile }}"
+          record="build/reference/records/${{ matrix.target }}-${{ matrix.profile }}.json"
+          verify_record="build/reference/records/${{ matrix.target }}-${{ matrix.profile }}-verify.json"
+          python consumer-kit/tools/stage-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --cache build/reference-cache --output "$root/runtime" --record "$record"
+          python consumer-kit/tools/verify-runtime.py --receipt "$REFERENCE_RUNTIME_RECEIPT" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --cache build/reference-cache --runtime "$root/runtime" --record "$verify_record"
+          python consumer-kit/tools/prepare-test-layout.py --package-root "$root" --mex "build/reference/candidate/${{ matrix.target }}/bridge.mex" --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --runtime-record "$record" --backend reference-bridge/python/mock_backend.py --host-fixture reference-bridge/host/mock_smoke.m
+
+      - name: Smoke standalone staged NumPy on Linux
+        if: matrix.target == 'linux-x64' && matrix.profile != 'core'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="build/reference/test/${{ matrix.target }}/${{ matrix.profile }}/runtime"
+          "$runtime/bin/python3.14" -B -I -c 'import numpy as np; assert np.__version__ == "2.5.2"; assert int(np.arange(6, dtype=np.int64).sum()) == 15; print(f"reference_numpy_standalone=pass:{np.__file__}")'
+
+      - name: Execute GNU Octave host acceptance on Windows
+        if: matrix.target == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & consumer-kit/tools/test-octave.ps1 -PackageRoot "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" -Octave $env:REFERENCE_OCTAVE
+
+      - name: Execute GNU Octave host acceptance on Linux
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$GITHUB_WORKSPACE"
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              bash consumer-kit/tools/test-octave-linux.sh \
+                --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" \
+                --octave "$(command -v octave-cli)"
+            '
+
+      - name: Execute GNU Octave host acceptance on macOS
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash consumer-kit/tools/test-octave-macos.sh --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" --octave "$REFERENCE_OCTAVE"
+
+      - name: Write exact-candidate qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python consumer-kit/tools/write-qualification.py --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --mex "build/reference/candidate/${{ matrix.target }}/bridge.mex" --build-provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json" --runtime-receipt "build/reference/records/${{ matrix.target }}-${{ matrix.profile }}.json" --native-audit "build/reference/candidate/${{ matrix.target }}/native-audit.json" --output "build/reference/qualification-reference-${{ matrix.target }}-${{ matrix.profile }}.json" --check octave_host=pass --check repeated_calls=pass --check fresh_process=pass --check relocated_runtime=pass --check native_boundary=pass
+
+      - name: Assemble deterministic reference package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION.${{ matrix.archive_ext }}"
+          python consumer-kit/tools/package-reference.py --mex "build/reference/candidate/${{ matrix.target }}/bridge.mex" --runtime "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}/runtime" --runtime-receipt "build/reference/records/${{ matrix.target }}-${{ matrix.profile }}.json" --build-evidence "build/reference/candidate/${{ matrix.target }}/build-provenance.json" --qualification-evidence "build/reference/qualification-reference-${{ matrix.target }}-${{ matrix.profile }}.json" --native-closure-evidence "build/reference/candidate/${{ matrix.target }}/native-audit.json" --backend reference-bridge/python/mock_backend.py --host-fixture reference-bridge/host/mock_smoke.m --platform "${{ matrix.target }}" --profile "${{ matrix.profile }}" --producer-revision "$RC2_PRODUCER_REVISION" --mock-revision "$GITHUB_SHA" --version "$REFERENCE_VERSION" --license LICENSE.txt --provenance "build/reference/candidate/${{ matrix.target }}/build-provenance.json" --output "$package"
+          python consumer-kit/tools/write-sha256.py "$package"
+
+      - name: Extract and test packaged bytes on Windows
+        if: matrix.target == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = "build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$env:REFERENCE_VERSION.zip"
+          $destination = "build/reference/relocated package with spaces"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Expand-Archive -LiteralPath $package -DestinationPath $destination
+          $root = Join-Path $destination "reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$env:REFERENCE_VERSION"
+          & (Join-Path $root "run-local-test.ps1") -Octave $env:REFERENCE_OCTAVE
+
+      - name: Extract and test packaged bytes on Linux
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION.tar.gz"
+          destination="build/reference/relocated package with spaces"
+          mkdir -p "$destination"
+          tar -xzf "$package" -C "$destination"
+          workspace="$GITHUB_WORKSPACE"
+          root="$workspace/$destination/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
+          docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e "OCTAVE_LINUX_VERSION=$OCTAVE_LINUX_VERSION" \
+            -e "PACKAGE_ROOT=$root" \
+            -v "$workspace:$workspace" \
+            -w "$workspace" \
+            --entrypoint bash \
+            "$OCTAVE_LINUX_IMAGE" \
+            -lc '
+              set -euo pipefail
+              test "$(octave-config -p VERSION)" = "$OCTAVE_LINUX_VERSION"
+              "$PACKAGE_ROOT/run-local-test.sh" \
+                --octave "$(command -v octave-cli)" \
+                --python "$PACKAGE_ROOT/runtime/bin/python3.14"
+            '
+
+      - name: Extract and test packaged bytes on macOS
+        if: startsWith(matrix.target, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION.tar.gz"
+          destination="build/reference/relocated package with spaces"
+          mkdir -p "$destination"
+          tar -xzf "$package" -C "$destination"
+          root="$destination/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
+          "$root/run-local-test.sh" --octave "$REFERENCE_OCTAVE"
+
+      - name: Reject tampered extracted package
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="build/reference/relocated package with spaces/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
+          python consumer-kit/tools/assert-tamper-detected.py --root "$root"
+
+      - name: Upload qualified reference package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reference-package-${{ matrix.target }}-${{ matrix.profile }}
+          path: |
+            build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-${{ env.REFERENCE_VERSION }}.${{ matrix.archive_ext }}
+            build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-${{ env.REFERENCE_VERSION }}.${{ matrix.archive_ext }}.sha256
+            build/reference/qualification-reference-${{ matrix.target }}-${{ matrix.profile }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate-release-set:
+    name: aggregate verified release set
+    needs:
+      - qualify
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Require successful profile qualification matrix
+        shell: bash
+        env:
+          QUALIFY_RESULT: ${{ needs.qualify.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$QUALIFY_RESULT" != "success" ]]; then
+            echo "qualification matrix did not succeed: $QUALIFY_RESULT" >&2
+            exit 1
+          fi
+
+      - name: Classify release-set promotion scope
+        id: release_scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PROFILES: ${{ github.event_name == 'workflow_dispatch' && inputs.profiles || 'core+numpy+fenics' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_PROFILES" in
+            core)
+              if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+                echo "core-only qualification is valid only for explicit workflow_dispatch" >&2
+                exit 1
+              fi
+              echo "promotable=false" >> "$GITHUB_OUTPUT"
+              echo "profiles=core" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=non-promotable-core-only"
+              echo "reference_release_set_reason=core-only lacks required numpy packages"
+              ;;
+            core+numpy)
+              echo "promotable=false" >> "$GITHUB_OUTPUT"
+              echo "profiles=core+numpy" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=non-promotable-core+numpy"
+              echo "reference_release_set_reason=full publication requires FEniCS qualification on every target"
+              ;;
+            core+numpy+fenics)
+              echo "promotable=true" >> "$GITHUB_OUTPUT"
+              echo "profiles=$REQUESTED_PROFILES" >> "$GITHUB_OUTPUT"
+              echo "reference_release_set=promotable-$REQUESTED_PROFILES"
+              ;;
+            *)
+              echo "unexpected qualification profile set: $REQUESTED_PROFILES" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Confirm partial qualification is non-promotable
+        if: steps.release_scope.outputs.promotable == 'false'
+        shell: bash
+        env:
+          PROFILE_SET: ${{ steps.release_scope.outputs.profiles }}
+        run: |
+          set -euo pipefail
+          case "$PROFILE_SET" in
+            core|core+numpy)
+              echo "reference_release_set_index=skipped-non-promotable-$PROFILE_SET"
+              ;;
+            *)
+              echo "unexpected non-promotable aggregate profile set: $PROFILE_SET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout exact qualified source
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up verification Python
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Download qualified package artifacts
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: reference-package-*
+          path: build/reference/release-set/incoming
+          merge-multiple: true
+
+      - name: Normalize and validate exact release-set inputs
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        env:
+          PROFILE_SET: ${{ steps.release_scope.outputs.profiles }}
+        run: |
+          set -euo pipefail
+          incoming="build/reference/release-set/incoming"
+          promotion="build/reference/release-set/promotion"
+          test -d "$incoming"
+          if find "$incoming" -type l -print -quit | grep -q .; then
+            echo "downloaded qualification artifacts contain a symlink" >&2
+            exit 1
+          fi
+          mkdir -p "$promotion/packages"
+
+          if [[ "$PROFILE_SET" != "core+numpy+fenics" ]]; then
+            echo "aggregate job received non-promotable profile set: $PROFILE_SET" >&2
+            exit 1
+          fi
+          profiles=(core numpy fenics)
+
+          take_exact_file() {
+            local name="$1"
+            local destination="$2"
+            local matches=()
+            mapfile -d '' matches < <(find "$incoming" -type f -name "$name" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "expected exactly one downloaded file named $name, found ${#matches[@]}" >&2
+              exit 1
+            fi
+            mv -- "${matches[0]}" "$destination"
+          }
+
+          expected_packages=0
+          for target in linux-x64 macos-arm64 macos-x64 win-x64; do
+            if [[ "$target" == "win-x64" ]]; then
+              extension="zip"
+            else
+              extension="tar.gz"
+            fi
+            for profile in "${profiles[@]}"; do
+              archive="reference-bridge-$target-cp314-$profile-$REFERENCE_VERSION.$extension"
+              qualification="qualification-reference-$target-$profile.json"
+              take_exact_file "$archive" "$promotion/packages/$archive"
+              take_exact_file "$archive.sha256" "$promotion/packages/$archive.sha256"
+              take_exact_file "$qualification" "$promotion/$qualification"
+              expected_packages=$((expected_packages + 1))
+            done
+          done
+
+          leftover="$(find "$incoming" -type f -print -quit)"
+          if [[ -n "$leftover" ]]; then
+            echo "downloaded qualification artifacts contain an unexpected file: $leftover" >&2
+            exit 1
+          fi
+          actual_packages="$(find "$promotion/packages" -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) | wc -l | tr -d ' ')"
+          if [[ "$actual_packages" -ne "$expected_packages" ]]; then
+            echo "canonical release set has $actual_packages packages, expected $expected_packages" >&2
+            exit 1
+          fi
+          echo "reference_release_set_packages=$actual_packages"
+
+      - name: Reverify complete release set offline
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python consumer-kit/tools/verify-release-set.py \
+            --root build/reference/release-set/promotion \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Write and reverify exact current-run release index
+        if: steps.release_scope.outputs.promotable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="build/reference/release-set/promotion"
+          index="$root/reference-release-index.json"
+          python consumer-kit/tools/write-release-index.py \
+            --root "$root" \
+            --source-revision "$GITHUB_SHA" \
+            --qualification-run-id "$GITHUB_RUN_ID" \
+            --qualification-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$index"
+          python consumer-kit/tools/write-sha256.py "$index"
+          (
+            cd "$root"
+            sha256sum -c reference-release-index.json.sha256
+            jq -r '.files[] | "\(.sha256)  \(.path)"' reference-release-index.json | sha256sum -c -
+          )
+          jq -e \
+            --arg source "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg profiles "${{ steps.release_scope.outputs.profiles }}" \
+            '.source_revision == $source
+             and .qualification_run_id == $run
+             and .qualification_run_attempt == $attempt
+             and (.profiles | join("+")) == $profiles' \
+            "$index" >/dev/null
+          echo "reference_release_set_index=verified"
+
+      - name: Upload verified release-set index
+        if: steps.release_scope.outputs.promotable == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reference-release-set-index
+          path: |
+            build/reference/release-set/promotion/reference-release-index.json
+            build/reference/release-set/promotion/reference-release-index.json.sha256
+          if-no-files-found: error
+          retention-days: 14

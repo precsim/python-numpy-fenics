@@ -35,7 +35,7 @@ The producer must never require a checkout or token for the private consumer.
 
 ## Public integration mocks
 
-Public integration tests should reproduce only the runtime boundary:
+Public integration tests reproduce only the runtime boundary:
 
 - isolated CPython startup;
 - deterministic package and native-library activation;
@@ -45,6 +45,32 @@ Public integration tests should reproduce only the runtime boundary:
 - poisoned ambient package/compiler/native-library state.
 
 Mocks must not reproduce private application APIs or copy private host source.
+
+The public reference-bridge/ is the executable mock for this contract. It has
+one intentionally small host API for scalar, runtime, NumPy and FEniCS probes.
+It is independently authored and is not an API compatibility target for a
+downstream bridge.
+
+## Reusable public consumer kit
+
+consumer-kit/ owns the generic mechanics required to consume a qualified
+producer runtime:
+
+- immutable release receipt and qualification verification;
+- safe, transactional runtime staging and offline full-tree re-attestation;
+- source-manifest validation and target-specific MEX compilation;
+- MEX export/load-time dependency auditing and GNU Octave execution;
+- exact candidate SHA-256 qualification records;
+- reference package assembly, offline verification and local test launchers.
+
+The kit never resolves Python dependencies, rebuilds a producer runtime, changes
+producer-owned payloads, or reads a private repository. A downstream consumer
+may vendor the kit at a recorded upstream revision/tree hash while keeping its
+actual source manifest, bridge source, product tests and release policy private.
+
+Passing the public reference bridge qualifies the generic kit path. A private
+consumer must still compile and qualify its own binary against every profile and
+target it claims to support.
 
 ## Artifact promotion
 
