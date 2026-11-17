@@ -143,6 +143,14 @@ class OctaveLoaderContractTests(unittest.TestCase):
             self.assertIn("-name 'libmpich*.dylib'", step)
             self.assertIn('test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"', step)
             self.assertIn('echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"', step)
+            self.assertIn('echo "OCTAVE_VERSION=$OCTAVE_MACOS_VERSION" >> "$GITHUB_ENV"', step)
+            self.assertIn('echo "OCTAVE_INCLUDE_DIRS=$(dirname "$mex_header")" >> "$GITHUB_ENV"', step)
+            self.assertNotIn('echo "$prefix/bin" >> "$GITHUB_PATH"', step)
+
+        acceptance = workflow_step(workflow, "Execute GNU Octave host acceptance on macOS")
+        self.assertIn('--octave "$REFERENCE_OCTAVE"', acceptance)
+        packaged = workflow_step(workflow, "Extract and test packaged bytes on macOS")
+        self.assertIn('--octave "$REFERENCE_OCTAVE"', packaged)
 
     def test_linux_standalone_numpy_probe_cannot_rewrite_runtime_bytecode(self) -> None:
         workflow = QUALIFY_WORKFLOW.read_text(encoding="utf-8")

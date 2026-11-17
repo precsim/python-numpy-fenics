@@ -224,8 +224,12 @@ jobs:
           test -x "$octave"
           test -x "$octave_config"
           test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+          mex_header="$(find "$prefix/include" -type f -name mex.h -print -quit)"
+          test -n "$mex_header"
+          test -f "$mex_header"
           echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
+          echo "OCTAVE_VERSION=$OCTAVE_MACOS_VERSION" >> "$GITHUB_ENV"
+          echo "OCTAVE_INCLUDE_DIRS=$(dirname "$mex_header")" >> "$GITHUB_ENV"
 
       - name: Stage and verify core build runtime
         shell: bash
@@ -453,8 +457,12 @@ jobs:
           test -x "$octave"
           test -x "$octave_config"
           test "$("$octave_config" -p VERSION)" = "$OCTAVE_MACOS_VERSION"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+          mex_header="$(find "$prefix/include" -type f -name mex.h -print -quit)"
+          test -n "$mex_header"
+          test -f "$mex_header"
           echo "REFERENCE_OCTAVE=$octave" >> "$GITHUB_ENV"
+          echo "OCTAVE_VERSION=$OCTAVE_MACOS_VERSION" >> "$GITHUB_ENV"
+          echo "OCTAVE_INCLUDE_DIRS=$(dirname "$mex_header")" >> "$GITHUB_ENV"
 
       - name: Stage and re-attest selected runtime
         shell: bash
@@ -510,7 +518,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash consumer-kit/tools/test-octave-macos.sh --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" --octave "$(command -v octave-cli)"
+          bash consumer-kit/tools/test-octave-macos.sh --package-root "build/reference/test/${{ matrix.target }}/${{ matrix.profile }}" --octave "$REFERENCE_OCTAVE"
 
       - name: Write exact-candidate qualification
         shell: bash
@@ -575,7 +583,7 @@ jobs:
           mkdir -p "$destination"
           tar -xzf "$package" -C "$destination"
           root="$destination/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-$REFERENCE_VERSION"
-          "$root/run-local-test.sh" --octave "$(command -v octave-cli)"
+          "$root/run-local-test.sh" --octave "$REFERENCE_OCTAVE"
 
       - name: Reject tampered extracted package
         shell: bash
