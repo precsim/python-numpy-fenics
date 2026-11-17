@@ -183,14 +183,25 @@ jobs:
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "$download"
+            "octave=$OCTAVE_MACOS_VERSION=$build"
           "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
-          python3 - "$RUNNER_TEMP/reference-octave-packages.json" <<'PY'
+          python3 - "$RUNNER_TEMP/reference-octave-packages.json" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
           import json
           import pathlib
           import sys
 
           packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_version = sys.argv[2]
+          expected_build = sys.argv[3]
+          octave = [record for record in packages if record.get("name") == "octave"]
+          if len(octave) != 1:
+              raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")
+          octave_build = octave[0].get("build_string", octave[0].get("build"))
+          if octave[0].get("version") != expected_version or octave_build != expected_build:
+              raise SystemExit(
+                  "GNU Octave package identity mismatch: "
+                  f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
           forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
           present = sorted(
               record["name"]
@@ -397,14 +408,25 @@ jobs:
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "$download"
+            "octave=$OCTAVE_MACOS_VERSION=$build"
           "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
-          python3 - "$RUNNER_TEMP/reference-octave-packages.json" <<'PY'
+          python3 - "$RUNNER_TEMP/reference-octave-packages.json" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
           import json
           import pathlib
           import sys
 
           packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_version = sys.argv[2]
+          expected_build = sys.argv[3]
+          octave = [record for record in packages if record.get("name") == "octave"]
+          if len(octave) != 1:
+              raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")
+          octave_build = octave[0].get("build_string", octave[0].get("build"))
+          if octave[0].get("version") != expected_version or octave_build != expected_build:
+              raise SystemExit(
+                  "GNU Octave package identity mismatch: "
+                  f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
           forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
           present = sorted(
               record["name"]
