@@ -66,7 +66,15 @@ elif [ "$(uname -s)" = "Linux" ]; then
         openssl_override=$(mktemp -d "${TMPDIR:-/tmp}/reference-bridge-openssl.XXXXXX")
         ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"
         ln -s "$ssl_provider" "$openssl_override/libssl.so.3"
-        openssl_preload="$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
+        gcc_provider="$openssl_root/lib/libgcc_s.so.1"
+        stdcpp_provider="$openssl_root/lib/libstdc++.so.6"
+        [ -f "$gcc_provider" ] && [ -f "$stdcpp_provider" ] || {
+            echo "reference_bridge_error=FEniCS toolchain runtime provider is missing" >&2
+            exit 1
+        }
+        ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"
+        ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"
+        openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
         openssl_conf="$openssl_root/ssl/openssl.cnf"
         openssl_modules="$openssl_root/lib/ossl-modules"
         [ -f "$openssl_conf" ] || {

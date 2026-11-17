@@ -47,7 +47,15 @@ if [[ -f "$crypto_provider" && -f "$ssl_provider" ]]; then
   mkdir -p "$openssl_override"
   ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"
   ln -s "$ssl_provider" "$openssl_override/libssl.so.3"
-  openssl_preload="$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
+  gcc_provider="$openssl_root/lib/libgcc_s.so.1"
+  stdcpp_provider="$openssl_root/lib/libstdc++.so.6"
+  [[ -f "$gcc_provider" && -f "$stdcpp_provider" ]] || {
+    echo "missing FEniCS toolchain runtime provider" >&2
+    exit 1
+  }
+  ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"
+  ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"
+  openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
   openssl_conf="$openssl_root/ssl/openssl.cnf"
   openssl_modules="$openssl_root/lib/ossl-modules"
   [[ -f "$openssl_conf" ]] || {
@@ -117,6 +125,21 @@ run_smoke() {
       fi
       printf '%s\n' "$gdb_output" >&2
       echo "reference_bridge_gdb_backtrace=end" >&2
+    elif [[ "$status" -eq 139 ]] && command -v lldb >/dev/null 2>&1; then
+      local lldb_output
+      echo "reference_bridge_lldb_backtrace=begin" >&2
+      if lldb_output="$(
+        env "${host_env[@]}" lldb --batch \
+          -o run \
+          -o 'thread backtrace all' \
+          -- "$octave" --quiet --no-gui --no-init-file "$smoke" 2>&1
+      )"; then
+        :
+      else
+        :
+      fi
+      printf '%s\n' "$lldb_output" >&2
+      echo "reference_bridge_lldb_backtrace=end" >&2
     fi
     return "$status"
   fi

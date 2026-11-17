@@ -311,9 +311,20 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
         self.assertIn("reference-bridge-openssl.XXXXXX", shell)
         self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', shell)
         self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', shell)
+        self.assertIn('ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"', shell)
+        self.assertIn('ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"', shell)
         self.assertIn('openssl_override="$relocation_parent/openssl-preload"', linux)
         self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', linux)
         self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', linux)
+        self.assertIn('ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"', linux)
+        self.assertIn('ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"', linux)
+
+    def test_posix_octave_acceptance_captures_lldb_backtrace_on_macos_segv(self) -> None:
+        linux = (TOOLS / "test-octave-linux.sh").read_text(encoding="utf-8")
+        self.assertIn("command -v lldb", linux)
+        self.assertIn("reference_bridge_lldb_backtrace=begin", linux)
+        self.assertIn("'thread backtrace all'", linux)
+        self.assertIn("reference_bridge_lldb_backtrace=end", linux)
 
 
 if __name__ == "__main__":
