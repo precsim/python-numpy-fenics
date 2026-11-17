@@ -311,18 +311,23 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
             self.assertIn("lib/libopenblas.so.0", launcher)
             self.assertIn("reference_bridge_linux_blas_provider", launcher)
             self.assertIn("readlink -f", launcher)
+            for alias in ("libopenblas.so.0", "libblas.so.3", "liblapack.so.3", "libcblas.so.3"):
+                self.assertIn(alias, launcher)
+            self.assertIn('ln -s "$openssl_root/lib" "$blas_preload_dir"', launcher)
+            self.assertIn('blas_preload="$blas_preload_dir/$(basename "$blas_provider")"', launcher)
         self.assertIn("reference-bridge-openssl.XXXXXX", shell)
         self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', shell)
         self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', shell)
         self.assertIn('ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"', shell)
         self.assertIn('ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"', shell)
-        self.assertIn('ln -s "$blas_provider" "$openssl_override/libopenblas.so.0"', shell)
         self.assertIn('openssl_override="$relocation_parent/openssl-preload"', linux)
         self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', linux)
         self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', linux)
         self.assertIn('ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"', linux)
         self.assertIn('ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"', linux)
-        self.assertIn('ln -s "$blas_provider" "$openssl_override/libopenblas.so.0"', linux)
+        mock_smoke = (ROOT / "reference-bridge" / "host" / "mock_smoke.m").read_text(encoding="utf-8")
+        self.assertIn('reference_bridge_octave_lapack=pass', mock_smoke)
+        self.assertLess(mock_smoke.index('reference_bridge_octave_lapack=pass'), mock_smoke.index('bridge("runtime")'))
 
     def test_posix_octave_acceptance_captures_lldb_backtrace_on_macos_segv(self) -> None:
         linux = (TOOLS / "test-octave-linux.sh").read_text(encoding="utf-8")
@@ -330,10 +335,13 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
         self.assertIn("reference_bridge_lldb_backtrace=begin", linux)
         self.assertIn("env -u PYTHONHOME -u PYTHONPATH -u PYTHONUSERBASE -u PYTHONSTARTUP", linux)
         self.assertIn("settings set target.process.stop-on-exec false", linux)
+        self.assertIn("-k 'thread backtrace all'", linux)
         self.assertIn(r'-- /usr/bin/env "${host_env[@]}"', linux)
         self.assertNotIn(r'env "${host_env[@]}" lldb --batch', linux)
-        self.assertIn("'thread backtrace all'", linux)
         self.assertIn("reference_bridge_lldb_backtrace=end", linux)
+        mock_smoke = (ROOT / "reference-bridge" / "host" / "mock_smoke.m").read_text(encoding="utf-8")
+        self.assertIn("reference_bridge_smoke_enter=pass", mock_smoke)
+        self.assertIn("reference_bridge_pre_bridge=pass", mock_smoke)
 
 
 if __name__ == "__main__":

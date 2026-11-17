@@ -311,7 +311,20 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
         )
         private_source = root / "private_openblas.c"
         private_source.write_text(
-            "int reference_lapack_value(void) { return 22; }\n",
+            textwrap.dedent(
+                """\
+                extern int reference_openblas_dependency(void);
+                int reference_lapack_value(void)
+                {
+                    return 15 + reference_openblas_dependency();
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+        dependency_source = root / "private_dependency.c"
+        dependency_source.write_text(
+            "int reference_openblas_dependency(void) { return 7; }\n",
             encoding="utf-8",
         )
         executable_source = root / "consumer.c"
@@ -332,6 +345,7 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
         )
 
         host_provider = host_lib / "liblapack.so.3"
+        private_dependency = package_lib / "libopenblas-dependency.so.1"
         private_provider = package_lib / "libopenblasp-r0.3.34.so"
         self._compile_shared(
             host_source,
@@ -339,9 +353,18 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
             "-Wl,-soname,liblapack.so.3",
         )
         self._compile_shared(
+            dependency_source,
+            private_dependency,
+            "-Wl,-soname,libopenblas-dependency.so.1",
+        )
+        self._compile_shared(
             private_source,
             private_provider,
+            f"-L{package_lib}",
+            "-Wl,--no-as-needed",
+            "-Wl,-l:libopenblas-dependency.so.1",
             "-Wl,-soname,libopenblas.so.0",
+            "-Wl,-rpath,$ORIGIN",
         )
         executable = root / "consumer"
         subprocess.run(
@@ -371,10 +394,10 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
         )
         self.assertEqual(baseline.stdout.strip(), "lapack_value=11")
 
-        preload_alias = override / "libopenblas.so.0"
-        preload_alias.symlink_to(private_provider)
+        preload_alias = override / "fenics-lib"
+        preload_alias.symlink_to(package_lib, target_is_directory=True)
         preload_env = clean_env.copy()
-        preload_env["LD_PRELOAD"] = str(preload_alias)
+        preload_env["LD_PRELOAD"] = str(preload_alias / private_provider.name)
         preloaded = subprocess.run(
             [str(executable)],
             check=True,

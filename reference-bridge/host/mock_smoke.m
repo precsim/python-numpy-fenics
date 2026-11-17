@@ -1,6 +1,8 @@
 % Public GNU Octave acceptance fixture for the packaged reference bridge.
 % It discovers the package from this file, never from the current directory.
 
+fprintf("reference_bridge_smoke_enter=pass\n");
+fflush(stdout);
 smoke_file = mfilename("fullpath");
 if (isempty(smoke_file))
   error("reference_bridge:smoke", "cannot determine mock_smoke.m location");
@@ -8,11 +10,26 @@ endif
 host_dir = fileparts(smoke_file);
 package_root = fileparts(host_dir);
 addpath(package_root, "-begin");
+fprintf("reference_bridge_pre_bridge=pass\n");
+fflush(stdout);
 
 profile_path = fullfile(package_root, "profile.txt");
 profile = strtrim(fileread(profile_path));
 if (!any(strcmp(profile, {"core", "numpy", "fenics"})))
   error("reference_bridge:smoke", "unsupported profile marker: %s", profile);
+endif
+
+if (strcmp(profile, "fenics"))
+  % Linux qualification intentionally makes the immutable FEniCS OpenBLAS
+  % provider authoritative process-wide before Octave starts.  Exercise the
+  % host's own LAPACK path before loading the bridge so an incompatible
+  % process-global provider fails independently from the embedded solve.
+  host_matrix = [4.0, 1.0; 1.0, 3.0];
+  [host_vectors, host_values] = eig(host_matrix);
+  host_residual = norm(host_matrix * host_vectors - host_vectors * host_values, "fro");
+  assert(isfinite(host_residual));
+  assert(host_residual <= 1.0e-10);
+  fprintf("reference_bridge_octave_lapack=pass\n");
 endif
 
 info = bridge("runtime");

@@ -85,10 +85,23 @@ elif [ "$(uname -s)" = "Linux" ]; then
                 exit 1
                 ;;
         esac
+        for blas_alias_name in libopenblas.so.0 libblas.so.3 liblapack.so.3 libcblas.so.3; do
+            blas_alias_provider=$(readlink -f "$openssl_root/lib/$blas_alias_name" 2>/dev/null || true)
+            [ "$blas_alias_provider" = "$blas_provider" ] || {
+                echo "reference_bridge_error=FEniCS BLAS/LAPACK alias does not resolve to the verified provider: $blas_alias_name -> $blas_alias_provider != $blas_provider" >&2
+                exit 1
+            }
+        done
         ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"
         ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"
-        ln -s "$blas_provider" "$openssl_override/libopenblas.so.0"
-        openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$openssl_override/libopenblas.so.0:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
+        blas_preload_dir="$openssl_override/fenics-lib"
+        ln -s "$openssl_root/lib" "$blas_preload_dir"
+        blas_preload="$blas_preload_dir/$(basename "$blas_provider")"
+        [ -f "$blas_preload" ] || {
+            echo "reference_bridge_error=FEniCS BLAS/LAPACK preload path is missing: $blas_preload" >&2
+            exit 1
+        }
+        openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$blas_preload:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
         openssl_conf="$openssl_root/ssl/openssl.cnf"
         openssl_modules="$openssl_root/lib/ossl-modules"
         [ -f "$openssl_conf" ] || {
