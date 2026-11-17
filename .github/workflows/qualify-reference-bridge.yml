@@ -184,15 +184,19 @@ jobs:
             -c conda-forge \
             --strict-channel-priority \
             "octave=$OCTAVE_MACOS_VERSION=$build"
-          "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
-          python3 - "$RUNNER_TEMP/reference-octave-packages.json" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
+          "$MAMBA_EXE" list -p "$prefix"
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
           import json
           import pathlib
           import sys
 
-          packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          prefix = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
           expected_build = sys.argv[3]
+          packages = [
+              json.loads(path.read_text(encoding="utf-8"))
+              for path in sorted((prefix / "conda-meta").glob("*.json"))
+          ]
           octave = [record for record in packages if record.get("name") == "octave"]
           if len(octave) != 1:
               raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")
@@ -409,15 +413,19 @@ jobs:
             -c conda-forge \
             --strict-channel-priority \
             "octave=$OCTAVE_MACOS_VERSION=$build"
-          "$MAMBA_EXE" list -p "$prefix" --json > "$RUNNER_TEMP/reference-octave-packages.json"
-          python3 - "$RUNNER_TEMP/reference-octave-packages.json" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
+          "$MAMBA_EXE" list -p "$prefix"
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
           import json
           import pathlib
           import sys
 
-          packages = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          prefix = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
           expected_build = sys.argv[3]
+          packages = [
+              json.loads(path.read_text(encoding="utf-8"))
+              for path in sorted((prefix / "conda-meta").glob("*.json"))
+          ]
           octave = [record for record in packages if record.get("name") == "octave"]
           if len(octave) != 1:
               raise SystemExit(f"expected one GNU Octave package, found {len(octave)}")

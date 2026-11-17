@@ -135,6 +135,7 @@ class OctaveLoaderContractTests(unittest.TestCase):
             self.assertIn('"$MAMBA_EXE" create -y', step)
             self.assertIn('"octave=$OCTAVE_MACOS_VERSION=$build"', step)
             self.assertIn("--strict-channel-priority", step)
+            self.assertIn('(prefix / "conda-meta").glob("*.json")', step)
             self.assertIn('record for record in packages if record.get("name") == "octave"', step)
             self.assertIn("GNU Octave package identity mismatch", step)
             self.assertIn('forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}', step)
