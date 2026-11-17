@@ -73,3 +73,27 @@ The consumer is responsible for final embedded-host integration and product
 packaging. Neither consumer source nor private release assets belong in this
 repository or its GitHub Actions workflows. See
 [the producer/consumer boundary](producer-consumer-boundary.md).
+
+## Actions artifact retention and cleanup
+
+Producer qualification archives, manifests and qualification evidence remain
+available for **30 days** to support manually dispatched `producer-prerelease`
+publication from the exact qualified `main` commit. The prerelease publisher
+never deletes source qualification artifacts after publication. Reference-bridge
+MEX candidates retain their configured 7-day lifetime and reference packages
+and the release-set index retain their configured 14-day lifetime. These
+artifacts are **not** eligible for the scheduled cleanup job, even on PR runs.
+
+The `actions-storage-cleanup` workflow runs every six hours and removes only
+two allowlisted, diagnostic-only artifact types from completed **non-`main`**
+workflow runs: `qualify-linux-core-numpy-diagnostics-<run-id>` and
+`qualify-linux-fenics-diagnostics-<run-id>`. Successful-run diagnostics must be
+at least six hours old after both creation and completion. Failed-run diagnostics
+are kept for at least 24 hours. Other results, unknown metadata and active runs
+are preserved. The source workflows already assign these diagnostics one-day
+retention. The cleanup job does not remove releases, tags, producer artifacts,
+reference packages, or release indexes.
+
+A manual invocation defaults to `dry_run: true`; scheduled invocations perform
+allowlisted deletion. The script also supports `--dry-run` for local audits.
+Deletion is irreversible; review the dry-run report before changing the policy.
