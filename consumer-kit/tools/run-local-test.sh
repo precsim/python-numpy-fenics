@@ -68,13 +68,27 @@ elif [ "$(uname -s)" = "Linux" ]; then
         ln -s "$ssl_provider" "$openssl_override/libssl.so.3"
         gcc_provider="$openssl_root/lib/libgcc_s.so.1"
         stdcpp_provider="$openssl_root/lib/libstdc++.so.6"
+        blas_alias="$openssl_root/lib/libopenblas.so.0"
+        blas_provider=$(readlink -f "$blas_alias" 2>/dev/null || true)
         [ -f "$gcc_provider" ] && [ -f "$stdcpp_provider" ] || {
             echo "reference_bridge_error=FEniCS toolchain runtime provider is missing" >&2
             exit 1
         }
+        [ -n "$blas_provider" ] && [ -f "$blas_provider" ] || {
+            echo "reference_bridge_error=FEniCS BLAS/LAPACK provider is missing: $blas_alias" >&2
+            exit 1
+        }
+        case "$blas_provider" in
+            "$openssl_root"/lib/libopenblas*.so*) ;;
+            *)
+                echo "reference_bridge_error=FEniCS BLAS/LAPACK provider escaped the verified runtime: $blas_provider" >&2
+                exit 1
+                ;;
+        esac
         ln -s "$gcc_provider" "$openssl_override/libgcc_s.so.1"
         ln -s "$stdcpp_provider" "$openssl_override/libstdc++.so.6"
-        openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
+        ln -s "$blas_provider" "$openssl_override/libopenblas.so.0"
+        openssl_preload="$openssl_override/libgcc_s.so.1:$openssl_override/libstdc++.so.6:$openssl_override/libopenblas.so.0:$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
         openssl_conf="$openssl_root/ssl/openssl.cnf"
         openssl_modules="$openssl_root/lib/ossl-modules"
         [ -f "$openssl_conf" ] || {
@@ -82,6 +96,7 @@ elif [ "$(uname -s)" = "Linux" ]; then
             exit 1
         }
         echo "reference_bridge_linux_openssl_provider=$crypto_provider"
+        echo "reference_bridge_linux_blas_provider=$blas_provider"
     fi
 fi
 

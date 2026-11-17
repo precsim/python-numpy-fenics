@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -291,6 +292,97 @@ class LinuxPrivateProviderLoaderTests(unittest.TestCase):
         completed = self._run(harness, "bridge", host, python, private, consumer)
         self.assertEqual(completed.returncode, 12, completed.stdout + completed.stderr)
         self.assertIn("identity validation failed", completed.stderr)
+
+    def test_process_preload_makes_verified_blas_provider_authoritative(self) -> None:
+        raw = tempfile.mkdtemp(prefix="reference-bridge-fenics-preload-")
+        self.addCleanup(shutil.rmtree, raw, True)
+        root = Path(raw)
+        package_lib = root / "package with spaces" / "runtime" / "fenics-runtime" / "conda" / "lib"
+        host_lib = root / "host"
+        override = root / "preload"
+        package_lib.mkdir(parents=True)
+        host_lib.mkdir()
+        override.mkdir()
+
+        host_source = root / "host_lapack.c"
+        host_source.write_text(
+            "int reference_lapack_value(void) { return 11; }\n",
+            encoding="utf-8",
+        )
+        private_source = root / "private_openblas.c"
+        private_source.write_text(
+            "int reference_lapack_value(void) { return 22; }\n",
+            encoding="utf-8",
+        )
+        executable_source = root / "consumer.c"
+        executable_source.write_text(
+            textwrap.dedent(
+                r"""
+                #include <stdio.h>
+                extern int reference_lapack_value(void);
+                int main(void)
+                {
+                    int value = reference_lapack_value();
+                    printf("lapack_value=%d\n", value);
+                    return value == 11 || value == 22 ? 0 : 1;
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        host_provider = host_lib / "liblapack.so.3"
+        private_provider = package_lib / "libopenblasp-r0.3.34.so"
+        self._compile_shared(
+            host_source,
+            host_provider,
+            "-Wl,-soname,liblapack.so.3",
+        )
+        self._compile_shared(
+            private_source,
+            private_provider,
+            "-Wl,-soname,libopenblas.so.0",
+        )
+        executable = root / "consumer"
+        subprocess.run(
+            [
+                self.cc,
+                "-O0",
+                str(executable_source),
+                f"-L{host_lib}",
+                "-Wl,--no-as-needed",
+                "-Wl,-l:liblapack.so.3",
+                f"-Wl,-rpath,{host_lib}",
+                "-o",
+                str(executable),
+            ],
+            check=True,
+            text=True,
+        )
+
+        clean_env = os.environ.copy()
+        clean_env.pop("LD_PRELOAD", None)
+        baseline = subprocess.run(
+            [str(executable)],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=clean_env,
+        )
+        self.assertEqual(baseline.stdout.strip(), "lapack_value=11")
+
+        preload_alias = override / "libopenblas.so.0"
+        preload_alias.symlink_to(private_provider)
+        preload_env = clean_env.copy()
+        preload_env["LD_PRELOAD"] = str(preload_alias)
+        preloaded = subprocess.run(
+            [str(executable)],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=preload_env,
+        )
+        self.assertEqual(preloaded.stdout.strip(), "lapack_value=22")
 
 
 if __name__ == "__main__":
