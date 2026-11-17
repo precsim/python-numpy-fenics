@@ -68,7 +68,10 @@ def safe_symlink_target(member: PurePosixPath, raw: str, label: str) -> None:
 
 
 def validate_archive_namespace(
-    entries: list[tuple[PurePosixPath, str, Any]], label: str
+    entries: list[tuple[PurePosixPath, str, Any]],
+    label: str,
+    *,
+    case_insensitive: bool,
 ) -> None:
     """Reject path aliases and any archive member reached through a link/file."""
 
@@ -76,7 +79,7 @@ def validate_archive_namespace(
     non_directories: set[str] = set()
     for rel, kind, _raw in entries:
         key = rel.as_posix()
-        collision = key.casefold()
+        collision = key.casefold() if case_insensitive else key
         previous = seen.get(collision)
         if previous is not None:
             raise SystemExit(f"duplicate {label} member: {key} conflicts with {previous}")
@@ -106,7 +109,9 @@ def output_path(destination: Path, rel: PurePosixPath, label: str) -> Path:
     return output
 
 
-def extract_zip(archive_path: Path, destination: Path) -> None:
+def extract_zip(
+    archive_path: Path, destination: Path, *, case_insensitive: bool = True
+) -> None:
     with zipfile.ZipFile(archive_path) as archive:
         entries: list[tuple[PurePosixPath, str, zipfile.ZipInfo]] = []
         for info in archive.infolist():
@@ -129,7 +134,7 @@ def extract_zip(archive_path: Path, destination: Path) -> None:
                 kind = "file"
             entries.append((rel, kind, info))
 
-        validate_archive_namespace(entries, "ZIP")
+        validate_archive_namespace(entries, "ZIP", case_insensitive=case_insensitive)
         for rel, kind, info in entries:
             output = output_path(destination, rel, "ZIP")
             mode = info.external_attr >> 16
@@ -146,7 +151,9 @@ def extract_zip(archive_path: Path, destination: Path) -> None:
                     output.chmod(stat.S_IMODE(mode))
 
 
-def extract_tar(archive_path: Path, destination: Path) -> None:
+def extract_tar(
+    archive_path: Path, destination: Path, *, case_insensitive: bool = False
+) -> None:
     with tarfile.open(archive_path, "r:gz") as archive:
         entries: list[tuple[PurePosixPath, str, tarfile.TarInfo]] = []
         for member in archive.getmembers():
@@ -163,7 +170,7 @@ def extract_tar(archive_path: Path, destination: Path) -> None:
                 raise SystemExit(f"unsupported tar member: {key}")
             entries.append((rel, kind, member))
 
-        validate_archive_namespace(entries, "tar")
+        validate_archive_namespace(entries, "tar", case_insensitive=case_insensitive)
         for rel, kind, member in entries:
             output = output_path(destination, rel, "tar")
             if kind == "dir":
@@ -226,10 +233,11 @@ def main() -> int:
         parse_sidecar(archive)
         with tempfile.TemporaryDirectory(prefix="reference-release-verify-") as raw:
             destination = Path(raw)
+            case_insensitive = target != "linux-x64"
             if archive.name.endswith(".zip"):
-                extract_zip(archive, destination)
+                extract_zip(archive, destination, case_insensitive=case_insensitive)
             else:
-                extract_tar(archive, destination)
+                extract_tar(archive, destination, case_insensitive=case_insensitive)
             roots = [path for path in destination.iterdir() if path.is_dir()]
             if len(roots) != 1:
                 raise SystemExit(f"package has no unique root directory: {archive.name}")

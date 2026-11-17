@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 from pathlib import Path
+from pathlib import PurePosixPath
 import stat
 import tarfile
 import tempfile
@@ -114,7 +115,7 @@ class ReleaseSetExtractionTests(unittest.TestCase):
 
             duplicate = root / "duplicate.tar.gz"
             with tarfile.open(duplicate, "w:gz") as archive:
-                add_tar_file(archive, "package/A.txt", b"first")
+                add_tar_file(archive, "package/a.txt", b"first")
                 add_tar_file(archive, "package/a.txt", b"second")
             duplicate_out = root / "duplicate-out"
             duplicate_out.mkdir()
@@ -135,6 +136,19 @@ class ReleaseSetExtractionTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "traverses non-directory archive entry"):
                 release_set.extract_tar(symlink_parent, symlink_out)
             self.assert_empty(symlink_out)
+
+    def test_archive_namespace_case_collisions_follow_target_semantics(self) -> None:
+        entries = [
+            (PurePosixPath("package/A.txt"), "file", None),
+            (PurePosixPath("package/a.txt"), "file", None),
+        ]
+        release_set.validate_archive_namespace(
+            entries, "tar", case_insensitive=False
+        )
+        with self.assertRaisesRegex(SystemExit, "duplicate tar member"):
+            release_set.validate_archive_namespace(
+                entries, "tar", case_insensitive=True
+            )
 
 
 if __name__ == "__main__":
