@@ -308,6 +308,12 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
             self.assertIn("LD_PRELOAD", launcher)
             self.assertIn("OPENSSL_CONF", launcher)
             self.assertIn("OPENSSL_MODULES", launcher)
+        self.assertIn("reference-bridge-openssl.XXXXXX", shell)
+        self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', shell)
+        self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', shell)
+        self.assertIn('openssl_override="$relocation_parent/openssl-preload"', linux)
+        self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', linux)
+        self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', linux)
 
 
 if __name__ == "__main__":

@@ -46,8 +46,13 @@ env:
   OCTAVE_MACOS_VERSION: "10.3.0"
   OCTAVE_MACOS_ARM64_BUILD: pl5321hb61a5b2_4
   OCTAVE_MACOS_ARM64_SHA256: 88d228e05ee9e5bf08038ddd9678d3073d2f40060e7ace5704676ce94027c89f
+  OCTAVE_MACOS_ARM64_OPENSSL_BUILD: h55eecbc_0
+  OCTAVE_MACOS_ARM64_OPENSSL_SHA256: a26829f8d4ed2631216a8543ef7704d2cff90ce43e381015530ab21cf762b681
   OCTAVE_MACOS_X64_BUILD: pl5321hf9cc832_4
   OCTAVE_MACOS_X64_SHA256: 52627df280641aa38099a5f4aad797306852fa8fff2dd3001559fd1a6b6ac341
+  OCTAVE_MACOS_X64_OPENSSL_BUILD: h332eb6d_0
+  OCTAVE_MACOS_X64_OPENSSL_SHA256: 4747221abec91a82a8ebd7e8b36eac90c21c74435f9473c86c0e41a9305f2183
+  OCTAVE_MACOS_OPENSSL_VERSION: "3.5.9"
   OCTAVE_LINUX_VERSION: "11.3.0"
   OCTAVE_LINUX_IMAGE: ghcr.io/gnu-octave/octave:11.3.0@sha256:185db7993e000d4f3f6e7bbbf7fb3f999f52e799ea52231ad8a15353381e0dcb
   MANYLINUX2014_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:0d25b049964b2549b83384036abdff06789a8c0b1e9ff003ec80f0d531f79e50
@@ -160,11 +165,15 @@ jobs:
               subdir=osx-arm64
               build="$OCTAVE_MACOS_ARM64_BUILD"
               expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              openssl_build="$OCTAVE_MACOS_ARM64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_ARM64_OPENSSL_SHA256"
               ;;
             macos-x64)
               subdir=osx-64
               build="$OCTAVE_MACOS_X64_BUILD"
               expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              openssl_build="$OCTAVE_MACOS_X64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_X64_OPENSSL_SHA256"
               ;;
             *)
               echo "unexpected macOS target: ${{ matrix.target }}" >&2
@@ -174,18 +183,25 @@ jobs:
           archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
           url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
           download="$RUNNER_TEMP/$archive"
+          openssl_archive="openssl-$OCTAVE_MACOS_OPENSSL_VERSION-$openssl_build.conda"
+          openssl_url="https://conda.anaconda.org/conda-forge/$subdir/$openssl_archive"
+          openssl_download="$RUNNER_TEMP/$openssl_archive"
           prefix="$RUNNER_TEMP/reference-octave-$subdir"
           rm -f "$download"
+          rm -f "$openssl_download"
           rm -rf "$prefix"
           curl --fail --location --retry 3 --output "$download" "$url"
           printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
+          printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
           CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "octave=$OCTAVE_MACOS_VERSION=$build"
+            "octave=$OCTAVE_MACOS_VERSION=$build" \
+            "openssl=$OCTAVE_MACOS_OPENSSL_VERSION=$openssl_build"
           "$MAMBA_EXE" list -p "$prefix"
-          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
           import pathlib
           import sys
@@ -193,6 +209,8 @@ jobs:
           prefix = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
           expected_build = sys.argv[3]
+          expected_openssl_version = sys.argv[4]
+          expected_openssl_build = sys.argv[5]
           packages = [
               json.loads(path.read_text(encoding="utf-8"))
               for path in sorted((prefix / "conda-meta").glob("*.json"))
@@ -205,6 +223,19 @@ jobs:
               raise SystemExit(
                   "GNU Octave package identity mismatch: "
                   f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
+          openssl = [record for record in packages if record.get("name") == "openssl"]
+          if len(openssl) != 1:
+              raise SystemExit(f"expected one OpenSSL package, found {len(openssl)}")
+          openssl_build = openssl[0].get("build_string", openssl[0].get("build"))
+          if (
+              openssl[0].get("version") != expected_openssl_version
+              or openssl_build != expected_openssl_build
+          ):
+              raise SystemExit(
+                  "GNU Octave OpenSSL identity mismatch: "
+                  f"{openssl[0].get('version')}={openssl_build} != "
+                  f"{expected_openssl_version}={expected_openssl_build}"
               )
           forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
           present = sorted(
@@ -393,11 +424,15 @@ jobs:
               subdir=osx-arm64
               build="$OCTAVE_MACOS_ARM64_BUILD"
               expected_sha="$OCTAVE_MACOS_ARM64_SHA256"
+              openssl_build="$OCTAVE_MACOS_ARM64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_ARM64_OPENSSL_SHA256"
               ;;
             macos-x64)
               subdir=osx-64
               build="$OCTAVE_MACOS_X64_BUILD"
               expected_sha="$OCTAVE_MACOS_X64_SHA256"
+              openssl_build="$OCTAVE_MACOS_X64_OPENSSL_BUILD"
+              openssl_sha="$OCTAVE_MACOS_X64_OPENSSL_SHA256"
               ;;
             *)
               echo "unexpected macOS target: ${{ matrix.target }}" >&2
@@ -407,18 +442,25 @@ jobs:
           archive="octave-$OCTAVE_MACOS_VERSION-$build.conda"
           url="https://conda.anaconda.org/conda-forge/$subdir/$archive"
           download="$RUNNER_TEMP/$archive"
+          openssl_archive="openssl-$OCTAVE_MACOS_OPENSSL_VERSION-$openssl_build.conda"
+          openssl_url="https://conda.anaconda.org/conda-forge/$subdir/$openssl_archive"
+          openssl_download="$RUNNER_TEMP/$openssl_archive"
           prefix="$RUNNER_TEMP/reference-octave-$subdir"
           rm -f "$download"
+          rm -f "$openssl_download"
           rm -rf "$prefix"
           curl --fail --location --retry 3 --output "$download" "$url"
           printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
+          curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
+          printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
           CONDA_SUBDIR="$subdir" "$MAMBA_EXE" create -y \
             -p "$prefix" \
             -c conda-forge \
             --strict-channel-priority \
-            "octave=$OCTAVE_MACOS_VERSION=$build"
+            "octave=$OCTAVE_MACOS_VERSION=$build" \
+            "openssl=$OCTAVE_MACOS_OPENSSL_VERSION=$openssl_build"
           "$MAMBA_EXE" list -p "$prefix"
-          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" <<'PY'
+          python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
           import pathlib
           import sys
@@ -426,6 +468,8 @@ jobs:
           prefix = pathlib.Path(sys.argv[1])
           expected_version = sys.argv[2]
           expected_build = sys.argv[3]
+          expected_openssl_version = sys.argv[4]
+          expected_openssl_build = sys.argv[5]
           packages = [
               json.loads(path.read_text(encoding="utf-8"))
               for path in sorted((prefix / "conda-meta").glob("*.json"))
@@ -438,6 +482,19 @@ jobs:
               raise SystemExit(
                   "GNU Octave package identity mismatch: "
                   f"{octave[0].get('version')}={octave_build} != {expected_version}={expected_build}"
+              )
+          openssl = [record for record in packages if record.get("name") == "openssl"]
+          if len(openssl) != 1:
+              raise SystemExit(f"expected one OpenSSL package, found {len(openssl)}")
+          openssl_build = openssl[0].get("build_string", openssl[0].get("build"))
+          if (
+              openssl[0].get("version") != expected_openssl_version
+              or openssl_build != expected_openssl_build
+          ):
+              raise SystemExit(
+                  "GNU Octave OpenSSL identity mismatch: "
+                  f"{openssl[0].get('version')}={openssl_build} != "
+                  f"{expected_openssl_version}={expected_openssl_build}"
               )
           forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}
           present = sorted(

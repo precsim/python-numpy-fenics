@@ -118,6 +118,17 @@ class OctaveLoaderContractTests(unittest.TestCase):
             "OCTAVE_MACOS_X64_SHA256: 52627df280641aa38099a5f4aad797306852fa8fff2dd3001559fd1a6b6ac341",
             workflow,
         )
+        self.assertIn('OCTAVE_MACOS_OPENSSL_VERSION: "3.5.9"', workflow)
+        self.assertIn("OCTAVE_MACOS_ARM64_OPENSSL_BUILD: h55eecbc_0", workflow)
+        self.assertIn(
+            "OCTAVE_MACOS_ARM64_OPENSSL_SHA256: a26829f8d4ed2631216a8543ef7704d2cff90ce43e381015530ab21cf762b681",
+            workflow,
+        )
+        self.assertIn("OCTAVE_MACOS_X64_OPENSSL_BUILD: h332eb6d_0", workflow)
+        self.assertIn(
+            "OCTAVE_MACOS_X64_OPENSSL_SHA256: 4747221abec91a82a8ebd7e8b36eac90c21c74435f9473c86c0e41a9305f2183",
+            workflow,
+        )
         self.assertEqual(
             workflow.count(
                 "uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39"
@@ -131,13 +142,17 @@ class OctaveLoaderContractTests(unittest.TestCase):
         for raw in steps:
             step = raw.split("\n      - name:", 1)[0]
             self.assertIn("https://conda.anaconda.org/conda-forge/$subdir/$archive", step)
+            self.assertIn("https://conda.anaconda.org/conda-forge/$subdir/$openssl_archive", step)
             self.assertIn("shasum -a 256 -c -", step)
             self.assertIn('"$MAMBA_EXE" create -y', step)
             self.assertIn('"octave=$OCTAVE_MACOS_VERSION=$build"', step)
+            self.assertIn('"openssl=$OCTAVE_MACOS_OPENSSL_VERSION=$openssl_build"', step)
             self.assertIn("--strict-channel-priority", step)
             self.assertIn('(prefix / "conda-meta").glob("*.json")', step)
             self.assertIn('record for record in packages if record.get("name") == "octave"', step)
             self.assertIn("GNU Octave package identity mismatch", step)
+            self.assertIn('record for record in packages if record.get("name") == "openssl"', step)
+            self.assertIn("GNU Octave OpenSSL identity mismatch", step)
             self.assertIn('forbidden = {"mpi", "mpich", "openmpi", "open-mpi"}', step)
             self.assertIn("-name 'libmpi*.dylib'", step)
             self.assertIn("-name 'libmpich*.dylib'", step)

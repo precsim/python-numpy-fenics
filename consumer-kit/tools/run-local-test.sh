@@ -48,6 +48,7 @@ omp_override=""
 openssl_preload=""
 openssl_conf=""
 openssl_modules=""
+openssl_override=""
 if [ "$(uname -s)" = "Darwin" ]; then
     omp_provider="$script_dir/runtime/fenics-runtime/conda/lib/libomp.dylib"
     if [ -f "$omp_provider" ]; then
@@ -62,7 +63,10 @@ elif [ "$(uname -s)" = "Linux" ]; then
     crypto_provider="$openssl_root/lib/libcrypto.so.3"
     ssl_provider="$openssl_root/lib/libssl.so.3"
     if [ -f "$crypto_provider" ] && [ -f "$ssl_provider" ]; then
-        openssl_preload="$crypto_provider:$ssl_provider"
+        openssl_override=$(mktemp -d "${TMPDIR:-/tmp}/reference-bridge-openssl.XXXXXX")
+        ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"
+        ln -s "$ssl_provider" "$openssl_override/libssl.so.3"
+        openssl_preload="$openssl_override/libcrypto.so.3:$openssl_override/libssl.so.3"
         openssl_conf="$openssl_root/ssl/openssl.cnf"
         openssl_modules="$openssl_root/lib/ossl-modules"
         [ -f "$openssl_conf" ] || {
@@ -99,6 +103,9 @@ cleanup() {
     rm -rf "$poison"
     if [ -n "$omp_override" ]; then
         rm -rf "$omp_override"
+    fi
+    if [ -n "$openssl_override" ]; then
+        rm -rf "$openssl_override"
     fi
 }
 trap cleanup EXIT HUP INT TERM
