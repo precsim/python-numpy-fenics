@@ -258,8 +258,11 @@ for line in text.splitlines(keepends=True):
     lines.append(line)
 path.write_text("".join(lines), encoding="utf-8")
 PY
-    "${make_runner[@]}" -j2
-    "${make_runner[@]}" install
+    # The default Tcl targets also build/install bundled extension packages and
+    # documentation. The staged runtime retains Tcl itself, its script library,
+    # message catalogs, and public headers only on the current macOS runners.
+    "${make_runner[@]}" -j2 binaries
+    "${make_runner[@]}" install-binaries install-libraries install-msgs install-headers
 )
 (
     cd "$tk_build"
@@ -275,8 +278,10 @@ PY
             --enable-threads \
             --enable-64bit \
             --enable-aqua
-    "${make_runner[@]}" -j2
-    "${make_runner[@]}" install
+    # Avoid Tk documentation. Demos live under lib/tk8.6 and are part of the
+    # staged script tree, so retain them along with libraries and headers.
+    "${make_runner[@]}" -j2 binaries
+    "${make_runner[@]}" install-binaries install-libraries install-headers install-demos
 )
 
 built_tcl="$tcltk_prefix/lib/libtcl8.6.dylib"
