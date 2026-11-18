@@ -38,13 +38,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - id: classify
         env:
+          QUALIFICATION_PLATFORM: macos
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/common/qualify_pr_changes.py
 
   qualify:
     name: qualify-macos-core-numpy-${{ matrix.target_arch }}
     needs: changes
-    # Keep both matrix check names on documentation-only PRs. GitHub does not
+    # Keep both matrix check names on unaffected PRs. GitHub does not
     # expand a matrix skipped at job level, leaving required checks "expected".
     # Use a cheap Linux runner for no-op checks; real builds still use macos-15.
     runs-on: ${{ needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
@@ -82,9 +83,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Documentation-only change; runtime qualification not required
+      - name: No macOS runtime changes; qualification not required
         if: needs.changes.outputs.qualify != 'true'
-        run: echo "No runtime-affecting changes; macOS ${{ matrix.target_arch }} qualification skipped."
+        run: echo "No macOS runtime-affecting changes; ${{ matrix.target_arch }} qualification skipped."
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: needs.changes.outputs.qualify == 'true'
