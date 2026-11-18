@@ -1,5 +1,7 @@
 """Contract tests for exact Windows core -> NumPy runtime layering."""
 
+# Test-only change to verify platform-scoped CI qualification gating.
+
 from __future__ import annotations
 
 import hashlib
