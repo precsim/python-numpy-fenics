@@ -151,10 +151,8 @@ class QualificationGateTests(unittest.TestCase):
         self.assertIn("name: qualify-macos-core-numpy-${{ matrix.target_arch }}", header)
         self.assertNotRegex(header, r"(?m)^    if:")
         self.assertIn("target_arch: arm64", header)
-        self.assertIn("runner: macos-15", header)
         self.assertIn("target_arch: x86_64", header)
-        self.assertIn("runner: macos-15-intel", header)
-        self.assertIn("matrix.runner || 'ubuntu-24.04'", header)
+        self.assertIn("'macos-15' || 'ubuntu-24.04'", header)
         self.assertIn("needs.changes.outputs.qualify == 'true'", header)
 
         blocks = re.split(r"(?m)^      - (?=name:|uses:)", steps)

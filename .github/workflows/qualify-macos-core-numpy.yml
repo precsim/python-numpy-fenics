@@ -47,16 +47,15 @@ jobs:
     needs: changes
     # Keep both matrix check names on unaffected PRs. GitHub does not
     # expand a matrix skipped at job level, leaving required checks "expected".
-    # Use a cheap Linux runner for no-op checks; real builds use the native
-    # architecture runner selected by the matrix.
-    runs-on: ${{ needs.changes.outputs.qualify == 'true' && matrix.runner || 'ubuntu-24.04' }}
+    # Use a cheap Linux runner for no-op checks; real builds run on a native
+    # architecture host so x86_64 staging does not pay the Rosetta penalty.
+    runs-on: ${{ needs.changes.outputs.qualify == 'true' && matrix.target_arch == 'x86_64' && 'macos-15-intel' || needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         include:
           - target_arch: arm64
-            runner: macos-15
             artifact_platform: macos-arm64
             python_asset_id: "678419297"
             python_asset_name: python-3.14.10-darwin-arm64.tar.gz
@@ -65,7 +64,6 @@ jobs:
             numpy_url: https://files.pythonhosted.org/packages/b9/ee/d08226fc858044355983a6e5b94f08ff6f3969e0a2b160a4a89f0ddb3445/numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
             numpy_sha256: 9e9413326d726c2545bfa65d2c0876871e8d8386e77f992c1d426e180bbd4323
           - target_arch: x86_64
-            runner: macos-15-intel
             artifact_platform: macos-x64
             python_asset_id: "678419298"
             python_asset_name: python-3.14.10-darwin-x64.tar.gz
