@@ -43,8 +43,8 @@ def has_macho_magic(path: Path) -> bool:
     try:
         with path.open("rb") as stream:
             return stream.read(4) in MACHO_MAGICS
-    except OSError:
-        return False
+    except OSError as exc:
+        raise SystemExit(f"cannot inspect runtime file: {path}: {exc}") from exc
 
 
 def version_key(value: str) -> tuple[int, ...]:

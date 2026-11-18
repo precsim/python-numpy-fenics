@@ -34,6 +34,12 @@ def digest(path: Path) -> str:
 
 
 class MacOSRuntimeAuditTests(unittest.TestCase):
+    def test_macho_prefilter_fails_closed_on_read_error(self) -> None:
+        path = Path("unreadable-runtime-file")
+        with mock.patch.object(Path, "open", side_effect=OSError("permission denied")):
+            with self.assertRaisesRegex(SystemExit, "cannot inspect runtime file"):
+                audit.has_macho_magic(path)
+
     def test_nonloadable_macho_object_is_not_a_runtime_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "runtime"
