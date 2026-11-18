@@ -330,6 +330,40 @@ jobs:
           cp "$manifest" "$numpy_input_root/linux-glibc217-numpy-sources.json"
           echo "NUMPY_INPUT_ROOT=$numpy_input_root" >> "$GITHUB_ENV"
 
+      - name: Derive exact NumPy native-build cache key
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        id: numpy_build_cache_key
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_root="$RUNNER_TEMP/linux-numpy-native-build-cache"
+          rm -rf "$cache_root"
+          mkdir -p "$cache_root"
+          python3 scripts/linux/numpy_build_cache_key.py \
+            --core-build-script scripts/linux/build-core-runtime.sh \
+            --workflow .github/workflows/qualify-linux-core-numpy.yml \
+            --sources-manifest locks/linux/linux-glibc217-numpy-sources.json \
+            --build-script scripts/linux/build-numpy-runtime.sh \
+            --image "$MANYLINUX_IMAGE" \
+            --github-output "$GITHUB_OUTPUT"
+          echo "NUMPY_BUILD_CACHE_ROOT=$cache_root" >> "$GITHUB_ENV"
+
+      - name: Restore PR NumPy native-build cache
+        if: ${{ github.event_name == 'pull_request' }}
+        id: numpy_build_cache_restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/linux-numpy-native-build-cache
+          key: ${{ steps.numpy_build_cache_key.outputs.key }}
+
+      - name: Discard non-exact PR NumPy native-build cache match
+        if: ${{ github.event_name == 'pull_request' && steps.numpy_build_cache_restore.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$NUMPY_BUILD_CACHE_ROOT"
+          mkdir -p "$NUMPY_BUILD_CACHE_ROOT"
+
       - name: Build controlled glibc 2.17 NumPy runtime offline
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
         shell: bash
@@ -355,12 +389,14 @@ jobs:
             --env PY_RUNTIME_BUILD_IMAGE_REF="$MANYLINUX_IMAGE" \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --volume "$NUMPY_INPUT_ROOT:/inputs:ro" \
+            --volume "$NUMPY_BUILD_CACHE_ROOT:/numpy-build-cache" \
             --workdir /workspace \
             "$MANYLINUX_IMAGE" \
             bash scripts/linux/build-numpy-runtime.sh \
               --core-runtime /workspace/out/linux-x64/core \
               --input-root /inputs \
               --sources-manifest /workspace/locks/linux/linux-glibc217-numpy-sources.json \
+              --build-cache-root /numpy-build-cache \
               --output-runtime /workspace/out/linux-x64/numpy \
             2>&1 | tee ci-artifact/linux-glibc217-numpy-build.log
 
@@ -392,7 +428,25 @@ jobs:
 
           core_provenance_after_test="$(sha256sum out/linux-x64/core/build-provenance-linux.json | awk '{print $1}')"
           test "$core_provenance_after_test" = "$core_provenance_before"
-          sudo chown -R "$(id -u):$(id -g)" out/linux-x64/numpy build 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" out/linux-x64/numpy build "$NUMPY_BUILD_CACHE_ROOT" 2>/dev/null || true
+
+      - name: Require fresh NumPy compilation for promotable runs
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - out/linux-x64/numpy/build-provenance-linux-numpy.json <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          provenance = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          cache = provenance.get("build", {}).get("compilation_cache", {})
+          states = (cache.get("openblas_initial_state"), cache.get("numpy_meson_initial_state"))
+          if cache.get("policy") != "untrusted-ci-intermediates" or states != ("fresh", "fresh"):
+              raise SystemExit(f"promotable NumPy build reused compilation intermediates: {cache!r}")
+          print("promotable_numpy_compilation=fresh")
+          PY
 
       - name: Collect NumPy runtime provenance and failure diagnostics
         if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) }}
@@ -524,6 +578,29 @@ jobs:
               --check relocation=pass \
               --check private_consumer_checkout=not-applicable
           fi
+
+      - name: Save PR NumPy native-build cache after qualification
+        if: ${{ github.event_name == 'pull_request' && steps.numpy_build_cache_restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/linux-numpy-native-build-cache
+          key: ${{ steps.numpy_build_cache_key.outputs.key }}
+
+      - name: Check existing main NumPy native-build cache
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) }}
+        id: numpy_build_cache_lookup
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/linux-numpy-native-build-cache
+          key: ${{ steps.numpy_build_cache_key.outputs.key }}
+          lookup-only: true
+
+      - name: Seed main NumPy native-build cache after qualification
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) && steps.numpy_build_cache_lookup.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/linux-numpy-native-build-cache
+          key: ${{ steps.numpy_build_cache_key.outputs.key }}
 
       - name: Upload qualified Linux core producer runtime
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

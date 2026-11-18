@@ -17,7 +17,8 @@ usage: scripts/linux/build-numpy-runtime.sh \
   --core-runtime <qualified-core-runtime> \
   --input-root <directory-containing-all-pinned-inputs> \
   --sources-manifest <locks/linux/linux-glibc217-numpy-sources.json> \
-  --output-runtime <numpy-runtime-root>
+  --output-runtime <numpy-runtime-root> \
+  [--build-cache-root <untrusted-compilation-intermediate-directory>]
 EOF
     exit 2
 }
@@ -35,6 +36,7 @@ openblas_source=""
 wheelhouse=""
 devtoolset_rpm_dir=""
 output_runtime="$default_output"
+build_cache_root=""
 
 while (($#)); do
     case "$1" in
@@ -56,6 +58,11 @@ while (($#)); do
         --output|--output-runtime)
             (($# >= 2)) || usage
             output_runtime="$2"
+            shift 2
+            ;;
+        --build-cache-root)
+            (($# >= 2)) || usage
+            build_cache_root="$2"
             shift 2
             ;;
         -h|--help)
@@ -97,11 +104,23 @@ wheelhouse="$(canonical "$wheelhouse")"
 devtoolset_rpm_dir="$(canonical "$devtoolset_rpm_dir")"
 [[ -z "$input_dir" ]] || input_dir="$(canonical "$input_dir")"
 output_runtime="$(canonical "$output_runtime")"
+[[ -z "$build_cache_root" ]] || build_cache_root="$(canonical "$build_cache_root")"
 
 [[ "$output_runtime" != "/" && "$output_runtime" != "$root" && "$output_runtime" != "$core_runtime" ]] || \
     die "NumPy output must be a separate safe path"
 case "$output_runtime/" in "$core_runtime/"*) die "NumPy output must not be nested inside core runtime" ;; esac
 case "$core_runtime/" in "$output_runtime/"*) die "core runtime must not be nested inside NumPy output" ;; esac
+if [[ -n "$build_cache_root" ]]; then
+    [[ "$build_cache_root" != "/" && "$build_cache_root" != "$root" && "$build_cache_root" != "$build" ]] || \
+        die "NumPy build cache root must be a separate safe path"
+    case "$build_cache_root/" in "$core_runtime/"*|"$output_runtime/"*|"$build/"*)
+        die "NumPy build cache root must be outside runtime trees"
+        ;;
+    esac
+    case "$core_runtime/" in "$build_cache_root/"*) die "core runtime must not be nested inside NumPy build cache root" ;; esac
+    case "$output_runtime/" in "$build_cache_root/"*) die "NumPy output must not be nested inside NumPy build cache root" ;; esac
+    case "$build/" in "$build_cache_root/"*) die "NumPy build workspace must not be nested inside NumPy build cache root" ;; esac
+fi
 
 core_provenance="$core_runtime/build-provenance-linux.json"
 core_python="$core_runtime/bin/python3.14"
@@ -537,6 +556,25 @@ PY
 src_root="$build/src"
 numpy_src="$src_root/numpy-2.5.2"
 openblas_src="$src_root/OpenBLAS-0.3.33"
+numpy_build_dir=""
+openblas_build_state="disabled"
+numpy_build_dir_state="disabled"
+if [[ -n "$build_cache_root" ]]; then
+    openblas_cache_src_root="$build_cache_root/openblas-src"
+    openblas_src="$openblas_cache_src_root/OpenBLAS-0.3.33"
+    numpy_build_dir="$build_cache_root/numpy-meson-build"
+    mkdir -p "$openblas_cache_src_root" "$numpy_build_dir"
+    if [[ -f "$openblas_src/.precsim-build-complete" ]]; then
+        openblas_build_state="reused"
+    else
+        openblas_build_state="fresh"
+    fi
+    if [[ -f "$numpy_build_dir/meson-private/coredata.dat" ]]; then
+        numpy_build_dir_state="reused"
+    else
+        numpy_build_dir_state="fresh"
+    fi
+fi
 openblas_prefix="$build/openblas-prefix"
 private_pc_root="$openblas_prefix/lib/pkgconfig"
 pep517_venv="$build/pep517-venv"
@@ -548,9 +586,18 @@ discovery_guard_bin="$build/provider-discovery-guard/bin"
 cmake_guard_log="$build/cmake-fallback-attempts.log"
 mkdir -p "$src_root" "$openblas_prefix" "$private_pc_root" "$wheel_output" "$numpy_install" "$discovery_guard_bin"
 tar -xzf "$numpy_source" -C "$src_root"
-tar -xzf "$openblas_source" -C "$src_root"
+if [[ -n "$build_cache_root" ]]; then
+    # The cache contributes generated build outputs only. Re-extract every
+    # source archive member from the independently SHA-verified input before
+    # make sees the tree, so cached source bytes never become build inputs.
+    tar -xzf "$openblas_source" -C "$openblas_cache_src_root"
+else
+    tar -xzf "$openblas_source" -C "$src_root"
+fi
 [[ -d "$numpy_src" && -f "$numpy_src/LICENSE.txt" ]] || die "NumPy source archive layout is invalid"
 [[ -d "$openblas_src" && -f "$openblas_src/LICENSE" ]] || die "OpenBLAS source archive layout is invalid"
+echo "openblas_build_cache_state=$openblas_build_state"
+echo "numpy_meson_build_cache_state=$numpy_build_dir_state"
 
 openblas_make_args=(
     "CC=$dev_cc" "HOSTCC=$dev_cc" "FC="
@@ -575,6 +622,9 @@ done
         PATH="$devtoolset_root/bin:/usr/local/bin:/usr/bin:/bin" \
         make -C "$openblas_src" "${openblas_make_args[@]}" PREFIX="$openblas_prefix" install
 )
+if [[ -n "$build_cache_root" ]]; then
+    : > "$openblas_src/.precsim-build-complete"
+fi
 
 openblas_provider="$("$helper_python" - "$openblas_prefix" <<'PY'
 import pathlib,re,subprocess,sys
@@ -674,6 +724,9 @@ for arg in "${numpy_setup_args[@]}"; do
     [[ "$arg" != *native* ]] || die "host-native NumPy tuning is forbidden"
     pip_config_args+=("-Csetup-args=$arg")
 done
+if [[ -n "$numpy_build_dir" ]]; then
+    pip_config_args+=("-Cbuild-dir=$numpy_build_dir")
+fi
 (
     set -o pipefail
     env -u PYTHONHOME -u PYTHONPATH -u PYTHONUSERBASE -u LD_PRELOAD \
@@ -931,7 +984,7 @@ PY
     "$output_runtime" "$core_identity" "$core_provenance" "$verified_inputs" \
     "$sources_manifest" "$payload_manifest" "$staged_provider" "$openblas_soname" \
     "$dev_cc" "$dev_cxx" "$dev_ld" "$build/pep517-tool-versions.json" \
-    "$built_numpy_wheel" "$provenance" <<'PY'
+    "$built_numpy_wheel" "$openblas_build_state" "$numpy_build_dir_state" "$provenance" <<'PY'
 import hashlib
 import json
 import os
@@ -944,7 +997,8 @@ import sys
 (
     runtime_arg, core_identity_arg, core_provenance_arg, verified_inputs_arg,
     sources_manifest_arg, payload_manifest_arg, provider_arg, provider_soname,
-    cc_arg, cxx_arg, ld_arg, pep517_versions_arg, built_wheel_arg, output_arg,
+    cc_arg, cxx_arg, ld_arg, pep517_versions_arg, built_wheel_arg,
+    openblas_build_state, numpy_build_dir_state, output_arg,
 ) = sys.argv[1:]
 runtime = pathlib.Path(runtime_arg).resolve()
 core_identity_path = pathlib.Path(core_identity_arg).resolve()
@@ -1338,6 +1392,11 @@ data = {
         "network_after_input_verification": "disabled-by-container",
         "pep517_build_isolation": False,
         "dependency_resolution": False,
+        "compilation_cache": {
+            "policy": "untrusted-ci-intermediates" if numpy_build_dir_state != "disabled" else "disabled",
+            "openblas_initial_state": openblas_build_state,
+            "numpy_meson_initial_state": numpy_build_dir_state,
+        },
         "numpy_setup_args": sources_manifest["numpy_build"]["meson_setup_args"],
         "numpy_extra_compile_defines": sources_manifest["numpy_build"]["extra_compile_defines"],
         "openblas_suffix_placement": sources_manifest["numpy_build"]["openblas_suffix_placement"],

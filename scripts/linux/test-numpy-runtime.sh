@@ -651,6 +651,24 @@ if sources_manifest.get("cpu_validation") != {
     fail("NumPy source manifest CPU validation policy differs from the settled contract")
 
 build_record = data.get("build", {})
+compilation_cache = build_record.get("compilation_cache")
+if (
+    not isinstance(compilation_cache, dict)
+    or compilation_cache.get("policy") not in {"disabled", "untrusted-ci-intermediates"}
+    or compilation_cache.get("openblas_initial_state") not in {"disabled", "fresh", "reused"}
+    or compilation_cache.get("numpy_meson_initial_state") not in {"disabled", "fresh", "reused"}
+):
+    fail("NumPy provenance has invalid compilation-cache policy/state")
+if compilation_cache.get("policy") == "disabled" and (
+    compilation_cache.get("openblas_initial_state") != "disabled"
+    or compilation_cache.get("numpy_meson_initial_state") != "disabled"
+):
+    fail("disabled NumPy compilation-cache policy records reusable build state")
+if compilation_cache.get("policy") == "untrusted-ci-intermediates" and (
+    compilation_cache.get("openblas_initial_state") == "disabled"
+    or compilation_cache.get("numpy_meson_initial_state") == "disabled"
+):
+    fail("enabled NumPy compilation-cache policy is missing build-state evidence")
 if build_record.get("provider_discovery") != provider_discovery:
     fail("NumPy provenance provider-discovery policy differs from the committed source manifest")
 if build_record.get("numpy_extra_compile_defines") != ["OPENBLAS_ILP64_NAMING_SCHEME"]:
