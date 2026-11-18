@@ -278,9 +278,10 @@ PY
             --enable-threads \
             --enable-64bit \
             --enable-aqua
-    # Avoid Tk documentation and demos that are discarded during staging.
+    # Avoid Tk documentation. Demos live under lib/tk8.6 and are part of the
+    # staged script tree, so retain them along with libraries and headers.
     "${make_runner[@]}" -j2 binaries
-    "${make_runner[@]}" install-binaries install-libraries install-headers
+    "${make_runner[@]}" install-binaries install-libraries install-headers install-demos
 )
 
 built_tcl="$tcltk_prefix/lib/libtcl8.6.dylib"
