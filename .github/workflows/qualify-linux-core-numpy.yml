@@ -341,7 +341,7 @@ jobs:
           mkdir -p "$cache_root"
           python3 scripts/linux/numpy_build_cache_key.py \
             --core-build-script scripts/linux/build-core-runtime.sh \
-            --workflow .github/workflows/qualify-linux-core-numpy.yml \
+            --core-provenance out/linux-x64/core/build-provenance-linux.json \
             --sources-manifest locks/linux/linux-glibc217-numpy-sources.json \
             --build-script scripts/linux/build-numpy-runtime.sh \
             --image "$MANYLINUX_IMAGE" \

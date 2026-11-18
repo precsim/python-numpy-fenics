@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 
 
-CACHE_SCHEMA = "linux-numpy-native-build-v2"
+CACHE_SCHEMA = "linux-numpy-native-build-v3"
 
 
 def sha256_file(path: Path) -> str:
@@ -23,7 +23,7 @@ def contract_key(
     *,
     image: str,
     core_build_script_sha: str,
-    workflow_sha: str,
+    core_provenance_sha: str,
     manifest_sha: str,
     numpy_build_script_sha: str,
     helper_sha: str,
@@ -33,7 +33,7 @@ def contract_key(
         ("schema", CACHE_SCHEMA),
         ("image", image),
         ("core_build_script_sha256", core_build_script_sha),
-        ("workflow_sha256", workflow_sha),
+        ("core_provenance_sha256", core_provenance_sha),
         ("sources_manifest_sha256", manifest_sha),
         ("numpy_build_script_sha256", numpy_build_script_sha),
         ("cache_helper_sha256", helper_sha),
@@ -45,7 +45,7 @@ def contract_key(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--core-build-script", type=Path, required=True)
-    parser.add_argument("--workflow", type=Path, required=True)
+    parser.add_argument("--core-provenance", type=Path, required=True)
     parser.add_argument("--sources-manifest", type=Path, required=True)
     parser.add_argument("--build-script", type=Path, required=True)
     parser.add_argument("--image", required=True)
@@ -53,7 +53,7 @@ def main() -> int:
     args = parser.parse_args()
 
     core_build_script = args.core_build_script.resolve()
-    workflow = args.workflow.resolve()
+    core_provenance = args.core_provenance.resolve()
     manifest = args.sources_manifest.resolve()
     numpy_build_script = args.build_script.resolve()
     output = args.github_output.resolve()
@@ -61,7 +61,7 @@ def main() -> int:
 
     for label, path in (
         ("core build script", core_build_script),
-        ("Linux qualification workflow", workflow),
+        ("qualified core provenance", core_provenance),
         ("NumPy source manifest", manifest),
         ("NumPy build script", numpy_build_script),
         ("cache-key helper", helper),
@@ -70,14 +70,14 @@ def main() -> int:
             raise SystemExit(f"{label} is missing or not a regular file: {path}")
 
     core_build_script_sha = sha256_file(core_build_script)
-    workflow_sha = sha256_file(workflow)
+    core_provenance_sha = sha256_file(core_provenance)
     manifest_sha = sha256_file(manifest)
     numpy_build_script_sha = sha256_file(numpy_build_script)
     helper_sha = sha256_file(helper)
     key = contract_key(
         image=args.image,
         core_build_script_sha=core_build_script_sha,
-        workflow_sha=workflow_sha,
+        core_provenance_sha=core_provenance_sha,
         manifest_sha=manifest_sha,
         numpy_build_script_sha=numpy_build_script_sha,
         helper_sha=helper_sha,
@@ -87,14 +87,14 @@ def main() -> int:
     with output.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(f"key={key}\n")
         stream.write(f"core_build_script_sha256={core_build_script_sha}\n")
-        stream.write(f"workflow_sha256={workflow_sha}\n")
+        stream.write(f"core_provenance_sha256={core_provenance_sha}\n")
         stream.write(f"sources_manifest_sha256={manifest_sha}\n")
         stream.write(f"numpy_build_script_sha256={numpy_build_script_sha}\n")
         stream.write(f"cache_helper_sha256={helper_sha}\n")
 
     print(f"numpy_build_cache_key={key}")
     print(f"numpy_build_cache_core_build_script_sha256={core_build_script_sha}")
-    print(f"numpy_build_cache_workflow_sha256={workflow_sha}")
+    print(f"numpy_build_cache_core_provenance_sha256={core_provenance_sha}")
     return 0
 
 
