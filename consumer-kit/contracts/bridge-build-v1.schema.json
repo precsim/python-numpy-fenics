@@ -80,6 +80,11 @@
       "minLength": 1,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
     },
+    "exportName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
     "pathList": {
       "type": "array",
       "uniqueItems": true,
@@ -106,9 +111,23 @@
           "$ref": "#/$defs/safeLeafName"
         },
         "exports": {
-          "const": [
-            "mexFunction",
-            "__octave_mex_soversion__"
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/exportName"
+          },
+          "allOf": [
+            {
+              "contains": {
+                "const": "mexFunction"
+              }
+            },
+            {
+              "contains": {
+                "const": "__octave_mex_soversion__"
+              }
+            }
           ]
         }
       },

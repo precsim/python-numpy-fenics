@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT_PATH = ROOT / "consumer-kit" / "tools" / "audit-mex.py"
+BUILD_MANIFEST = ROOT / "reference-bridge" / "bridge-build.json"
+REFERENCE_EXPORTS = ["mexFunction", "__octave_mex_soversion__"]
 SPEC = importlib.util.spec_from_file_location("reference_bridge_audit_mex", AUDIT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 audit = importlib.util.module_from_spec(SPEC)
@@ -30,7 +32,8 @@ class NativeAuditTests(unittest.TestCase):
             output = root / "native-audit.json"
             exports = "00000001 T mexFunction\n00000002 R __octave_mex_soversion__\n"
             with patch.object(sys, "argv", [
-                "audit-mex.py", "--target", "linux-x64", "--mex", str(mex),
+                "audit-mex.py", "--target", "linux-x64", "--manifest", str(BUILD_MANIFEST),
+                "--mex", str(mex),
                 "--output", str(output),
             ]), patch.object(audit, "run", side_effect=["", exports, ""]):
                 self.assertEqual(audit.main(), 0)
@@ -93,7 +96,7 @@ File Type: DLL
         raw = audit.pe_exports(output)
         self.assertEqual(raw, ["__octave_mex_soversion__", "mexFunction"])
         self.assertEqual(
-            audit.require_exact_exports("win-x64", raw),
+            audit.require_exact_exports("win-x64", raw, REFERENCE_EXPORTS),
             ["__octave_mex_soversion__", "mexFunction"],
         )
 
@@ -105,18 +108,36 @@ File Type: DLL
 """
         raw = audit.nm_exports(output)
         with self.assertRaisesRegex(ValueError, "unexpected=.*accidentalPublicApi"):
-            audit.require_exact_exports("linux-x64", raw)
+            audit.require_exact_exports("linux-x64", raw, REFERENCE_EXPORTS)
 
     def test_elf_crt_init_fini_exports_are_not_m_ex_api(self) -> None:
         raw = ["_init", "_fini", "mexFunction", "__octave_mex_soversion__"]
         self.assertEqual(
-            audit.require_exact_exports("linux-x64", raw),
+            audit.require_exact_exports("linux-x64", raw, REFERENCE_EXPORTS),
             ["__octave_mex_soversion__", "mexFunction"],
         )
 
     def test_exports_reject_missing_octave_metadata(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing=.*__octave_mex_soversion__"):
-            audit.require_exact_exports("linux-x64", ["mexFunction"])
+            audit.require_exact_exports("linux-x64", ["mexFunction"], REFERENCE_EXPORTS)
+
+    def test_consumer_declared_extra_export_is_audited_exactly(self) -> None:
+        expected = [
+            "mexFunction",
+            "mexfilerequiredapiversion",
+            "__octave_mex_soversion__",
+        ]
+        raw = [
+            "_init",
+            "_fini",
+            "__octave_mex_soversion__",
+            "mexFunction",
+            "mexfilerequiredapiversion",
+        ]
+        self.assertEqual(
+            audit.require_exact_exports("linux-x64", raw, expected),
+            sorted(expected),
+        )
 
     def test_macho_exports_normalize_c_leading_underscore(self) -> None:
         output = """\
@@ -126,7 +147,7 @@ File Type: DLL
         raw = audit.nm_exports(output)
         self.assertEqual(raw, ["___octave_mex_soversion__", "_mexFunction"])
         self.assertEqual(
-            audit.require_exact_exports("macos-arm64", raw),
+            audit.require_exact_exports("macos-arm64", raw, REFERENCE_EXPORTS),
             ["__octave_mex_soversion__", "mexFunction"],
         )
 

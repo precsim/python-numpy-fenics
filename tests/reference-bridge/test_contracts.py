@@ -93,6 +93,9 @@ def validate_schema(value: object, schema: dict, root_schema: dict | None = None
         if matches != 1:
             raise ContractError(f"{path}: expected exactly one oneOf schema match, got {matches}")
         return
+    if "allOf" in schema:
+        for candidate in schema["allOf"]:
+            validate_schema(value, candidate, root_schema, path)
 
     expected_type = schema.get("type")
     if expected_type is not None:
@@ -130,6 +133,15 @@ def validate_schema(value: object, schema: dict, root_schema: dict | None = None
         if "items" in schema:
             for index, item in enumerate(value):
                 validate_schema(item, schema["items"], root_schema, f"{path}[{index}]")
+        if "contains" in schema:
+            for index, item in enumerate(value):
+                try:
+                    validate_schema(item, schema["contains"], root_schema, f"{path}[{index}]")
+                except ContractError:
+                    continue
+                break
+            else:
+                raise ContractError(f"{path}: array does not contain a required item")
 
     if isinstance(value, dict):
         if len(value) < schema.get("minProperties", 0):
@@ -275,10 +287,18 @@ class PhaseOneContractTests(unittest.TestCase):
 
         single_export = copy.deepcopy(self.bridge_manifest)
         single_export["targets"]["linux-x64"]["exports"] = ["mexFunction"]
-        with self.assertRaisesRegex(ContractError, "expected constant"):
+        with self.assertRaisesRegex(ContractError, "too few items|required item"):
             validate_bridge_contract(single_export, self.bridge_schema)
 
-    def test_build_tool_requires_octave_102_two_export_contract(self) -> None:
+        consumer_exports = copy.deepcopy(self.bridge_manifest)
+        consumer_exports["targets"]["linux-x64"]["exports"] = [
+            "mexFunction",
+            "mexfilerequiredapiversion",
+            "__octave_mex_soversion__",
+        ]
+        validate_bridge_contract(consumer_exports, self.bridge_schema)
+
+    def test_build_tool_requires_octave_102_baseline_and_allows_consumer_exports(self) -> None:
         build = load_build_bridge()
         expected_exports = ["mexFunction", "__octave_mex_soversion__"]
         expected_abi = {
@@ -286,7 +306,7 @@ class PhaseOneContractTests(unittest.TestCase):
             "soversion_export": "__octave_mex_soversion__",
         }
 
-        self.assertEqual(build.REFERENCE_EXPORTS, expected_exports)
+        self.assertEqual(build.REQUIRED_EXPORTS, set(expected_exports))
         self.assertEqual(build.REFERENCE_OCTAVE_ABI, expected_abi)
         for target in sorted(self.bridge_manifest["targets"]):
             with self.subTest(target=target):
@@ -308,12 +328,28 @@ class PhaseOneContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             manifest_path = Path(directory) / "bridge-build.json"
 
-            single_export = copy.deepcopy(self.bridge_manifest)
-            single_export["targets"]["linux-x64"]["exports"] = ["mexFunction"]
-            manifest_path.write_text(json.dumps(single_export), encoding="utf-8")
+            consumer_exports = copy.deepcopy(self.bridge_manifest)
+            consumer_exports["targets"]["linux-x64"]["exports"] = [
+                "mexFunction",
+                "mexfilerequiredapiversion",
+                "__octave_mex_soversion__",
+            ]
+            manifest_path.write_text(json.dumps(consumer_exports), encoding="utf-8")
+            manifest, _, _ = build.load_build(manifest_path, REFERENCE_BRIDGE, "linux-x64")
+            self.assertEqual(
+                build.build_contract_identity(manifest, "linux-x64")["exports"],
+                consumer_exports["targets"]["linux-x64"]["exports"],
+            )
+
+            missing_required = copy.deepcopy(self.bridge_manifest)
+            missing_required["targets"]["linux-x64"]["exports"] = [
+                "mexFunction",
+                "mexfilerequiredapiversion",
+            ]
+            manifest_path.write_text(json.dumps(missing_required), encoding="utf-8")
             with self.assertRaisesRegex(
                 build.BuildContractError,
-                "must export exactly mexFunction and __octave_mex_soversion__",
+                "missing required MEX exports",
             ):
                 build.load_build(manifest_path, REFERENCE_BRIDGE, "linux-x64")
 
