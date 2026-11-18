@@ -117,3 +117,6 @@ Future releases may add a per-target ABI-compatibility sidecar to simplify
 cross-release caching. Such a sidecar would be advisory; it cannot replace
 exact native input hashes or private host qualification, and is not required
 for the current build-once contract.
+
+Runtime qualification remains mandatory for changes that affect executable
+producer inputs or the qualification workflow itself.
