@@ -308,10 +308,15 @@ def main() -> int:
         cl_args = [
             "/nologo", "/LD", "/O2", "/std:c11", "/utf-8",
             "/DWIN32_LEAN_AND_MEAN", "/DMOCK_BRIDGE_BUILD",
+            f"/Fo{output_dir}{os.sep}",
         ]
         cl_args += [f"/I{path}" for path in all_includes]
         cl_args += [str(path) for path in sources]
-        cl_args += ["/link", f"/OUT:{output}"]
+        cl_args += [
+            "/link",
+            f"/OUT:{output}",
+            f"/IMPLIB:{output_dir / 'bridge.lib'}",
+        ]
         cl_args += [f"/EXPORT:{symbol}" for symbol in exports]
         compiler, version = run_msvc(cl_args)
         command_record = ["cl", *cl_args]
