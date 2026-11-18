@@ -44,8 +44,10 @@ jobs:
   qualify:
     name: qualify-macos-core-numpy-${{ matrix.target_arch }}
     needs: changes
-    if: needs.changes.outputs.qualify == 'true'
-    runs-on: macos-15
+    # Keep both matrix check names on documentation-only PRs. GitHub does not
+    # expand a matrix skipped at job level, leaving required checks "expected".
+    # Use a cheap Linux runner for no-op checks; real builds still use macos-15.
+    runs-on: ${{ needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -80,10 +82,15 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
+      - name: Documentation-only change; runtime qualification not required
+        if: needs.changes.outputs.qualify != 'true'
+        run: echo "No runtime-affecting changes; macOS ${{ matrix.target_arch }} qualification skipped."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: needs.changes.outputs.qualify == 'true'
 
       - name: Provision Rosetta for x86_64 target
-        if: ${{ matrix.target_arch == 'x86_64' }}
+        if: ${{ needs.changes.outputs.qualify == 'true' && matrix.target_arch == 'x86_64' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,6 +102,7 @@ jobs:
           test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
 
       - name: Download pinned actions/python-versions CPython assets
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -141,6 +149,7 @@ jobs:
           PY
 
       - name: Install pinned CPython toolcache payload
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -172,6 +181,7 @@ jobs:
           PY
 
       - name: Fetch and verify exact NumPy wheel
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -181,6 +191,7 @@ jobs:
           echo "NUMPY_WHEEL=$wheel" >> "$GITHUB_ENV"
 
       - name: Fetch locked Tcl/Tk 8.6.18 sources
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -190,6 +201,7 @@ jobs:
           echo "TK_SOURCE=$source_dir/tk8.6.18-src.tar.gz" >> "$GITHUB_ENV"
 
       - name: Fetch CPython 3.14.10 source for _tkinter rebuild
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -202,6 +214,7 @@ jobs:
           echo "CPYTHON_SOURCE=$source" >> "$GITHUB_ENV"
 
       - name: Stage public core runtime
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -217,6 +230,7 @@ jobs:
           test -f "out/macos-$TARGET_ARCH/core/build-provenance-macos.json"
 
       - name: Stage and qualify NumPy runtime
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -229,6 +243,7 @@ jobs:
             --arch "$TARGET_ARCH"
 
       - name: Write producer manifests and deterministic archives
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -281,6 +296,7 @@ jobs:
             --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified producer runtimes
+        if: needs.changes.outputs.qualify == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: python-runtime-${{ matrix.artifact_platform }}-cp314
