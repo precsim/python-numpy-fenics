@@ -47,8 +47,9 @@ jobs:
     needs: changes
     # Keep both matrix check names on unaffected PRs. GitHub does not
     # expand a matrix skipped at job level, leaving required checks "expected".
-    # Use a cheap Linux runner for no-op checks; real builds still use macos-15.
-    runs-on: ${{ needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
+    # Use a cheap Linux runner for no-op checks; real builds run on a native
+    # architecture host so x86_64 staging does not pay the Rosetta penalty.
+    runs-on: ${{ needs.changes.outputs.qualify == 'true' && matrix.target_arch == 'x86_64' && 'macos-15-intel' || needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -90,17 +91,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: needs.changes.outputs.qualify == 'true'
 
-      - name: Provision Rosetta for x86_64 target
-        if: ${{ needs.changes.outputs.qualify == 'true' && matrix.target_arch == 'x86_64' }}
+      - name: Verify native target architecture
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
-          sudo softwareupdate --install-rosetta --agree-to-license >"$RUNNER_TEMP/rosetta-install.log" 2>&1 || {
-            cat "$RUNNER_TEMP/rosetta-install.log" >&2
-            /usr/bin/arch -x86_64 /usr/bin/uname -m >/dev/null 2>&1 || exit 1
-          }
-          test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
+          test "$(uname -m)" = "$TARGET_ARCH"
 
       - name: Download pinned actions/python-versions CPython assets
         if: needs.changes.outputs.qualify == 'true'
@@ -162,7 +158,7 @@ jobs:
           (cd "$setup_dir" && bash ./setup.sh)
           python_real="$AGENT_TOOLSDIRECTORY/Python/3.14.10/$TOOLCACHE_ARCH/bin/python3.14"
           test -x "$python_real"
-          if [[ "$TARGET_ARCH" == x86_64 ]]; then
+          if [[ "$TARGET_ARCH" == x86_64 && "$(uname -m)" == arm64 ]]; then
             python_launcher="$RUNNER_TEMP/python3.14-x86_64"
             cat > "$python_launcher" <<EOF
           #!/bin/bash
