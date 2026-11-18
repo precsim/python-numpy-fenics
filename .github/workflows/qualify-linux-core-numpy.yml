@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - id: classify
         env:
+          QUALIFICATION_PLATFORM: linux
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/common/qualify_pr_changes.py
 
