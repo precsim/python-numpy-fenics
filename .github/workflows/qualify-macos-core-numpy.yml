@@ -47,14 +47,16 @@ jobs:
     needs: changes
     # Keep both matrix check names on unaffected PRs. GitHub does not
     # expand a matrix skipped at job level, leaving required checks "expected".
-    # Use a cheap Linux runner for no-op checks; real builds still use macos-15.
-    runs-on: ${{ needs.changes.outputs.qualify == 'true' && 'macos-15' || 'ubuntu-24.04' }}
+    # Use a cheap Linux runner for no-op checks; real builds use the native
+    # architecture runner selected by the matrix.
+    runs-on: ${{ needs.changes.outputs.qualify == 'true' && matrix.runner || 'ubuntu-24.04' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         include:
           - target_arch: arm64
+            runner: macos-15
             artifact_platform: macos-arm64
             python_asset_id: "678419297"
             python_asset_name: python-3.14.10-darwin-arm64.tar.gz
@@ -63,6 +65,7 @@ jobs:
             numpy_url: https://files.pythonhosted.org/packages/b9/ee/d08226fc858044355983a6e5b94f08ff6f3969e0a2b160a4a89f0ddb3445/numpy-2.5.2-cp314-cp314-macosx_14_0_arm64.whl
             numpy_sha256: 9e9413326d726c2545bfa65d2c0876871e8d8386e77f992c1d426e180bbd4323
           - target_arch: x86_64
+            runner: macos-15-intel
             artifact_platform: macos-x64
             python_asset_id: "678419298"
             python_asset_name: python-3.14.10-darwin-x64.tar.gz
@@ -90,17 +93,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: needs.changes.outputs.qualify == 'true'
 
-      - name: Provision Rosetta for x86_64 target
-        if: ${{ needs.changes.outputs.qualify == 'true' && matrix.target_arch == 'x86_64' }}
+      - name: Verify native target architecture
+        if: needs.changes.outputs.qualify == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
-          sudo softwareupdate --install-rosetta --agree-to-license >"$RUNNER_TEMP/rosetta-install.log" 2>&1 || {
-            cat "$RUNNER_TEMP/rosetta-install.log" >&2
-            /usr/bin/arch -x86_64 /usr/bin/uname -m >/dev/null 2>&1 || exit 1
-          }
-          test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
+          test "$(uname -m)" = "$TARGET_ARCH"
 
       - name: Download pinned actions/python-versions CPython assets
         if: needs.changes.outputs.qualify == 'true'
@@ -162,7 +160,7 @@ jobs:
           (cd "$setup_dir" && bash ./setup.sh)
           python_real="$AGENT_TOOLSDIRECTORY/Python/3.14.10/$TOOLCACHE_ARCH/bin/python3.14"
           test -x "$python_real"
-          if [[ "$TARGET_ARCH" == x86_64 ]]; then
+          if [[ "$TARGET_ARCH" == x86_64 && "$(uname -m)" == arm64 ]]; then
             python_launcher="$RUNNER_TEMP/python3.14-x86_64"
             cat > "$python_launcher" <<EOF
           #!/bin/bash

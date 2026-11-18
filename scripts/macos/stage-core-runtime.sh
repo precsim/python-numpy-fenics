@@ -220,7 +220,7 @@ common_cflags="-O2 -arch $target_arch -mmacosx-version-min=14.0"
 common_ldflags="-arch $target_arch -mmacosx-version-min=14.0"
 configure_runner=(/bin/bash)
 make_runner=(make)
-if [[ "$target_arch" == x86_64 ]]; then
+if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
     # Tcl's Darwin configure logic derives its 64-bit architecture from
     # `arch` and appends that value to CFLAGS. On an Apple Silicon runner an
     # arm64 configure process therefore adds `-arch arm64` even when the
