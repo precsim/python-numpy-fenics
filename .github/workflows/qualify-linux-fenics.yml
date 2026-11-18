@@ -916,6 +916,7 @@ jobs:
             dist/fenics-embed-runtime-v0.1.0-linux-x64-cp314.tar.gz.sha256
             build/linux-fenics-overlay/
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
       - name: Collect failure diagnostics

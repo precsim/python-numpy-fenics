@@ -137,4 +137,5 @@ jobs:
             locks/windows/windows-x64-fenics-package-lock.json
             fenics-package-lock-evidence.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30

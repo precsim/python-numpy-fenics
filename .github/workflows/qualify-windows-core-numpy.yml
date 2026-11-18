@@ -202,6 +202,7 @@ jobs:
           python scripts/common/write_qualification.py --platform win-x64 --profile numpy --artifact dist/python-runtime-v0.1.0-win-x64-cp314-numpy.zip --output dist/qualification-win-x64-numpy.json --check inherited_core_identity=pass --check pinned_numpy_wheel=pass --check openblas=pass --check blas_lapack_functional=pass --check pe_native_closure=pass --check relocation=pass --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified producer runtimes
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: python-runtime-win-x64-cp314
@@ -211,4 +212,19 @@ jobs:
             out/win-x64/core/runtime-manifest.json
             out/win-x64/numpy/runtime-manifest.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
+
+      - name: Upload PR qualification evidence
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-runtime-win-x64-cp314-pr-evidence
+          path: |
+            dist/*.sha256
+            dist/qualification-*.json
+            build/windows-qualification/
+            out/win-x64/core/runtime-manifest.json
+            out/win-x64/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 7

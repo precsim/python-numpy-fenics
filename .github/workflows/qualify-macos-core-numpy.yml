@@ -293,7 +293,7 @@ jobs:
             --check private_consumer_checkout=not-applicable
 
       - name: Upload qualified producer runtimes
-        if: needs.changes.outputs.qualify == 'true'
+        if: needs.changes.outputs.qualify == 'true' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: python-runtime-${{ matrix.artifact_platform }}-cp314
@@ -310,4 +310,26 @@ jobs:
             out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-manifest-macos.json
             out/macos-${{ matrix.target_arch }}/numpy/runtime-manifest.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
+
+      - name: Upload PR qualification evidence
+        if: needs.changes.outputs.qualify == 'true' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: python-runtime-${{ matrix.artifact_platform }}-cp314-pr-evidence
+          path: |
+            dist/*.sha256
+            dist/qualification-*.json
+            out/macos-${{ matrix.target_arch }}/core/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/core/core-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/core/core-relocation-qualification-macos.json
+            out/macos-${{ matrix.target_arch }}/core/runtime-manifest.json
+            out/macos-${{ matrix.target_arch }}/numpy/build-provenance-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-native-census-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-relocation-qualification-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/numpy-payload-manifest-macos.json
+            out/macos-${{ matrix.target_arch }}/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 7

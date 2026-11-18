@@ -603,6 +603,7 @@ jobs:
           key: ${{ steps.numpy_build_cache_key.outputs.key }}
 
       - name: Upload qualified Linux core producer runtime
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: python-runtime-linux-x64-cp314-core
@@ -613,10 +614,11 @@ jobs:
             out/linux-x64/core/build-provenance-linux.json
             out/linux-x64/core/runtime-manifest.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
       - name: Upload qualified Linux NumPy producer runtime
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.qualify_numpy }}
+        if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.qualify_numpy) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: python-runtime-linux-x64-cp314-numpy
@@ -629,7 +631,25 @@ jobs:
             out/linux-x64/numpy/numpy-payload-manifest-linux.json
             out/linux-x64/numpy/runtime-manifest.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
+
+      - name: Upload PR qualification evidence
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-runtime-linux-x64-cp314-pr-evidence
+          path: |
+            dist/*.sha256
+            dist/qualification-*.json
+            out/linux-x64/core/build-provenance-linux.json
+            out/linux-x64/core/runtime-manifest.json
+            out/linux-x64/numpy/build-provenance-linux.json
+            out/linux-x64/numpy/build-provenance-linux-numpy.json
+            out/linux-x64/numpy/numpy-payload-manifest-linux.json
+            out/linux-x64/numpy/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload runtime diagnostics
         if: always()
