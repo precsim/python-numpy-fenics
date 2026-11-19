@@ -207,6 +207,17 @@ printf 'overlay_toolchain_phase_seconds resolved_linker_path_checks %s\n' "$((SE
 toolchain_started=$SECONDS
 "$clang_exe" --version
 printf 'overlay_toolchain_phase_seconds clang_version %s\n' "$((SECONDS - toolchain_started))"
+if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
+    warmup_sdkroot="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+    [[ -d "$warmup_sdkroot" ]] || { echo "macOS SDK root is unavailable: $warmup_sdkroot" >&2; exit 1; }
+    warmup_source="$work/rosetta-clang-warmup.c"
+    warmup_object="$work/rosetta-clang-warmup.o"
+    printf 'int fenics_rosetta_warmup(int value) { return value + 1; }\n' > "$warmup_source"
+    toolchain_started=$SECONDS
+    "$clang_exe" -B"$tool_bin" -isysroot "$warmup_sdkroot" -mmacosx-version-min=14.0 \
+        -x c -std=c17 -O2 -g0 -c "$warmup_source" -o "$warmup_object"
+    printf 'overlay_toolchain_phase_seconds clang_rosetta_object_warmup %s\n' "$((SECONDS - toolchain_started))"
+fi
 printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
 log_phase compiler_and_linker_validation
 
