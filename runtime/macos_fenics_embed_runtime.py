@@ -132,6 +132,12 @@ while [[ $# -gt 0 ]]; do
             fi
             shift
             ;;
+        -O2)
+            # FFCx-generated C is JIT-compiled at qualification/runtime; keep
+            # optimization lightweight to reduce Rosetta compiler CPU cost.
+            args+=("-O1")
+            shift
+            ;;
         -mmacosx-version-min=*)
             shift
             ;;
