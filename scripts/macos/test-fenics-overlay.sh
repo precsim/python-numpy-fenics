@@ -27,7 +27,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 overlay_zip="$(cd "$(dirname "$overlay_zip")" && pwd -P)/$(basename "$overlay_zip")"
 base_runtime="$(cd "$base_runtime" && pwd -P)"
 
-for tool in ditto file python3 shasum; do
+for tool in ditto file otool python3 shasum; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 1; }
 done
 
@@ -159,6 +159,41 @@ PY
 hash_numpy "$work/numpy-after.json"
 cmp "$work/numpy-before.json" "$work/numpy-after.json"
 
+tool_bin="$runtime/fenics-runtime/conda/bin"
+if [[ "$target_arch" == arm64 ]]; then
+    clang_exe="$tool_bin/arm64-apple-darwin20.0.0-clang"
+    linker_exe="$tool_bin/arm64-apple-darwin20.0.0-ld"
+else
+    clang_exe="$tool_bin/x86_64-apple-darwin13.4.0-clang"
+    linker_exe="$tool_bin/x86_64-apple-darwin13.4.0-ld"
+fi
+[[ -x "$clang_exe" ]] || { echo "packaged Clang executable is missing: $clang_exe" >&2; exit 1; }
+[[ -x "$linker_exe" ]] || { echo "packaged cctools linker is missing: $linker_exe" >&2; exit 1; }
+resolved_linker="$("$clang_exe" -B"$tool_bin" -print-prog-name=ld)"
+if [[ "$resolved_linker" != /* ]]; then
+    resolved_linker="$tool_bin/$resolved_linker"
+fi
+resolved_linker="$(python3 - "$resolved_linker" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).resolve())
+PY
+)"
+expected_linker="$(python3 - "$linker_exe" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).resolve())
+PY
+)"
+[[ "$resolved_linker" == "$expected_linker" ]] || {
+    echo "packaged Clang did not resolve the packaged cctools linker: $resolved_linker != $expected_linker" >&2
+    exit 1
+}
+"$clang_exe" --version
+printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
+
 cat > "$poison/numpy.py" <<'PY'
 raise RuntimeError("ambient numpy poison imported")
 PY
@@ -192,15 +227,22 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
-"${python_cmd[@]}" -S -P - "$runtime" <<'PY'
+"${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" "$target_arch" <<'PY'
 import importlib.util
 import os
+import platform
 from pathlib import Path
 import sys
 
-root = Path(sys.argv[1]).resolve()
+script = Path(sys.argv[1]).resolve()
+root = Path(sys.argv[2]).resolve()
+expected_arch = sys.argv[3]
 if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.14":
     raise SystemExit(f"unexpected relocated prefix: {sys.prefix}")
+if platform.machine() != expected_arch:
+    raise SystemExit(f"unexpected runtime architecture: {platform.machine()} != {expected_arch}")
+if sys.version_info[:3] != (3, 14, 10):
+    raise SystemExit(f"unexpected runtime Python version: {platform.python_version()}")
 bootstrap = (
     root
     / "Python.framework"
@@ -231,58 +273,84 @@ if tcl.eval("info patchlevel") != "8.6.18":
 tcl_library = Path(tcl.eval("info library")).resolve()
 if root not in tcl_library.parents:
     raise SystemExit(f"FEniCS overlay Tcl scripts escaped the public runtime: {tcl_library}")
-for variable in ("FENICS_JIT_CLANG", "FENICS_JIT_LINKER"):
+tool_names = {
+    "arm64": ("arm64-apple-darwin20.0.0-clang", "arm64-apple-darwin20.0.0-ld"),
+    "x86_64": ("x86_64-apple-darwin13.4.0-clang", "x86_64-apple-darwin13.4.0-ld"),
+}[expected_arch]
+for variable, tool_name in zip(("FENICS_JIT_CLANG", "FENICS_JIT_LINKER"), tool_names):
     value = Path(os.environ.get(variable, "")).resolve()
-    if root not in value.parents:
-        raise SystemExit(f"{variable} escaped relocated runtime: {value}")
+    expected = root / "fenics-runtime" / "conda" / "bin" / tool_name
+    if value != expected.resolve():
+        raise SystemExit(f"{variable} escaped relocated runtime: {value} != {expected}")
+cc = Path(os.environ.get("CC", "")).resolve()
+if not cc.is_file():
+    raise SystemExit(f"FEniCS JIT compiler wrapper is missing: {cc}")
+if Path(os.environ.get("CXX", "")).resolve() != cc:
+    raise SystemExit("CXX does not use the FEniCS JIT compiler wrapper")
+if os.environ.get("CPP") != f"{cc} -E":
+    raise SystemExit("CPP does not use the FEniCS JIT compiler wrapper")
+if os.environ.get("LDSHARED") != f"{cc} -bundle -undefined dynamic_lookup":
+    raise SystemExit("LDSHARED does not use the FEniCS JIT compiler wrapper")
+if os.environ.get("MACOSX_DEPLOYMENT_TARGET") != "14.0":
+    raise SystemExit("FEniCS JIT deployment target is not macOS 14.0")
+private_prefix = root / "fenics-runtime" / "conda"
+if Path(os.environ.get("PETSC_DIR", "")).resolve() != private_prefix.resolve():
+    raise SystemExit("PETSC_DIR escaped the relocated private FEniCS prefix")
+if os.environ.get("PETSC_ARCH", "") != "":
+    raise SystemExit("PETSC_ARCH must be empty for the relocated FEniCS runtime")
+import basix
 import numpy
 import dolfinx
+import ffcx
+import mpi4py
 import petsc4py
-from mpi4py import MPI
-from dolfinx import mesh
+import ufl
 
-if numpy.__version__ != "2.5.2":
-    raise SystemExit(f"unexpected NumPy version: {numpy.__version__}")
+expected_versions = {
+    "NumPy": (numpy.__version__, "2.5.2"),
+    "DOLFINx": (dolfinx.__version__, "0.11.0"),
+    "FFCx": (ffcx.__version__, "0.11.0"),
+    "Basix": (basix.__version__, "0.11.0"),
+    "UFL": (ufl.__version__, "2026.1.0"),
+    "mpi4py": (mpi4py.__version__, "4.1.2"),
+    "petsc4py": (petsc4py.__version__, "3.25.6"),
+}
+for name, (actual, expected) in expected_versions.items():
+    if actual != expected:
+        raise SystemExit(f"unexpected {name} version: {actual} != {expected}")
 if root not in Path(numpy.__file__).resolve().parents:
     raise SystemExit(f"NumPy escaped public runtime: {numpy.__file__}")
 if root not in Path(dolfinx.__file__).resolve().parents:
     raise SystemExit(f"DOLFINx escaped public runtime: {dolfinx.__file__}")
-mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
 print("fenics_public_overlay_import=pass")
-PY
-
-"${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" <<'PY'
-import importlib.util
-from pathlib import Path
-import sys
-
-script = Path(sys.argv[1]).resolve()
-root = Path(sys.argv[2]).resolve()
-bootstrap = (
-    root
-    / "Python.framework"
-    / "Versions"
-    / "3.14"
-    / "lib"
-    / "python3.14"
-    / "site-packages"
-    / "fenics_embed_runtime.py"
-)
-spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
-if spec is None or spec.loader is None:
-    raise SystemExit(f"cannot load staged FEniCS bootstrap: {bootstrap}")
-fenics_embed_runtime = importlib.util.module_from_spec(spec)
-sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
-spec.loader.exec_module(fenics_embed_runtime)
-fenics_embed_runtime.activate()
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 PY
 
-if ! find "$cache" -type f \( -name '*.so' -o -name '*.dylib' \) -print -quit | grep -q .; then
-    echo "fresh FFCx JIT produced no native cache module" >&2
+jit_modules="$work/jit-modules.txt"
+find "$cache" -type f -name '*.so' -print | sort > "$jit_modules"
+if [[ ! -s "$jit_modules" ]]; then
+    echo "fresh FFCx JIT produced no Mach-O extension modules" >&2
     exit 1
 fi
+
+while IFS= read -r module; do
+    module_file="$(file "$module")"
+    echo "$module_file"
+    grep -q "$target_arch" <<< "$module_file"
+    module_dependencies="$(otool -L "$module")"
+    echo "$module_dependencies"
+    if grep -E '/opt/homebrew|/usr/local|Cellar' <<< "$module_dependencies"; then
+        echo "fresh JIT module links to an ambient package-manager path: $module" >&2
+        exit 1
+    fi
+    minos="$(otool -l "$module" | awk '$1 == "minos" {print $2; exit}')"
+    [[ "$minos" == 14.0 ]] || {
+        echo "fresh JIT module has unexpected macOS minimum $minos: $module" >&2
+        exit 1
+    }
+    echo "jit_module_minos=$minos module=$module"
+done < "$jit_modules"
 
 echo "fenics_public_overlay_test=pass"
 echo "fenics_numpy_base_identity=pass"
