@@ -26,7 +26,7 @@ jobs:
             conda_subdir: osx-arm64
             overlay_asset: fenics-embed-runtime-v0.1.0-macos-arm64-cp314.zip
           - architecture: x86_64
-            runner: macos-15
+            runner: macos-15-intel
             artifact_platform: macos-x64
             artifact_arch: x64
             conda_subdir: osx-64
@@ -51,27 +51,11 @@ jobs:
           set -euo pipefail
           echo "PRODUCER_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Provision Rosetta for x86_64 target
-        if: ${{ matrix.architecture == 'x86_64' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = arm64
-          sudo softwareupdate --install-rosetta --agree-to-license >"$RUNNER_TEMP/rosetta-install.log" 2>&1 || {
-            cat "$RUNNER_TEMP/rosetta-install.log" >&2
-            /usr/bin/arch -x86_64 /usr/bin/uname -m >/dev/null 2>&1 || exit 1
-          }
-          test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
-
       - name: Verify native runner architecture
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$TARGET_ARCH" == x86_64 ]]; then
-            test "$(/usr/bin/arch -x86_64 /usr/bin/uname -m)" = x86_64
-          else
-            test "$(uname -m)" = arm64
-          fi
+          test "$(uname -m)" = "$TARGET_ARCH"
 
       - name: Install micromamba
         uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3
