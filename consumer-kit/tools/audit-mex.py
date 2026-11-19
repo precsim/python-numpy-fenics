@@ -18,7 +18,7 @@ FORBIDDEN = (
     "openblas", "blas", "lapack", "mpi", "petsc",
 )
 GLIBC = re.compile(r"GLIBC_([0-9]+)\.([0-9]+)")
-EXPECTED_EXPORTS = {"mexFunction", "__octave_mex_soversion__"}
+REQUIRED_EXPORTS = {"mexFunction", "__octave_mex_soversion__"}
 PE_DEPENDENCY_HEADERS = {
     "image has the following dependencies:",
     "image has the following delay load dependencies:",
@@ -170,14 +170,41 @@ def normalize_exports(platform: str, raw_exports: list[str]) -> list[str]:
     return list(raw_exports)
 
 
-def require_exact_exports(platform: str, raw_exports: list[str]) -> list[str]:
+def expected_exports(manifest_path: Path, target: str) -> list[str]:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read bridge build manifest: {exc}") from exc
+    targets = manifest.get("targets")
+    if not isinstance(targets, dict) or target not in targets:
+        raise ValueError(f"bridge build manifest has no target {target}")
+    target_record = targets[target]
+    exports = target_record.get("exports") if isinstance(target_record, dict) else None
+    if not isinstance(exports, list) or len(exports) < 2:
+        raise ValueError(f"{target} exports are missing or invalid")
+    if any(
+        not isinstance(symbol, str)
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol) is None
+        for symbol in exports
+    ):
+        raise ValueError(f"{target} contains an invalid export name")
+    if len(exports) != len(set(exports)):
+        raise ValueError(f"{target} contains duplicate exports")
+    missing = sorted(REQUIRED_EXPORTS - set(exports))
+    if missing:
+        raise ValueError(f"{target} is missing required MEX exports: {missing}")
+    return list(exports)
+
+
+def require_exact_exports(platform: str, raw_exports: list[str], expected: list[str]) -> list[str]:
     normalized = normalize_exports(platform, raw_exports)
     # GNU ld emits these CRT entry points into ELF shared objects even when
     # all application symbols use hidden visibility. They are not MEX APIs.
     platform_crt = {"_init", "_fini"} if platform == "linux-x64" else set()
     observed = set(normalized) - platform_crt
-    missing = sorted(EXPECTED_EXPORTS - observed)
-    unexpected = sorted(observed - EXPECTED_EXPORTS)
+    expected_set = set(expected)
+    missing = sorted(expected_set - observed)
+    unexpected = sorted(observed - expected_set)
     duplicates = sorted({symbol for symbol in normalized if symbol not in platform_crt and normalized.count(symbol) > 1})
     if missing or unexpected or duplicates:
         raise ValueError(
@@ -192,6 +219,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True,
                         choices=("win-x64", "linux-x64", "macos-arm64", "macos-x64"))
+    parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--mex", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -199,6 +227,10 @@ def main() -> int:
     if not mex.is_file():
         raise SystemExit(f"MEX is missing: {mex}")
     mex_sha = hashlib.sha256(mex.read_bytes()).hexdigest()
+    try:
+        expected = expected_exports(args.manifest.resolve(), args.target)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     checks: dict[str, object] = {}
     if args.target == "win-x64":
@@ -206,7 +238,7 @@ def main() -> int:
         imports = run_msvc_tool(["dumpbin", "/nologo", "/dependents", str(mex)])
         try:
             raw_exports = pe_exports(export_output)
-            exports = require_exact_exports(args.target, raw_exports)
+            exports = require_exact_exports(args.target, raw_exports, expected)
             dependencies = pe_dependencies(imports)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -224,7 +256,7 @@ def main() -> int:
         symbol_output = run(["nm", "-D", "--defined-only", str(mex)])
         raw_exports = nm_exports(symbol_output)
         try:
-            exports = require_exact_exports(args.target, raw_exports)
+            exports = require_exact_exports(args.target, raw_exports, expected)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         bad = forbidden_dependencies(
@@ -251,7 +283,7 @@ def main() -> int:
         symbol_output = run(["nm", "-gU", str(mex)])
         raw_exports = nm_exports(symbol_output)
         try:
-            exports = require_exact_exports(args.target, raw_exports)
+            exports = require_exact_exports(args.target, raw_exports, expected)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         dependency_lines = imports.splitlines()[1:]

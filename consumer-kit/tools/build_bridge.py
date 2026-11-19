@@ -21,7 +21,8 @@ import tempfile
 
 TARGETS = {"win-x64", "linux-x64", "macos-arm64", "macos-x64"}
 SAFE_BASENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
-REFERENCE_EXPORTS = ["mexFunction", "__octave_mex_soversion__"]
+SAFE_EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+REQUIRED_EXPORTS = {"mexFunction", "__octave_mex_soversion__"}
 REFERENCE_OCTAVE_ABI = {
     "compatibility": "GNU Octave 10.2+",
     "soversion_export": "__octave_mex_soversion__",
@@ -62,6 +63,19 @@ def unique_paths(values: object, kind: str) -> list[PurePosixPath]:
     return result
 
 
+def export_names(values: object, target: str) -> list[str]:
+    require(isinstance(values, list), f"{target} exports must be a list")
+    require(len(values) >= 2, f"{target} must declare at least the required MEX exports")
+    require(
+        all(isinstance(item, str) and SAFE_EXPORT.fullmatch(item) is not None for item in values),
+        f"{target} contains an invalid export name",
+    )
+    require(len(values) == len(set(values)), f"{target} contains duplicate exports")
+    missing = sorted(REQUIRED_EXPORTS - set(values))
+    require(not missing, f"{target} is missing required MEX exports: {missing}")
+    return list(values)
+
+
 def load_build(manifest_path: Path, source_root: Path, target: str) -> tuple[dict, list[Path], list[Path]]:
     require(target in TARGETS, f"unsupported target: {target}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -88,11 +102,7 @@ def load_build(manifest_path: Path, source_root: Path, target: str) -> tuple[dic
     require(output == "bridge.mex", f"{target} output must be bridge.mex")
     require(isinstance(alias, str) and SAFE_BASENAME.fullmatch(alias) is not None,
             f"{target} has unsafe MATLAB alias")
-    require(
-        target_record.get("exports") == REFERENCE_EXPORTS,
-        f"{target} must export exactly mexFunction and __octave_mex_soversion__ "
-        "for GNU Octave 10.2+ ABI compatibility",
-    )
+    export_names(target_record.get("exports"), target)
 
     root = source_root.resolve()
     source_paths: list[Path] = []
@@ -293,19 +303,21 @@ def main() -> int:
     output.unlink(missing_ok=True)
 
     all_includes = [*includes, python_headers, *octave_headers]
+    exports = export_names(manifest["targets"][args.target]["exports"], args.target)
     if args.target == "win-x64":
         cl_args = [
             "/nologo", "/LD", "/O2", "/std:c11", "/utf-8",
             "/DWIN32_LEAN_AND_MEAN", "/DMOCK_BRIDGE_BUILD",
+            f"/Fo{output_dir}{os.sep}",
         ]
         cl_args += [f"/I{path}" for path in all_includes]
         cl_args += [str(path) for path in sources]
         cl_args += [
             "/link",
             f"/OUT:{output}",
-            "/EXPORT:mexFunction",
-            "/EXPORT:__octave_mex_soversion__",
+            f"/IMPLIB:{output_dir / 'bridge.lib'}",
         ]
+        cl_args += [f"/EXPORT:{symbol}" for symbol in exports]
         compiler, version = run_msvc(cl_args)
         command_record = ["cl", *cl_args]
     elif args.target == "linux-x64":
@@ -316,7 +328,7 @@ def main() -> int:
         ]
         command_record += [f"-I{path}" for path in all_includes]
         command_record += [str(path) for path in sources]
-        command_record += ["-ldl", "-o", str(output)]
+        command_record += ["-ldl", "-pthread", "-o", str(output)]
         subprocess.run(command_record, check=True)
         version = compiler_version([compiler, "--version"])
     else:
@@ -325,12 +337,11 @@ def main() -> int:
         command_record = [
             compiler, "-std=c11", "-O2", "-fPIC", "-fvisibility=hidden",
             "-arch", arch, "-bundle", "-Wl,-undefined,error",
-            "-Wl,-exported_symbol,_mexFunction",
-            "-Wl,-exported_symbol,___octave_mex_soversion__",
         ]
+        command_record += [f"-Wl,-exported_symbol,_{symbol}" for symbol in exports]
         command_record += [f"-I{path}" for path in all_includes]
         command_record += [str(path) for path in sources]
-        command_record += ["-o", str(output)]
+        command_record += ["-pthread", "-o", str(output)]
         subprocess.run(command_record, check=True)
         version = compiler_version([compiler, "--version"])
 
