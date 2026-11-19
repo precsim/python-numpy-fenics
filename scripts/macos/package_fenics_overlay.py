@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -42,6 +44,12 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
 ZIP_COMPRESSION_LEVEL = 6
+CLONE_NOOWNERCOPY = 0x0002
+COPYFILE_XATTR = 1 << 2
+_CLONEFILE_LIBRARY: Any | None = None
+_CLONEFILE: Any | None = None
+_COPYFILE: Any | None = None
+_CLONEFILE_DISABLED = False
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
@@ -402,6 +410,85 @@ def verify_locked_prefix(lock: dict[str, Any], records: dict[str, dict[str, Any]
         raise SystemExit("locked prefix does not match package lock:\n" + json.dumps(mismatches, indent=2))
 
 
+def clone_or_copy2(source: Path, destination: Path) -> tuple[bool, bool]:
+    """Clone a regular file when supported, otherwise use shutil.copy2."""
+    global _CLONEFILE_LIBRARY, _CLONEFILE, _COPYFILE, _CLONEFILE_DISABLED
+
+    attempted = False
+    if not _CLONEFILE_DISABLED:
+        if _CLONEFILE is None:
+            try:
+                library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+                clonefile = library.clonefile
+                copyfile = library.copyfile
+            except (AttributeError, OSError):
+                _CLONEFILE_DISABLED = True
+            else:
+                clonefile.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
+                clonefile.restype = ctypes.c_int
+                copyfile.argtypes = (
+                    ctypes.c_char_p,
+                    ctypes.c_char_p,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                )
+                copyfile.restype = ctypes.c_int
+                _CLONEFILE_LIBRARY = library
+                _CLONEFILE = clonefile
+                _COPYFILE = copyfile
+
+        if _CLONEFILE is not None:
+            attempted = True
+            ctypes.set_errno(0)
+            result = _CLONEFILE(
+                os.fsencode(source),
+                os.fsencode(destination),
+                CLONE_NOOWNERCOPY,
+            )
+            if result == 0:
+                # clonefile also clones BSD flags and macOS extended metadata
+                # that shutil.copy2 does not preserve.  Temporarily clear BSD
+                # flags so normalization cannot be blocked by an immutable
+                # source flag, strip cloned xattrs/resource forks, then apply
+                # the same copystat metadata step used by copy2.
+                chflags = getattr(os, "chflags", None)
+                if chflags is not None:
+                    chflags(destination, 0)
+                ctypes.set_errno(0)
+                clear_result = _COPYFILE(
+                    b"/dev/null",
+                    os.fsencode(destination),
+                    None,
+                    COPYFILE_XATTR,
+                )
+                if clear_result != 0:
+                    error = ctypes.get_errno()
+                    raise OSError(
+                        error,
+                        f"failed to clear cloned macOS extended metadata: {destination}: "
+                        f"{os.strerror(error)}",
+                    )
+                shutil.copystat(source, destination, follow_symlinks=False)
+                return True, attempted
+
+            error = ctypes.get_errno()
+            unsupported = {errno.ENOTSUP, errno.EXDEV}
+            if hasattr(errno, "EOPNOTSUPP"):
+                unsupported.add(errno.EOPNOTSUPP)
+            if error in unsupported:
+                # All package sources and staging destinations use the same two
+                # roots, so a filesystem-level clone failure applies to the run.
+                _CLONEFILE_DISABLED = True
+            else:
+                raise OSError(
+                    error,
+                    f"clonefile failed: {source} -> {destination}: {os.strerror(error)}",
+                )
+
+    shutil.copy2(source, destination, follow_symlinks=False)
+    return False, attempted
+
+
 def copy_path(
     source: Path,
     destination: Path,
@@ -467,8 +554,25 @@ def copy_path(
         return
 
     copy_started = time.monotonic()
-    shutil.copy2(source, destination, follow_symlinks=False)
-    profile["copy"] += time.monotonic() - copy_started
+    cloned, clone_attempted = clone_or_copy2(source, destination)
+    copy_seconds = time.monotonic() - copy_started
+    profile["copy"] += copy_seconds
+    if clone_attempted:
+        profile["clone_attempt_count"] += 1
+    if cloned:
+        profile["clone_success_count"] += 1
+        profile["clone_copy"] += copy_seconds
+        if source_size is None:
+            profile["clone_unknown_size"] += 1
+        else:
+            profile["clone_bytes"] += source_size
+    else:
+        profile["clone_fallback_count"] += 1
+        profile["fallback_copy"] += copy_seconds
+        if source_size is None:
+            profile["clone_fallback_unknown_size"] += 1
+        else:
+            profile["clone_fallback_bytes"] += source_size
     profile["copied_files"] += 1
     if source_size is None:
         profile["copied_unknown_size"] += 1
@@ -1406,6 +1510,8 @@ try:
     log_duration("package_staging_copy_path", staging_profile["copy_path_total"])
     log_duration("package_staging_parent_mkdir", staging_profile["parent_mkdir"])
     log_duration("package_staging_copy", staging_profile["copy"])
+    log_duration("package_staging_clone_copy", staging_profile["clone_copy"])
+    log_duration("package_staging_fallback_copy", staging_profile["fallback_copy"])
     log_duration("package_staging_symlink", staging_profile["symlink"])
     log_duration("package_staging_conflict_verification", staging_profile["conflict_verification"])
     log_duration("package_staging_outer_metadata", staging_profile["outer_metadata"])
@@ -1434,6 +1540,13 @@ try:
     log_count("copied_files", staging_profile["copied_files"])
     log_bytes("copied_bytes", staging_profile["copied_bytes"])
     log_count("copied_unknown_size", staging_profile["copied_unknown_size"])
+    log_count("clone_attempts", staging_profile["clone_attempt_count"])
+    log_count("clone_successes", staging_profile["clone_success_count"])
+    log_bytes("clone_bytes", staging_profile["clone_bytes"])
+    log_count("clone_unknown_size", staging_profile["clone_unknown_size"])
+    log_count("clone_fallbacks", staging_profile["clone_fallback_count"])
+    log_bytes("clone_fallback_bytes", staging_profile["clone_fallback_bytes"])
+    log_count("clone_fallback_unknown_size", staging_profile["clone_fallback_unknown_size"])
     log_count("regular_files", staging_profile["regular_count"])
     log_count("symlinks", staging_profile["symlink_count"])
     log_count("parent_mkdir_calls", staging_profile["parent_mkdir_calls"])
