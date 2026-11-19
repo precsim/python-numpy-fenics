@@ -256,6 +256,7 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
 # so the poisoned PYTHONPATH cannot shadow it before activation.
 "${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" "$target_arch" <<'PY'
 import importlib.util
+import importlib._bootstrap as importlib_bootstrap
 import os
 import platform
 from pathlib import Path
@@ -270,11 +271,57 @@ def log_phase(name):
     print(f"overlay_qualification_python_phase_seconds {name} {now - phase_start:.3f}", flush=True)
     phase_start = now
 
-def log_import_phase(name, started):
+def log_import_phase(name, started, finished=None):
+    if finished is None:
+        finished = time.monotonic()
     print(
-        f"overlay_runtime_import_seconds {name} {time.monotonic() - started:.3f}",
+        f"overlay_runtime_import_seconds {name} {finished - started:.3f}",
         flush=True,
     )
+
+def start_import_profile():
+    records = []
+    stack = []
+    original_find_and_load = importlib_bootstrap._find_and_load
+
+    def timed_find_and_load(name, import_):
+        record = [name, time.monotonic(), 0.0]
+        stack.append(record)
+        try:
+            return original_find_and_load(name, import_)
+        finally:
+            elapsed = time.monotonic() - record[1]
+            stack.pop()
+            exclusive = max(0.0, elapsed - record[2])
+            if stack:
+                stack[-1][2] += elapsed
+            records.append((name, elapsed, exclusive))
+
+    importlib_bootstrap._find_and_load = timed_find_and_load
+    return original_find_and_load, records
+
+def stop_import_profile(original_find_and_load):
+    importlib_bootstrap._find_and_load = original_find_and_load
+
+def report_import_profile(label, records):
+    ranked = sorted(
+        records,
+        key=lambda record: record[2],
+        reverse=True,
+    )
+    reported = [record for record in ranked if record[2] >= 0.050][:25]
+    print(
+        "overlay_runtime_import_profile "
+        f"{label} records={len(records)} reported={len(reported)} "
+        f"exclusive_total={sum(record[2] for record in records):.3f}",
+        flush=True,
+    )
+    for name, inclusive, exclusive in reported:
+        print(
+            "overlay_runtime_import_detail_seconds "
+            f"{label} {name} inclusive={inclusive:.3f} exclusive={exclusive:.3f}",
+            flush=True,
+        )
 
 script = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
@@ -348,14 +395,26 @@ if os.environ.get("PETSC_ARCH", "") != "":
     raise SystemExit("PETSC_ARCH must be empty for the relocated FEniCS runtime")
 log_import_phase("tcl_and_toolchain_checks", import_started)
 import_started = time.monotonic()
-import basix
-log_import_phase("basix", import_started)
+original_find_and_load, import_profile_records = start_import_profile()
+try:
+    import basix
+    import_finished = time.monotonic()
+finally:
+    stop_import_profile(original_find_and_load)
+basix_import_profile_records = import_profile_records
+log_import_phase("basix", import_started, import_finished)
 import_started = time.monotonic()
 import numpy
 log_import_phase("numpy", import_started)
 import_started = time.monotonic()
-import dolfinx
-log_import_phase("dolfinx", import_started)
+original_find_and_load, import_profile_records = start_import_profile()
+try:
+    import dolfinx
+    import_finished = time.monotonic()
+finally:
+    stop_import_profile(original_find_and_load)
+dolfinx_import_profile_records = import_profile_records
+log_import_phase("dolfinx", import_started, import_finished)
 import_started = time.monotonic()
 import ffcx
 log_import_phase("ffcx", import_started)
@@ -392,6 +451,8 @@ print("fenics_public_overlay_import=pass")
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
 log_phase("poisson_jit_and_petsc_solve")
+report_import_profile("basix", basix_import_profile_records)
+report_import_profile("dolfinx", dolfinx_import_profile_records)
 PY
 log_phase relocated_python_qualification
 
