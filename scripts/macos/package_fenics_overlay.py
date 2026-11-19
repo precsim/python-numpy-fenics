@@ -41,7 +41,7 @@ MACHO_MAGICS = {
     b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
-ZIP_COMPRESSION_LEVEL = 6
+ZIP_COMPRESSION_LEVEL = 4
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
