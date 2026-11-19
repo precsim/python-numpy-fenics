@@ -674,8 +674,11 @@ def macho_identity(path: Path) -> str | None:
     return output[1].strip() if len(output) > 1 and output[1].strip() else None
 
 
-def macho_dependencies(path: Path) -> list[str]:
+def macho_dependencies_with_timings(path: Path) -> tuple[list[str], float, float]:
+    identity_started = time.monotonic()
     identity = macho_identity(path)
+    identity_seconds = time.monotonic() - identity_started
+    list_started = time.monotonic()
     output = run("otool", "-L", str(path)).stdout.splitlines()[1:]
     dependencies = []
     for line in output:
@@ -686,7 +689,11 @@ def macho_dependencies(path: Path) -> list[str]:
         if identity is not None and dependency == identity:
             continue
         dependencies.append(dependency)
-    return dependencies
+    return dependencies, identity_seconds, time.monotonic() - list_started
+
+
+def macho_dependencies(path: Path) -> list[str]:
+    return macho_dependencies_with_timings(path)[0]
 
 
 def macho_load_commands(path: Path) -> list[str]:
@@ -790,14 +797,23 @@ def relocate_and_audit_macho(
     phase_started = log_phase("macho_discovery", phase_started)
     rewritten: set[Path] = set()
     relocation_metadata_seconds = 0.0
+    relocation_rpaths_seconds = 0.0
+    relocation_dependency_identity_seconds = 0.0
+    relocation_dependency_list_seconds = 0.0
+    relocation_dylib_identity_seconds = 0.0
     install_name_tool_seconds = 0.0
     signing_seconds = 0.0
 
     for binary in macho_files:
         metadata_started = time.monotonic()
+        read_started = time.monotonic()
         rpaths = macho_rpaths(binary)
+        relocation_rpaths_seconds += time.monotonic() - read_started
         changes = []
-        for dependency in macho_dependencies(binary):
+        dependencies, identity_seconds, list_seconds = macho_dependencies_with_timings(binary)
+        relocation_dependency_identity_seconds += identity_seconds
+        relocation_dependency_list_seconds += list_seconds
+        for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
             target = staged_target_for_dependency(dependency, binary, source_prefix, private_prefix, rpaths)
@@ -832,7 +848,9 @@ def relocate_and_audit_macho(
         if binary.suffix == ".dylib":
             metadata_started = time.monotonic()
             identity = macho_identity(binary) or ""
-            relocation_metadata_seconds += time.monotonic() - metadata_started
+            identity_seconds = time.monotonic() - metadata_started
+            relocation_dylib_identity_seconds += identity_seconds
+            relocation_metadata_seconds += identity_seconds
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
@@ -852,6 +870,18 @@ def relocate_and_audit_macho(
     relocation_seconds = rewrite_finished - phase_started - signing_seconds
     log_duration("macho_relocation", relocation_seconds)
     log_duration("macho_relocation_metadata_reads", relocation_metadata_seconds)
+    log_duration("macho_relocation_rpaths", relocation_rpaths_seconds)
+    log_duration("macho_relocation_dependency_identity", relocation_dependency_identity_seconds)
+    log_duration("macho_relocation_dependency_list", relocation_dependency_list_seconds)
+    log_duration("macho_relocation_dylib_identity", relocation_dylib_identity_seconds)
+    log_duration(
+        "macho_relocation_metadata_other",
+        relocation_metadata_seconds
+        - relocation_rpaths_seconds
+        - relocation_dependency_identity_seconds
+        - relocation_dependency_list_seconds
+        - relocation_dylib_identity_seconds,
+    )
     log_duration("macho_install_name_rewrites", install_name_tool_seconds)
     log_duration(
         "macho_relocation_other",
@@ -866,6 +896,8 @@ def relocate_and_audit_macho(
     audit_minos_seconds = 0.0
     audit_rpaths_seconds = 0.0
     audit_dependencies_seconds = 0.0
+    audit_dependency_identity_seconds = 0.0
+    audit_dependency_list_seconds = 0.0
     audit_codesign_verify_seconds = 0.0
     audit_codesign_detail_seconds = 0.0
     def audit_binary(binary: Path) -> tuple[dict[str, Any], dict[str, float]]:
@@ -892,8 +924,10 @@ def relocate_and_audit_macho(
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
 
         audit_started = time.monotonic()
-        dependencies = macho_dependencies(binary)
+        dependencies, identity_seconds, list_seconds = macho_dependencies_with_timings(binary)
         elapsed["dependencies"] = time.monotonic() - audit_started
+        elapsed["dependency_identity"] = identity_seconds
+        elapsed["dependency_list"] = list_seconds
         for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
@@ -938,6 +972,8 @@ def relocate_and_audit_macho(
             audit_minos_seconds += elapsed["minos"]
             audit_rpaths_seconds += elapsed["rpaths"]
             audit_dependencies_seconds += elapsed["dependencies"]
+            audit_dependency_identity_seconds += elapsed["dependency_identity"]
+            audit_dependency_list_seconds += elapsed["dependency_list"]
             audit_codesign_verify_seconds += elapsed["codesign_verify"]
             audit_codesign_detail_seconds += elapsed["codesign_detail"]
     audit_finished = time.monotonic()
@@ -947,6 +983,8 @@ def relocate_and_audit_macho(
     log_duration("macho_audit_minos", audit_minos_seconds)
     log_duration("macho_audit_rpaths", audit_rpaths_seconds)
     log_duration("macho_audit_dependencies", audit_dependencies_seconds)
+    log_duration("macho_audit_dependency_identity", audit_dependency_identity_seconds)
+    log_duration("macho_audit_dependency_list", audit_dependency_list_seconds)
     log_duration("macho_audit_codesign_verify", audit_codesign_verify_seconds)
     log_duration("macho_audit_codesign_detail", audit_codesign_detail_seconds)
     # Per-command durations overlap across worker threads; their sum is not
