@@ -895,6 +895,8 @@ def relocate_and_audit_macho(
     relocation_dependency_list_seconds = 0.0
     relocation_dylib_identity_seconds = 0.0
     install_name_tool_seconds = 0.0
+    install_name_tool_calls = 0
+    install_name_tool_operations = 0
     signing_seconds = 0.0
 
     for binary in macho_files:
@@ -928,34 +930,31 @@ def relocate_and_audit_macho(
         relocation_metadata_seconds += time.monotonic() - metadata_started
 
         mode = stat.S_IMODE(binary.stat().st_mode)
-        if changes:
-            binary.chmod(mode | stat.S_IWUSR)
-            # install_name_tool accepts multiple -change pairs in one call.
-            # Preserve their order while avoiding one process per dependency.
-            change_args = []
-            for old, new in changes:
-                change_args.extend(("-change", old, new))
-            rewrite_started = time.monotonic()
-            run("install_name_tool", *change_args, str(binary))
-            install_name_tool_seconds += time.monotonic() - rewrite_started
-            rewritten.add(binary)
-
+        rewrite_args = []
+        # install_name_tool accepts multiple mutation options in one call.
+        # Preserve the existing operation order while paying process startup
+        # only once for each binary that needs any relocation.
+        for old, new in changes:
+            rewrite_args.extend(("-change", old, new))
+            install_name_tool_operations += 1
         for rpath in rpaths:
             if rpath.startswith(str(source_prefix)) or rpath.startswith(("/opt/homebrew", "/usr/local", "/Users/")):
-                binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
-                rewrite_started = time.monotonic()
-                run("install_name_tool", "-delete_rpath", rpath, str(binary))
-                install_name_tool_seconds += time.monotonic() - rewrite_started
-                rewritten.add(binary)
+                rewrite_args.extend(("-delete_rpath", rpath))
+                install_name_tool_operations += 1
 
         if binary.suffix == ".dylib":
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
-                binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
-                rewrite_started = time.monotonic()
-                run("install_name_tool", "-id", desired, str(binary))
-                install_name_tool_seconds += time.monotonic() - rewrite_started
-                rewritten.add(binary)
+                rewrite_args.extend(("-id", desired))
+                install_name_tool_operations += 1
+
+        if rewrite_args:
+            binary.chmod(mode | stat.S_IWUSR)
+            rewrite_started = time.monotonic()
+            run("install_name_tool", *rewrite_args, str(binary))
+            install_name_tool_seconds += time.monotonic() - rewrite_started
+            install_name_tool_calls += 1
+            rewritten.add(binary)
 
         # Sign every shipped Mach-O after relocation.  This is stronger and
         # simpler than preserving heterogeneous producer signatures.
@@ -981,6 +980,8 @@ def relocate_and_audit_macho(
         - relocation_dylib_identity_seconds,
     )
     log_duration("macho_install_name_rewrites", install_name_tool_seconds)
+    log_count("macho_install_name_tool_calls", install_name_tool_calls)
+    log_count("macho_install_name_tool_operations", install_name_tool_operations)
     log_duration(
         "macho_relocation_other",
         relocation_seconds - relocation_metadata_seconds - install_name_tool_seconds,
