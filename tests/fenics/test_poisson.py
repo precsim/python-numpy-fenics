@@ -3,6 +3,9 @@
 Poisson on the unit circle: -laplace(u) = 4, u = 0 on boundary.
 Exact solution u = 1 - x^2 - y^2."""
 
+import cProfile
+import io
+import pstats
 import time
 
 phase_start = time.monotonic()
@@ -55,10 +58,22 @@ u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
 # parallel direct LU.
 ksp = {"ksp_type": "preonly", "pc_type": "lu"} if MPI.COMM_WORLD.size == 1 \
     else {"ksp_type": "cg", "pc_type": "gamg", "ksp_rtol": 1e-10}
-problem = LinearProblem(ufl.dot(ufl.grad(u), ufl.grad(v)) * ufl.dx,
-                        fem.Constant(domain, 4.0) * v * ufl.dx, bcs=[bc],
-                        petsc_options=ksp,
-                        petsc_options_prefix="poisson_disk")
+# Profile the real, fresh FFCx/CFFI JIT without changing its compilation path.
+# This diagnostic records Python call costs, not an alternative acceptance path.
+jit_profile = cProfile.Profile()
+jit_profile.enable()
+try:
+    problem = LinearProblem(ufl.dot(ufl.grad(u), ufl.grad(v)) * ufl.dx,
+                            fem.Constant(domain, 4.0) * v * ufl.dx, bcs=[bc],
+                            petsc_options=ksp,
+                            petsc_options_prefix="poisson_disk")
+finally:
+    jit_profile.disable()
+    jit_stats = io.StringIO()
+    pstats.Stats(jit_profile, stream=jit_stats).sort_stats("cumulative").print_stats(35)
+    print("poisson_jit_constructor_profile_begin", flush=True)
+    print(jit_stats.getvalue(), flush=True)
+    print("poisson_jit_constructor_profile_end", flush=True)
 log_phase("ffcx_form_jit_and_problem_construction")
 uh = problem.solve()
 log_phase("petsc_solve")
