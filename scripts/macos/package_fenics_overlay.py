@@ -778,9 +778,12 @@ def relocate_and_audit_macho(
     macho_files = [path for path in sorted(stage_root.rglob("*")) if is_macho(path)]
     phase_started = log_phase("macho_discovery", phase_started)
     rewritten: set[Path] = set()
+    relocation_metadata_seconds = 0.0
+    install_name_tool_seconds = 0.0
     signing_seconds = 0.0
 
     for binary in macho_files:
+        metadata_started = time.monotonic()
         rpaths = macho_rpaths(binary)
         changes = []
         for dependency in macho_dependencies(binary):
@@ -796,26 +799,35 @@ def relocate_and_audit_macho(
             replacement = loader_reference(binary, target)
             if dependency != replacement:
                 changes.append((dependency, replacement))
+        relocation_metadata_seconds += time.monotonic() - metadata_started
 
         mode = stat.S_IMODE(binary.stat().st_mode)
         if changes:
             binary.chmod(mode | stat.S_IWUSR)
             for old, new in changes:
+                rewrite_started = time.monotonic()
                 run("install_name_tool", "-change", old, new, str(binary))
+                install_name_tool_seconds += time.monotonic() - rewrite_started
             rewritten.add(binary)
 
         for rpath in rpaths:
             if rpath.startswith(str(source_prefix)) or rpath.startswith(("/opt/homebrew", "/usr/local", "/Users/")):
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
+                rewrite_started = time.monotonic()
                 run("install_name_tool", "-delete_rpath", rpath, str(binary))
+                install_name_tool_seconds += time.monotonic() - rewrite_started
                 rewritten.add(binary)
 
         if binary.suffix == ".dylib":
+            metadata_started = time.monotonic()
             identity = macho_identity(binary) or ""
+            relocation_metadata_seconds += time.monotonic() - metadata_started
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
+                rewrite_started = time.monotonic()
                 run("install_name_tool", "-id", desired, str(binary))
+                install_name_tool_seconds += time.monotonic() - rewrite_started
                 rewritten.add(binary)
 
         # Sign every shipped Mach-O after relocation.  This is stronger and
@@ -826,17 +838,34 @@ def relocate_and_audit_macho(
         binary.chmod(mode)
         signing_seconds += time.monotonic() - signing_started
     rewrite_finished = time.monotonic()
-    log_duration("macho_relocation", rewrite_finished - phase_started - signing_seconds)
+    relocation_seconds = rewrite_finished - phase_started - signing_seconds
+    log_duration("macho_relocation", relocation_seconds)
+    log_duration("macho_relocation_metadata_reads", relocation_metadata_seconds)
+    log_duration("macho_install_name_rewrites", install_name_tool_seconds)
+    log_duration(
+        "macho_relocation_other",
+        relocation_seconds - relocation_metadata_seconds - install_name_tool_seconds,
+    )
     log_duration("macho_signing", signing_seconds)
     phase_started = rewrite_finished
 
     census = []
     max_minos: str | None = None
+    audit_lipo_seconds = 0.0
+    audit_minos_seconds = 0.0
+    audit_rpaths_seconds = 0.0
+    audit_dependencies_seconds = 0.0
+    audit_codesign_verify_seconds = 0.0
+    audit_codesign_detail_seconds = 0.0
     for binary in macho_files:
+        audit_started = time.monotonic()
         archs = run("lipo", "-archs", str(binary)).stdout.strip().split()
+        audit_lipo_seconds += time.monotonic() - audit_started
         if archs != [architecture]:
             raise SystemExit(f"unexpected Mach-O architectures for {binary}: {archs!r}")
+        audit_started = time.monotonic()
         minos = macho_minos(binary)
+        audit_minos_seconds += time.monotonic() - audit_started
         if minos is None:
             raise SystemExit(f"Mach-O has no measurable minimum macOS version: {binary}")
         if version_tuple(minos) > version_tuple("14.0"):
@@ -844,12 +873,16 @@ def relocate_and_audit_macho(
         if max_minos is None or version_tuple(minos) > version_tuple(max_minos):
             max_minos = minos
 
+        audit_started = time.monotonic()
         rpaths = macho_rpaths(binary)
+        audit_rpaths_seconds += time.monotonic() - audit_started
         for rpath in rpaths:
             if rpath.startswith((str(source_prefix), "/opt/homebrew", "/usr/local", "/Users/")):
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
 
+        audit_started = time.monotonic()
         dependencies = macho_dependencies(binary)
+        audit_dependencies_seconds += time.monotonic() - audit_started
         for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
@@ -861,10 +894,14 @@ def relocate_and_audit_macho(
             except ValueError as exc:
                 raise SystemExit(f"relocated Mach-O dependency escapes overlay: {binary} -> {dependency}") from exc
 
+        audit_started = time.monotonic()
         verification = run("codesign", "--verify", "--strict", str(binary), check=False)
+        audit_codesign_verify_seconds += time.monotonic() - audit_started
         if verification.returncode != 0:
             raise SystemExit(f"ad-hoc signature verification failed for {binary}: {verification.stdout}")
+        audit_started = time.monotonic()
         detail = run("codesign", "-dv", "--verbose=4", str(binary), check=False).stdout
+        audit_codesign_detail_seconds += time.monotonic() - audit_started
         census.append(
             {
                 "path": binary.relative_to(stage_root).as_posix(),
@@ -876,7 +913,25 @@ def relocate_and_audit_macho(
                 "codesign": "adhoc" if "Signature=adhoc" in detail else "valid",
             }
         )
-    log_phase("macho_audits", phase_started)
+    audit_finished = time.monotonic()
+    audit_seconds = audit_finished - phase_started
+    log_duration("macho_audits", audit_seconds)
+    log_duration("macho_audit_lipo", audit_lipo_seconds)
+    log_duration("macho_audit_minos", audit_minos_seconds)
+    log_duration("macho_audit_rpaths", audit_rpaths_seconds)
+    log_duration("macho_audit_dependencies", audit_dependencies_seconds)
+    log_duration("macho_audit_codesign_verify", audit_codesign_verify_seconds)
+    log_duration("macho_audit_codesign_detail", audit_codesign_detail_seconds)
+    log_duration(
+        "macho_audit_other",
+        audit_seconds
+        - audit_lipo_seconds
+        - audit_minos_seconds
+        - audit_rpaths_seconds
+        - audit_dependencies_seconds
+        - audit_codesign_verify_seconds
+        - audit_codesign_detail_seconds,
+    )
 
     return {
         "format_version": 1,
