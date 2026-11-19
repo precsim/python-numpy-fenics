@@ -1337,7 +1337,7 @@ try:
     # ``source_hashing`` measures main-thread blocking time for ordered results;
     # hashes completed while an earlier file is copied are intentionally hidden
     # because total staging wall time is the performance metric that matters.
-    with ThreadPoolExecutor(max_workers=4) as hash_pool:
+    with ThreadPoolExecutor(max_workers=2) as hash_pool:
         for lock_record in lock["packages"]:
             name = str(lock_record["name"])
             record = records[name]
