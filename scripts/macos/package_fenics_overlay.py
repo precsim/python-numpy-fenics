@@ -783,11 +783,33 @@ def relocate_and_audit_macho(
     install_name_tool_seconds = 0.0
     signing_seconds = 0.0
 
-    for binary in macho_files:
+    def read_relocation_metadata(binary: Path) -> tuple[list[str], list[str]]:
+        # Read-only subprocesses, before any install_name_tool or codesign call.
+        return macho_rpaths(binary), macho_dependencies(binary)
+
+    # A hardlink can make two paths refer to the same mutable image. Preserve
+    # per-file sequential observations in that case instead of prefetching.
+    inodes = [(path.stat().st_dev, path.stat().st_ino) for path in macho_files]
+    independent_images = len(inodes) == len(set(inodes))
+    if independent_images:
+        # Materialize all pre-rewrite observations before modifying any image.
+        # map() preserves the sorted path order used in the provenance census.
+        prefetch_started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            prefetched = list(pool.map(read_relocation_metadata, macho_files))
+        prefetch_seconds = time.monotonic() - prefetch_started
+        log_duration("macho_relocation_metadata_prefetch_wall", prefetch_seconds)
+        relocation_metadata_seconds += prefetch_seconds
+    else:
+        prefetched = None
+
+    for index, binary in enumerate(macho_files):
         metadata_started = time.monotonic()
-        rpaths = macho_rpaths(binary)
+        rpaths, dependencies = (
+            prefetched[index] if prefetched is not None else read_relocation_metadata(binary)
+        )
         changes = []
-        for dependency in macho_dependencies(binary):
+        for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
             target = staged_target_for_dependency(dependency, binary, source_prefix, private_prefix, rpaths)
