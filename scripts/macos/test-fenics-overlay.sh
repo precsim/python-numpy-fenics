@@ -179,6 +179,18 @@ fi
 [[ -x "$clang_exe" ]] || { echo "packaged Clang executable is missing: $clang_exe" >&2; exit 1; }
 [[ -x "$linker_exe" ]] || { echo "packaged cctools linker is missing: $linker_exe" >&2; exit 1; }
 toolchain_started=$SECONDS
+"$clang_exe" --version
+printf 'overlay_toolchain_phase_seconds clang_version %s\n' "$((SECONDS - toolchain_started))"
+warmup_sdkroot="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+[[ -d "$warmup_sdkroot" ]] || { echo "macOS SDK root is unavailable: $warmup_sdkroot" >&2; exit 1; }
+warmup_source="$work/compiler-warmup.c"
+warmup_object="$work/compiler-warmup.o"
+printf 'int fenics_compiler_warmup(int value) { return value + 1; }\n' > "$warmup_source"
+toolchain_started=$SECONDS
+"$clang_exe" -B"$tool_bin" -isysroot "$warmup_sdkroot" -mmacosx-version-min=14.0 \
+    -x c -std=c17 -O2 -g0 -c "$warmup_source" -o "$warmup_object"
+printf 'overlay_toolchain_phase_seconds clang_object_warmup %s\n' "$((SECONDS - toolchain_started))"
+toolchain_started=$SECONDS
 resolved_linker="$("$clang_exe" -B"$tool_bin" -print-prog-name=ld)"
 printf 'overlay_toolchain_phase_seconds clang_linker_discovery %s\n' "$((SECONDS - toolchain_started))"
 if [[ "$resolved_linker" != /* ]]; then
@@ -204,9 +216,6 @@ printf 'overlay_toolchain_phase_seconds resolved_linker_path_checks %s\n' "$((SE
     echo "packaged Clang did not resolve the packaged cctools linker: $resolved_linker != $expected_linker" >&2
     exit 1
 }
-toolchain_started=$SECONDS
-"$clang_exe" --version
-printf 'overlay_toolchain_phase_seconds clang_version %s\n' "$((SECONDS - toolchain_started))"
 printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
 log_phase compiler_and_linker_validation
 
