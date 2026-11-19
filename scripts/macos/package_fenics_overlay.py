@@ -30,6 +30,7 @@ MACHO_DEPENDENCY_COMMANDS = {
     "LC_LOAD_UPWARD_DYLIB",
     "LC_LAZY_LOAD_DYLIB",
 }
+UNSUPPORTED_MACHO_LIBRARY_COMMANDS = {"LC_IDFVMLIB", "LC_LOADFVMLIB"}
 MACHO_MAGICS = {
     b"\xfe\xed\xfa\xce",  # MH_MAGIC
     b"\xce\xfa\xed\xfe",  # MH_CIGAM
@@ -733,6 +734,8 @@ def macho_dependencies_from_load_commands(lines: list[str]) -> list[str]:
         stripped = line.strip()
         if stripped.startswith("cmd "):
             current_cmd = stripped.split(None, 1)[1]
+            if current_cmd in UNSUPPORTED_MACHO_LIBRARY_COMMANDS:
+                raise SystemExit(f"unsupported legacy Mach-O library load command: {current_cmd}")
             continue
         if current_cmd in MACHO_DEPENDENCY_COMMANDS and stripped.startswith("name "):
             dependencies.append(stripped.removeprefix("name ").split(" (offset", 1)[0])
