@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from typing import Any
 from urllib.parse import urlparse
@@ -104,6 +105,16 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def log_duration(name: str, seconds: float) -> None:
+    print(f"package_phase_seconds {name} {seconds:.3f}", flush=True)
+
+
+def log_phase(name: str, started: float) -> float:
+    now = time.monotonic()
+    log_duration(name, now - started)
+    return now
 
 
 def numpy_base_identity(
@@ -753,8 +764,11 @@ def relocate_and_audit_macho(
     source_prefix: Path,
     architecture: str,
 ) -> dict[str, Any]:
+    phase_started = time.monotonic()
     macho_files = [path for path in sorted(stage_root.rglob("*")) if is_macho(path)]
+    phase_started = log_phase("macho_discovery", phase_started)
     rewritten: set[Path] = set()
+    signing_seconds = 0.0
 
     for binary in macho_files:
         rpaths = macho_rpaths(binary)
@@ -796,9 +810,15 @@ def relocate_and_audit_macho(
 
         # Sign every shipped Mach-O after relocation.  This is stronger and
         # simpler than preserving heterogeneous producer signatures.
+        signing_started = time.monotonic()
         binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
         run("codesign", "--force", "--sign", "-", "--timestamp=none", str(binary))
         binary.chmod(mode)
+        signing_seconds += time.monotonic() - signing_started
+    rewrite_finished = time.monotonic()
+    log_duration("macho_relocation", rewrite_finished - phase_started - signing_seconds)
+    log_duration("macho_signing", signing_seconds)
+    phase_started = rewrite_finished
 
     census = []
     max_minos: str | None = None
@@ -846,6 +866,7 @@ def relocate_and_audit_macho(
                 "codesign": "adhoc" if "Signature=adhoc" in detail else "valid",
             }
         )
+    log_phase("macho_audits", phase_started)
 
     return {
         "format_version": 1,
@@ -982,6 +1003,7 @@ for required in (prefix / "conda-meta", lock_path, package_cache, base_runtime, 
     if not required.exists():
         raise SystemExit(f"required producer input is missing: {required}")
 
+phase_started = time.monotonic()
 base_identity = numpy_base_identity(
     base_runtime,
     expected_platform=expected_platform,
@@ -1056,6 +1078,7 @@ else:
 for name, version in required_versions.items():
     if str(records.get(name, {}).get("version")) != version:
         raise SystemExit(f"locked prefix has unexpected {name} version: {records.get(name, {}).get('version')!r}")
+phase_started = log_phase("input_validation", phase_started)
 
 output.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix=f"fenics-macos-overlay-{args.arch}-"))
@@ -1117,6 +1140,7 @@ try:
             retained_packages.append(name)
         else:
             not_staged_packages.append(name)
+    phase_started = log_phase("package_staging", phase_started)
 
     # The consumer-owned NumPy distribution and producer CPython must never be
     # represented anywhere in the emitted overlay.
@@ -1154,6 +1178,7 @@ try:
     lock_copy = provenance / f"macos-{args.arch}-package-lock.json"
     shutil.copy2(lock_path, lock_copy)
     owners[lock_copy.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+    phase_started = log_phase("staging_validation_metadata", phase_started)
 
     license_inventory = collect_package_licenses(
         package_cache, records, retained_packages, stage_root, owners
@@ -1161,6 +1186,7 @@ try:
     licenses_path = provenance / "third-party-licenses.json"
     licenses_path.write_text(json.dumps(license_inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     owners[licenses_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+    phase_started = log_phase("license_collection", phase_started)
 
     text_rewrites = rewrite_text_prefixes(stage_root, prefix)
     text_rewrites_path = provenance / "text-prefix-rewrites.json"
@@ -1179,20 +1205,24 @@ try:
         encoding="utf-8",
     )
     owners[text_rewrites_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+    phase_started = log_phase("text_path_rewriting", phase_started)
 
     census = relocate_and_audit_macho(stage_root, private_prefix, prefix, args.arch)
     census_path = provenance / "native-census.json"
     census_path.write_text(json.dumps(census, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     owners[census_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
+    phase_started = log_phase("relocate_and_audit_macho", phase_started)
 
     verify_symlink_closure(stage_root)
     verify_no_runtime_prefix_leaks(stage_root, prefix)
+    phase_started = log_phase("runtime_audits", phase_started)
 
     files = [
         file_entry(path, stage_root, owners)
         for path in sorted(stage_root.rglob("*"))
         if path.is_symlink() or path.is_file()
     ]
+    phase_started = log_phase("manifest_hashing", phase_started)
     package_summary = []
     for lock_record in lock["packages"]:
         name = str(lock_record["name"])
@@ -1286,13 +1316,16 @@ try:
     }
     manifest_path = stage_root / "fenics-embed-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    phase_started = log_phase("write_manifest", phase_started)
 
     zip_path = output / asset_name
     if zip_path.exists():
         zip_path.unlink()
     deterministic_zip(stage_root, zip_path)
+    phase_started = log_phase("zip_creation_compression", phase_started)
     manifest_hash = sha256_file(manifest_path)
     zip_hash = sha256_file(zip_path)
+    phase_started = log_phase("final_hashes", phase_started)
     summary = {
         "format_version": 1,
         "artifact": asset_name,
@@ -1308,4 +1341,6 @@ try:
     (output / f"{asset_name}.sha256").write_text(f"{zip_hash}  {asset_name}\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
 finally:
+    cleanup_started = time.monotonic()
     shutil.rmtree(work, ignore_errors=True)
+    log_phase("cleanup_worktree", cleanup_started)
