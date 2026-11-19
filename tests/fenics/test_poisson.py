@@ -8,6 +8,7 @@ import io
 import pstats
 import shlex
 import subprocess
+import sys
 import time
 
 phase_start = time.monotonic()
@@ -81,12 +82,12 @@ def timed_jit_check_call(*args, **kwargs):
         print(
             f"poisson_jit_subprocess_seconds {jit_subprocess_count} "
             f"{'compile' if '-c' in command_args else 'link_or_other'} {elapsed:.3f}",
-            flush=True,
+            file=sys.__stdout__, flush=True,
         )
         print(
             "poisson_jit_subprocess_command "
             f"{jit_subprocess_count} {shlex.join(map(str, command_args))}",
-            flush=True,
+            file=sys.__stdout__, flush=True,
         )
 
 
