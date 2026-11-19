@@ -141,6 +141,43 @@ class PinnedMacOSOctaveTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(SystemExit):
                 installer.resolved_explicit_spec(payload)
 
+    def test_reused_resolution_requires_correct_architecture_and_channel(self) -> None:
+        valid = ("@EXPLICIT\n"
+                 "https://conda.anaconda.org/conda-forge/osx-arm64/octave-10.3.0-build_1.conda\n"
+                 "https://conda.anaconda.org/conda-forge/osx-arm64/openssl-3.5.9-build_2.conda\n"
+                 "https://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda\n")
+        installer.verify_reused_resolution(valid, "osx-arm64")
+        for wrong in (
+            valid.replace("osx-arm64", "osx-64"),
+            valid.replace("conda.anaconda.org", "evil.example"),
+            valid.replace("https://", "file:///"),
+            valid.replace("@EXPLICIT", "@INVALID"),
+            valid + valid.splitlines()[1] + "\n",
+            valid.replace("dependency-1.0-any.conda", "dependency-1.0-any.exe"),
+        ):
+            with self.subTest(spec=wrong), self.assertRaises(SystemExit):
+                installer.verify_reused_resolution(wrong, "osx-arm64")
+
+    def test_reused_resolution_replaces_only_local_pinned_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            archives = {
+                "octave": root / "octave-10.3.0-build_1.conda",
+                "openssl": root / "openssl-3.5.9-build_2.conda",
+            }
+            source = ("@EXPLICIT\n"
+                      "https://conda.anaconda.org/conda-forge/osx-arm64/octave-10.3.0-build_1.conda\n"
+                      "https://conda.anaconda.org/conda-forge/osx-arm64/openssl-3.5.9-build_2.conda\n"
+                      "https://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda\n")
+            installer.verify_reused_resolution(source, "osx-arm64")
+            installed_spec = installer.pinned_explicit_spec(source, archives)
+            self.assertEqual(installed_spec.count("file://"), 2)
+            self.assertIn("https://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda", installed_spec)
+            for invalid in (source.replace("build_1", "other_build"),
+                            source.replace("openssl-3.5.9-build_2.conda\n", "")):
+                with self.subTest(spec=invalid), self.assertRaises(SystemExit):
+                    installer.pinned_explicit_spec(invalid, archives)
+
     def test_installed_host_must_name_the_local_source_archive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

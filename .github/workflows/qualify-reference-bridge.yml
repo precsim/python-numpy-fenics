@@ -202,7 +202,8 @@ jobs:
             --octave-archive "$download" --octave-sha256 "$expected_sha" \
             --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
             --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
-            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build" \
+            --export-resolution "$RUNNER_TEMP/reference-octave-solved.txt"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
@@ -332,6 +333,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload same-run macOS Octave dependency resolution
+        if: startsWith(matrix.target, 'macos-')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reference-octave-resolution-${{ matrix.target }}
+          path: ${{ runner.temp }}/reference-octave-solved.txt
+          if-no-files-found: error
+          retention-days: 3
+
   qualify:
     name: qualify / ${{ matrix.target }} / ${{ matrix.profile }}
     needs:
@@ -382,6 +392,13 @@ jobs:
         with:
           name: reference-bridge-candidate-${{ matrix.target }}
           path: build/reference/candidate/${{ matrix.target }}
+
+      - name: Download same-run macOS Octave dependency resolution
+        if: startsWith(matrix.target, 'macos-')
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: reference-octave-resolution-${{ matrix.target }}
+          path: ${{ runner.temp }}/reference-octave-resolution/
 
       - name: Install pinned GNU Octave on Windows
         if: matrix.target == 'win-x64'
@@ -461,12 +478,14 @@ jobs:
           printf '%s  %s\n' "$expected_sha" "$download" | shasum -a 256 -c -
           curl --fail --location --retry 3 --output "$openssl_download" "$openssl_url"
           printf '%s  %s\n' "$openssl_sha" "$openssl_download" | shasum -a 256 -c -
+          echo "reference_octave_archives_verified=pass"
           python3 consumer-kit/tools/install-pinned-octave-macos.py \
             --micromamba "$MAMBA_EXE" --prefix "$prefix" --subdir "$subdir" \
             --octave-archive "$download" --octave-sha256 "$expected_sha" \
             --octave-version "$OCTAVE_MACOS_VERSION" --octave-build "$build" \
             --openssl-archive "$openssl_download" --openssl-sha256 "$openssl_sha" \
-            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build"
+            --openssl-version "$OCTAVE_MACOS_OPENSSL_VERSION" --openssl-build "$openssl_build" \
+            --resolution-file "$RUNNER_TEMP/reference-octave-resolution/reference-octave-solved.txt"
           "$MAMBA_EXE" list -p "$prefix"
           python3 - "$prefix" "$OCTAVE_MACOS_VERSION" "$build" "$OCTAVE_MACOS_OPENSSL_VERSION" "$openssl_build" <<'PY'
           import json
