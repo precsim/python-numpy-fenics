@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -857,32 +858,31 @@ def relocate_and_audit_macho(
     audit_dependencies_seconds = 0.0
     audit_codesign_verify_seconds = 0.0
     audit_codesign_detail_seconds = 0.0
-    for binary in macho_files:
+    def audit_binary(binary: Path) -> tuple[dict[str, Any], dict[str, float]]:
+        """Audit one already-signed binary without modifying it or its neighbours."""
+        elapsed: dict[str, float] = {}
         audit_started = time.monotonic()
         archs = run("lipo", "-archs", str(binary)).stdout.strip().split()
-        audit_lipo_seconds += time.monotonic() - audit_started
+        elapsed["lipo"] = time.monotonic() - audit_started
         if archs != [architecture]:
             raise SystemExit(f"unexpected Mach-O architectures for {binary}: {archs!r}")
         audit_started = time.monotonic()
         minos = macho_minos(binary)
-        audit_minos_seconds += time.monotonic() - audit_started
+        elapsed["minos"] = time.monotonic() - audit_started
         if minos is None:
             raise SystemExit(f"Mach-O has no measurable minimum macOS version: {binary}")
         if version_tuple(minos) > version_tuple("14.0"):
             raise SystemExit(f"Mach-O requires macOS newer than 14.0: {binary}: {minos}")
-        if max_minos is None or version_tuple(minos) > version_tuple(max_minos):
-            max_minos = minos
-
         audit_started = time.monotonic()
         rpaths = macho_rpaths(binary)
-        audit_rpaths_seconds += time.monotonic() - audit_started
+        elapsed["rpaths"] = time.monotonic() - audit_started
         for rpath in rpaths:
             if rpath.startswith((str(source_prefix), "/opt/homebrew", "/usr/local", "/Users/")):
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
 
         audit_started = time.monotonic()
         dependencies = macho_dependencies(binary)
-        audit_dependencies_seconds += time.monotonic() - audit_started
+        elapsed["dependencies"] = time.monotonic() - audit_started
         for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
@@ -896,13 +896,13 @@ def relocate_and_audit_macho(
 
         audit_started = time.monotonic()
         verification = run("codesign", "--verify", "--strict", str(binary), check=False)
-        audit_codesign_verify_seconds += time.monotonic() - audit_started
+        elapsed["codesign_verify"] = time.monotonic() - audit_started
         if verification.returncode != 0:
             raise SystemExit(f"ad-hoc signature verification failed for {binary}: {verification.stdout}")
         audit_started = time.monotonic()
         detail = run("codesign", "-dv", "--verbose=4", str(binary), check=False).stdout
-        audit_codesign_detail_seconds += time.monotonic() - audit_started
-        census.append(
+        elapsed["codesign_detail"] = time.monotonic() - audit_started
+        return (
             {
                 "path": binary.relative_to(stage_root).as_posix(),
                 "architecture": architecture,
@@ -911,8 +911,24 @@ def relocate_and_audit_macho(
                 "rpaths": rpaths,
                 "rewritten": binary in rewritten,
                 "codesign": "adhoc" if "Signature=adhoc" in detail else "valid",
-            }
+            }, elapsed,
         )
+
+    # All mutations and signing finish before any audit begins. Each task only
+    # reads one immutable Mach-O, and map() yields results in sorted file order
+    # so the census and deterministic ZIP remain identical to serial execution.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for entry, elapsed in pool.map(audit_binary, macho_files):
+            census.append(entry)
+            minos = entry["minos"]
+            if max_minos is None or version_tuple(minos) > version_tuple(max_minos):
+                max_minos = minos
+            audit_lipo_seconds += elapsed["lipo"]
+            audit_minos_seconds += elapsed["minos"]
+            audit_rpaths_seconds += elapsed["rpaths"]
+            audit_dependencies_seconds += elapsed["dependencies"]
+            audit_codesign_verify_seconds += elapsed["codesign_verify"]
+            audit_codesign_detail_seconds += elapsed["codesign_detail"]
     audit_finished = time.monotonic()
     audit_seconds = audit_finished - phase_started
     log_duration("macho_audits", audit_seconds)
@@ -922,16 +938,9 @@ def relocate_and_audit_macho(
     log_duration("macho_audit_dependencies", audit_dependencies_seconds)
     log_duration("macho_audit_codesign_verify", audit_codesign_verify_seconds)
     log_duration("macho_audit_codesign_detail", audit_codesign_detail_seconds)
-    log_duration(
-        "macho_audit_other",
-        audit_seconds
-        - audit_lipo_seconds
-        - audit_minos_seconds
-        - audit_rpaths_seconds
-        - audit_dependencies_seconds
-        - audit_codesign_verify_seconds
-        - audit_codesign_detail_seconds,
-    )
+    # Per-command durations overlap across worker threads; their sum is not
+    # comparable to wall time and must not be subtracted from audit_seconds.
+    log_duration("macho_audit_parallel_wall_seconds", audit_seconds)
 
     return {
         "format_version": 1,
