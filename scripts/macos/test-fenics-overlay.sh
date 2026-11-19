@@ -270,6 +270,12 @@ def log_phase(name):
     print(f"overlay_qualification_python_phase_seconds {name} {now - phase_start:.3f}", flush=True)
     phase_start = now
 
+def log_import_phase(name, started):
+    print(
+        f"overlay_runtime_import_seconds {name} {time.monotonic() - started:.3f}",
+        flush=True,
+    )
+
 script = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
 expected_arch = sys.argv[3]
@@ -299,9 +305,14 @@ activated = Path(fenics_embed_runtime.activate()).resolve()
 log_phase("bootstrap_activation")
 if activated != root:
     raise SystemExit(f"unexpected activated root: {activated} != {root}")
+import_started = time.monotonic()
 import _tkinter
+log_import_phase("_tkinter", import_started)
+import_started = time.monotonic()
 import tkinter
+log_import_phase("tkinter", import_started)
 
+import_started = time.monotonic()
 if _tkinter.TCL_VERSION != "8.6" or _tkinter.TK_VERSION != "8.6":
     raise SystemExit("FEniCS overlay changed inherited Tcl/Tk API versions")
 tcl = tkinter.Tcl()
@@ -335,14 +346,30 @@ if Path(os.environ.get("PETSC_DIR", "")).resolve() != private_prefix.resolve():
     raise SystemExit("PETSC_DIR escaped the relocated private FEniCS prefix")
 if os.environ.get("PETSC_ARCH", "") != "":
     raise SystemExit("PETSC_ARCH must be empty for the relocated FEniCS runtime")
+log_import_phase("tcl_and_toolchain_checks", import_started)
+import_started = time.monotonic()
 import basix
+log_import_phase("basix", import_started)
+import_started = time.monotonic()
 import numpy
+log_import_phase("numpy", import_started)
+import_started = time.monotonic()
 import dolfinx
+log_import_phase("dolfinx", import_started)
+import_started = time.monotonic()
 import ffcx
+log_import_phase("ffcx", import_started)
+import_started = time.monotonic()
 import mpi4py
+log_import_phase("mpi4py", import_started)
+import_started = time.monotonic()
 import petsc4py
+log_import_phase("petsc4py", import_started)
+import_started = time.monotonic()
 import ufl
+log_import_phase("ufl", import_started)
 
+import_started = time.monotonic()
 expected_versions = {
     "NumPy": (numpy.__version__, "2.5.2"),
     "DOLFINx": (dolfinx.__version__, "0.11.0"),
@@ -359,6 +386,7 @@ if root not in Path(numpy.__file__).resolve().parents:
     raise SystemExit(f"NumPy escaped public runtime: {numpy.__file__}")
 if root not in Path(dolfinx.__file__).resolve().parents:
     raise SystemExit(f"DOLFINx escaped public runtime: {dolfinx.__file__}")
+log_import_phase("version_and_path_checks", import_started)
 log_phase("imported_runtime_and_version_checks")
 print("fenics_public_overlay_import=pass")
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
