@@ -240,23 +240,27 @@ jobs:
           test -f "dist/$OVERLAY_ASSET.json"
           test -f "dist/$OVERLAY_ASSET.sha256"
 
-      - name: Qualify exact overlay on public NumPy base runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/macos/test-fenics-overlay.sh
-          scripts/macos/test-fenics-overlay.sh \
-            --zip "dist/$OVERLAY_ASSET" \
-            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
-            --arch "$TARGET_ARCH" \
-            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/public-base-overlay-test.log"
-
-      - name: Rebuild overlay and prove deterministic identity
+      - name: Qualify exact overlay while proving deterministic rebuild
         shell: bash
         run: |
           set -euo pipefail
           producer_revision="$(git rev-parse HEAD)"
+          chmod +x scripts/macos/test-fenics-overlay.sh
           mkdir -p dist-repeat
+          repeat_pid=""
+
+          cleanup_repeat() {
+            if [[ -n "${repeat_pid:-}" ]]; then
+              if kill -0 "$repeat_pid" >/dev/null 2>&1; then
+                kill "$repeat_pid" >/dev/null 2>&1 || true
+              fi
+              wait "$repeat_pid" >/dev/null 2>&1 || true
+              repeat_pid=""
+            fi
+          }
+          trap cleanup_repeat EXIT
+
+          overlap_started=$SECONDS
           python3 scripts/macos/package_fenics_overlay.py \
             --prefix "$FENICS_LOCKED_PREFIX" \
             --lock "$FENICS_LOCK_FILE" \
@@ -267,7 +271,25 @@ jobs:
             --version 0.1.0 \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
             --producer-revision "$producer_revision" \
-            > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
+            > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log" &
+          repeat_pid=$!
+
+          qualification_started=$SECONDS
+          scripts/macos/test-fenics-overlay.sh \
+            --zip "dist/$OVERLAY_ASSET" \
+            --base-runtime "out/macos-$TARGET_ARCH/numpy" \
+            --arch "$TARGET_ARCH" \
+            2>&1 | tee "$FENICS_OVERLAY_EVIDENCE/public-base-overlay-test.log"
+          qualification_seconds=$((SECONDS - qualification_started))
+
+          if ! wait "$repeat_pid"; then
+            repeat_pid=""
+            echo "deterministic overlay rebuild failed" >&2
+            exit 1
+          fi
+          repeat_pid=""
+
+          printf 'overlay_concurrent_phase_seconds exact_qualification %s\n' "$qualification_seconds"
           grep -E '^package_phase_seconds package_staging|^package_stage_(count|bytes) ' \
             "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
           cmp "dist/$OVERLAY_ASSET" "dist-repeat/$OVERLAY_ASSET"
@@ -275,6 +297,7 @@ jobs:
           cmp "dist/$OVERLAY_ASSET.sha256" "dist-repeat/$OVERLAY_ASSET.sha256"
           echo "deterministic_overlay_rebuild=pass" \
             > "$FENICS_OVERLAY_EVIDENCE/deterministic-rebuild.txt"
+          printf 'overlay_concurrent_phase_seconds combined_wall %s\n' "$((SECONDS - overlap_started))"
 
       - name: Audit packaged ZIP structure
         shell: bash
