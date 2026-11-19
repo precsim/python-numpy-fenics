@@ -831,10 +831,14 @@ def relocate_and_audit_macho(
         mode = stat.S_IMODE(binary.stat().st_mode)
         if changes:
             binary.chmod(mode | stat.S_IWUSR)
+            # install_name_tool accepts multiple -change pairs in one call.
+            # Preserve their order while avoiding one process per dependency.
+            change_args = []
             for old, new in changes:
-                rewrite_started = time.monotonic()
-                run("install_name_tool", "-change", old, new, str(binary))
-                install_name_tool_seconds += time.monotonic() - rewrite_started
+                change_args.extend(("-change", old, new))
+            rewrite_started = time.monotonic()
+            run("install_name_tool", *change_args, str(binary))
+            install_name_tool_seconds += time.monotonic() - rewrite_started
             rewritten.add(binary)
 
         for rpath in rpaths:
