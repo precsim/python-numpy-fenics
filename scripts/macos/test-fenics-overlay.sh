@@ -178,6 +178,50 @@ else
 fi
 [[ -x "$clang_exe" ]] || { echo "packaged Clang executable is missing: $clang_exe" >&2; exit 1; }
 [[ -x "$linker_exe" ]] || { echo "packaged cctools linker is missing: $linker_exe" >&2; exit 1; }
+
+profile_toolchain_command() {
+    local label="$1"
+    shift
+    python3 - "$label" "$@" <<'PY'
+import subprocess
+import sys
+import time
+
+label = sys.argv[1]
+command = sys.argv[2:]
+started = time.monotonic()
+try:
+    subprocess.run(command, check=True)
+finally:
+    print(
+        f"overlay_toolchain_probe_seconds {label} {time.monotonic() - started:.3f}",
+        file=sys.stderr,
+        flush=True,
+    )
+PY
+}
+
+probe_sdkroot="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+[[ -d "$probe_sdkroot" ]] || { echo "macOS SDK root is unavailable: $probe_sdkroot" >&2; exit 1; }
+probe_source="$work/compiler-cold-start-probe.c"
+probe_object="$work/compiler-cold-start-probe.o"
+printf 'int fenics_compiler_probe(int value) { return value + 1; }\n' > "$probe_source"
+
+# Split the first packaged Clang launch into progressively larger pieces.  On
+# x86_64 qualification this shows how much time Rosetta spends translating the
+# driver, frontend, and LLVM code-generation paths before the real FFCx JIT.
+# The arm64 job provides the native control for the same commands.
+profile_toolchain_command clang_cold_version "$clang_exe" --version
+profile_toolchain_command clang_first_syntax_only \
+    "$clang_exe" -B"$tool_bin" -isysroot "$probe_sdkroot" -mmacosx-version-min=14.0 \
+    -x c -std=c17 -O2 -g0 -fsyntax-only "$probe_source"
+profile_toolchain_command clang_first_object_compile \
+    "$clang_exe" -B"$tool_bin" -isysroot "$probe_sdkroot" -mmacosx-version-min=14.0 \
+    -x c -std=c17 -O2 -g0 -c "$probe_source" -o "$probe_object"
+profile_toolchain_command clang_repeat_object_compile \
+    "$clang_exe" -B"$tool_bin" -isysroot "$probe_sdkroot" -mmacosx-version-min=14.0 \
+    -x c -std=c17 -O2 -g0 -c "$probe_source" -o "$probe_object"
+
 toolchain_started=$SECONDS
 resolved_linker="$("$clang_exe" -B"$tool_bin" -print-prog-name=ld)"
 printf 'overlay_toolchain_phase_seconds clang_linker_discovery %s\n' "$((SECONDS - toolchain_started))"
