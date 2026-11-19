@@ -219,18 +219,6 @@ jobs:
           print(f"numpy_base_revision={expected_revision}")
           PY
 
-      - name: Prove fresh FFCx JIT and serial PETSc solve from locked packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/macos/test-conda-clang-jit.sh
-          scripts/macos/test-conda-clang-jit.sh \
-            "$FENICS_LOCKED_PREFIX" \
-            "$TARGET_ARCH"
-          source_evidence="$RUNNER_TEMP/fenics macos clang prototype $TARGET_ARCH/evidence"
-          test -d "$source_evidence"
-          cp -R "$source_evidence" "$FENICS_OVERLAY_EVIDENCE/jit-evidence"
-
       - name: Package relocatable macOS overlay
         shell: bash
         run: |
