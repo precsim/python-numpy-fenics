@@ -29,7 +29,9 @@ directory can be vendored by another consumer:
    access.
 3. `build.ps1`, `build-linux.sh`, and `build-macos.sh` compile exactly one
    MEX candidate from a validated `bridge-build.json`. The compiler is MSVC on
-   Windows, GCC on Linux, and Clang on macOS.
+   Windows, GCC on Linux, and Clang on macOS. Each target declares its exact
+   public MEX export list; the required GNU Octave entry/ABI exports must be
+   present, and consumer-specific exports are passed through and audited.
 4. `audit-mex.py` checks the candidate export and load-time dependency
    boundary and records the SHA-256 of the exact audited MEX. Linux additionally
    enforces the glibc 2.17 symbol ceiling.

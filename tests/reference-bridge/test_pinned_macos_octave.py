@@ -69,18 +69,21 @@ class PinnedMacOSOctaveTests(unittest.TestCase):
                 self.assertEqual(env["CONDA_SUBDIR"], "osx-arm64")
                 self.assertTrue(check)
                 if "--file" not in argv:
-                    metadata = Path(argv[argv.index("-p") + 1]) / "conda-meta"
-                    metadata.mkdir(parents=True)
+                    self.assertIn("--dry-run", argv)
+                    self.assertIn("--json", argv)
+                    self.assertTrue(kwargs["capture_output"])
+                    self.assertTrue(kwargs["text"])
+                    records = []
                     for name, archive in archives.items():
-                        (metadata / f"{name}.json").write_text(json.dumps({
+                        records.append({
                             "name": name,
                             "url": f"https://conda.anaconda.org/conda-forge/osx-arm64/{archive.name}",
-                        }), encoding="utf-8")
-                    (metadata / "dependency.json").write_text(json.dumps({
+                        })
+                    records.append({
                         "name": "dependency",
                         "url": "https://conda.anaconda.org/conda-forge/noarch/dependency-1.0-any.conda",
-                    }), encoding="utf-8")
-                    return SimpleNamespace(stdout="")
+                    })
+                    return SimpleNamespace(stdout=json.dumps({"success": True, "dry_run": True, "actions": {"LINK": records}}))
                 if "--file" in argv:
                     spec = Path(argv[argv.index("--file") + 1]).read_text(encoding="utf-8")
                     self.assertEqual(spec.count("file://"), 2)
@@ -112,12 +115,31 @@ class PinnedMacOSOctaveTests(unittest.TestCase):
             self.assertEqual(len(seen), 2)
             self.assertEqual(seen[0][1], "create")
             self.assertEqual(seen[1][1], "create")
+            self.assertIn("--dry-run", seen[0])
+            self.assertNotIn("--dry-run", seen[1])
 
             arguments[arguments.index(hashes["octave"])] = "f" * 64
             with patch.object(sys, "argv", arguments), patch.object(subprocess, "run") as run:
                 with self.assertRaisesRegex(SystemExit, "pinned octave archive SHA-256 mismatch"):
                     installer.main()
                 run.assert_not_called()
+
+    def test_dry_run_transaction_rejects_missing_or_ambiguous_package_urls(self) -> None:
+        good = {"success": True, "dry_run": True, "actions": {"LINK": [
+            {"name": "dependency", "url": "https://conda.anaconda.org/conda-forge/noarch/dep-1.conda"},
+        ]}}
+        self.assertIn("@EXPLICIT", installer.resolved_explicit_spec(json.dumps(good)))
+        malformed = [
+            "not json",
+            json.dumps({"success": False, "actions": good["actions"]}),
+            json.dumps({"success": True, "dry_run": False, "actions": good["actions"]}),
+            json.dumps({"success": True, "dry_run": True, "actions": {"LINK": []}}),
+            json.dumps({"success": True, "dry_run": True, "actions": {"LINK": [{"name": "dependency"}]}}),
+            json.dumps({"success": True, "dry_run": True, "actions": {"LINK": good["actions"]["LINK"] * 2}}),
+        ]
+        for payload in malformed:
+            with self.subTest(payload=payload), self.assertRaises(SystemExit):
+                installer.resolved_explicit_spec(payload)
 
     def test_installed_host_must_name_the_local_source_archive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -18,6 +18,16 @@ DEPENDENCY_COMMANDS = {
     "LC_LAZY_LOAD_DYLIB",
 }
 SYSTEM_PREFIXES = ("/usr/lib/", "/System/Library/")
+MACHO_MAGICS = {
+    b"\xfe\xed\xfa\xce",  # MH_MAGIC
+    b"\xce\xfa\xed\xfe",  # MH_CIGAM
+    b"\xfe\xed\xfa\xcf",  # MH_MAGIC_64
+    b"\xcf\xfa\xed\xfe",  # MH_CIGAM_64
+    b"\xca\xfe\xba\xbe",  # FAT_MAGIC
+    b"\xbe\xba\xfe\xca",  # FAT_CIGAM
+    b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
+    b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
+}
 
 
 def sha256(path: Path) -> str:
@@ -26,6 +36,15 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def has_macho_magic(path: Path) -> bool:
+    """Return whether a regular file begins with a Mach-O or fat-binary magic."""
+    try:
+        with path.open("rb") as stream:
+            return stream.read(4) in MACHO_MAGICS
+    except OSError as exc:
+        raise SystemExit(f"cannot inspect runtime file: {path}: {exc}") from exc
 
 
 def version_key(value: str) -> tuple[int, ...]:
@@ -180,14 +199,20 @@ def audit(
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
-        kind = run("file", "-b", str(path)).strip()
-        if "Mach-O" not in kind:
-            continue
         # CPython's development config includes relocatable MH_OBJECT files
         # (for example python.o). They are link inputs, not loadable runtime
         # images; unlike executables/dylibs/bundles they need not carry an
         # LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX load command.
         if path.suffix == ".o":
+            continue
+        # A staged runtime contains thousands of scripts, headers, metadata,
+        # and other non-native files. Checking the four-byte Mach-O magic first
+        # avoids spawning `file` once for every one of those files while still
+        # retaining `file` output as evidence for each native runtime image.
+        if not has_macho_magic(path):
+            continue
+        kind = run("file", "-b", str(path)).strip()
+        if "Mach-O" not in kind:
             continue
         architectures = run("lipo", "-archs", str(path)).strip().split()
         if target_arch not in architectures:

@@ -12,6 +12,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+MACHO_64 = b"\xcf\xfa\xed\xfe"
 
 
 def load(name: str, relative: str):
@@ -33,6 +34,12 @@ def digest(path: Path) -> str:
 
 
 class MacOSRuntimeAuditTests(unittest.TestCase):
+    def test_macho_prefilter_fails_closed_on_read_error(self) -> None:
+        path = Path("unreadable-runtime-file")
+        with mock.patch.object(Path, "open", side_effect=OSError("permission denied")):
+            with self.assertRaisesRegex(SystemExit, "cannot inspect runtime file"):
+                audit.has_macho_magic(path)
+
     def test_nonloadable_macho_object_is_not_a_runtime_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "runtime"
@@ -40,8 +47,8 @@ class MacOSRuntimeAuditTests(unittest.TestCase):
             object_file = runtime / "Python.framework/Versions/3.14/lib/python3.14/config-3.14-darwin/python.o"
             binary.parent.mkdir(parents=True)
             object_file.parent.mkdir(parents=True)
-            binary.write_bytes(b"runtime-mach-o")
-            object_file.write_bytes(b"build-object")
+            binary.write_bytes(MACHO_64 + b"runtime")
+            object_file.write_bytes(MACHO_64 + b"build-object")
 
             def fake_run(*args: str) -> str:
                 if args[0] == "file":
@@ -96,12 +103,16 @@ Load command 4
             provider = runtime / "Python.framework/Versions/3.14/lib/libprivate.dylib"
             python.parent.mkdir(parents=True)
             provider.parent.mkdir(parents=True)
-            python.write_bytes(b"python-mach-o")
-            provider.write_bytes(b"provider-mach-o")
+            python.write_bytes(MACHO_64 + b"python")
+            provider.write_bytes(MACHO_64 + b"provider")
+            plain = runtime / "Python.framework/Versions/3.14/lib/python3.14/os.py"
+            plain.parent.mkdir(parents=True, exist_ok=True)
+            plain.write_text("# non-native runtime payload\n", encoding="utf-8")
             output = runtime / "core-native-census-macos.json"
 
             def fake_run(*args: str) -> str:
                 if args[0] == "file":
+                    self.assertNotEqual(Path(args[-1]), plain)
                     return "Mach-O 64-bit arm64\n"
                 if args[0] == "lipo":
                     return "arm64\n"
@@ -139,7 +150,7 @@ Load command 1
             runtime = Path(temporary) / "runtime"
             python = runtime / "Python.framework/Versions/3.14/bin/python3.14"
             python.parent.mkdir(parents=True)
-            python.write_bytes(b"python-mach-o")
+            python.write_bytes(MACHO_64 + b"python")
 
             def fake_run(*args: str) -> str:
                 if args[0] == "file":
@@ -167,8 +178,8 @@ Load command 0
             executable = runtime / "Python.framework/Versions/3.14/bin/python3.14"
             extension.parent.mkdir(parents=True)
             executable.parent.mkdir(parents=True)
-            extension.write_bytes(b"numpy-mach-o")
-            executable.write_bytes(b"python-mach-o")
+            extension.write_bytes(MACHO_64 + b"numpy")
+            executable.write_bytes(MACHO_64 + b"python")
 
             def fake_run(*args: str) -> str:
                 if args[0] == "file":

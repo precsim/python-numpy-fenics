@@ -8,6 +8,7 @@ $kitDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = if ($env:PYTHON) { $env:PYTHON } else { "python" }
 
 $outputDir = $null
+$manifest = $null
 for ($index = 0; $index -lt $Arguments.Count; $index++) {
     $argument = $Arguments[$index]
     if ($argument -eq "--target" -or $argument.StartsWith("--target=")) {
@@ -23,9 +24,22 @@ for ($index = 0; $index -lt $Arguments.Count; $index++) {
     elseif ($argument.StartsWith("--output-dir=")) {
         $outputDir = $argument.Substring("--output-dir=".Length)
     }
+    elseif ($argument -eq "--manifest") {
+        if ($index + 1 -ge $Arguments.Count) {
+            throw "--manifest requires a value"
+        }
+        $manifest = $Arguments[$index + 1]
+        $index++
+    }
+    elseif ($argument.StartsWith("--manifest=")) {
+        $manifest = $argument.Substring("--manifest=".Length)
+    }
 }
 if ([string]::IsNullOrWhiteSpace($outputDir)) {
     throw "build.ps1 requires --output-dir so the exact candidate can be audited"
+}
+if ([string]::IsNullOrWhiteSpace($manifest)) {
+    throw "build.ps1 requires --manifest so the exact declared export surface can be audited"
 }
 
 & $python (Join-Path $kitDir "build_bridge.py") --target win-x64 @Arguments
@@ -35,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $candidate = Join-Path $outputDir "bridge.mex"
 $audit = Join-Path $outputDir "native-audit.json"
-& $python (Join-Path $kitDir "audit-mex.py") --target win-x64 --mex $candidate --output $audit
+& $python (Join-Path $kitDir "audit-mex.py") --target win-x64 --manifest $manifest --mex $candidate --output $audit
 if ($LASTEXITCODE -ne 0) {
     throw "reference bridge PE native audit failed with exit code $LASTEXITCODE"
 }

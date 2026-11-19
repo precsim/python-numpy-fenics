@@ -40,6 +40,7 @@ env:
   REFERENCE_RUNTIME_RECEIPT: locks/consumer/reference-runtime-v1.json
   REFERENCE_VERSION: v0.1.0-rc1
   RC2_PRODUCER_REVISION: 88f36aaa09fb8a84ea528d5823d9b0be043cfa3e
+  OCTAVE_MICROMAMBA_VERSION: "2.10.0-0"
   OCTAVE_WINDOWS_VERSION: "11.3.0"
   OCTAVE_WINDOWS_RELEASE_TAG: release-11-3-0
   OCTAVE_WINDOWS_ARCHIVE_SHA256: fd3cf0e885467a15211b8ceded42800432a5462481324d49a896ef257e05d1a0
@@ -87,7 +88,9 @@ jobs:
         if: startsWith(matrix.target, 'macos-')
         uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
         with:
-          micromamba-version: '2.10.0-0'
+          micromamba-version: ${{ env.OCTAVE_MICROMAMBA_VERSION }}
+          cache-downloads: true
+          cache-downloads-key: reference-octave-v1-${{ matrix.target }}-micromamba-${{ env.OCTAVE_MICROMAMBA_VERSION }}-octave-${{ env.OCTAVE_MACOS_VERSION }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_BUILD || env.OCTAVE_MACOS_X64_BUILD }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_SHA256 || env.OCTAVE_MACOS_X64_SHA256 }}-openssl-${{ env.OCTAVE_MACOS_OPENSSL_VERSION }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_OPENSSL_BUILD || env.OCTAVE_MACOS_X64_OPENSSL_BUILD }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_OPENSSL_SHA256 || env.OCTAVE_MACOS_X64_OPENSSL_SHA256 }}
 
       - name: Install pinned GNU Octave on Windows
         if: matrix.target == 'win-x64'
@@ -370,7 +373,9 @@ jobs:
         if: startsWith(matrix.target, 'macos-')
         uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39
         with:
-          micromamba-version: '2.10.0-0'
+          micromamba-version: ${{ env.OCTAVE_MICROMAMBA_VERSION }}
+          cache-downloads: true
+          cache-downloads-key: reference-octave-v1-${{ matrix.target }}-micromamba-${{ env.OCTAVE_MICROMAMBA_VERSION }}-octave-${{ env.OCTAVE_MACOS_VERSION }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_BUILD || env.OCTAVE_MACOS_X64_BUILD }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_SHA256 || env.OCTAVE_MACOS_X64_SHA256 }}-openssl-${{ env.OCTAVE_MACOS_OPENSSL_VERSION }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_OPENSSL_BUILD || env.OCTAVE_MACOS_X64_OPENSSL_BUILD }}-${{ matrix.target == 'macos-arm64' && env.OCTAVE_MACOS_ARM64_OPENSSL_SHA256 || env.OCTAVE_MACOS_X64_OPENSSL_SHA256 }}
 
       - name: Download exact target candidate
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
