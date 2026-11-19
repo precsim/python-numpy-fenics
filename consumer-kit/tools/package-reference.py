@@ -27,6 +27,7 @@ import zipfile
 FORMAT_VERSION = 1
 PYTHON_ABI = "cp314"
 FIXED_ZIP_TIME = (2020, 1, 1, 0, 0, 0)
+ARCHIVE_COMPRESSION_LEVEL = 6
 PLATFORMS = ("win-x64", "linux-x64", "macos-arm64", "macos-x64")
 PROFILES = ("core", "numpy", "fenics")
 MATLAB_ALIASES = {
@@ -528,7 +529,12 @@ def _archive_paths(root: Path) -> list[Path]:
 
 def write_zip(package_root: Path, output: Path) -> None:
     prefix = package_root.name
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(
+        output,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=ARCHIVE_COMPRESSION_LEVEL,
+    ) as archive:
         root_info = zipfile.ZipInfo(prefix + "/", FIXED_ZIP_TIME)
         root_info.create_system = 3
         root_info.external_attr = (stat.S_IFDIR | 0o755) << 16
@@ -560,7 +566,13 @@ def write_zip(package_root: Path, output: Path) -> None:
 def write_tar_gz(package_root: Path, output: Path) -> None:
     prefix = package_root.name
     with output.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as zipped:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=raw,
+            compresslevel=ARCHIVE_COMPRESSION_LEVEL,
+            mtime=0,
+        ) as zipped:
             with tarfile.open(fileobj=zipped, mode="w", format=tarfile.PAX_FORMAT) as archive:
                 root_info = tarfile.TarInfo(prefix)
                 root_info.type = tarfile.DIRTYPE

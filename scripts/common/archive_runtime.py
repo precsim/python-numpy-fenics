@@ -13,6 +13,7 @@ import zipfile
 
 
 ZIP_TIME = (2020, 1, 1, 0, 0, 0)
+COMPRESSION_LEVEL = 6
 
 
 def iter_paths(root: Path):
@@ -21,7 +22,10 @@ def iter_paths(root: Path):
 
 def write_zip(root: Path, output: Path) -> None:
     with zipfile.ZipFile(
-        output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+        output,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=COMPRESSION_LEVEL,
     ) as archive:
         for path in iter_paths(root):
             rel = path.relative_to(root).as_posix()
@@ -50,7 +54,13 @@ def write_zip(root: Path, output: Path) -> None:
 
 def write_tar_gz(root: Path, output: Path) -> None:
     with output.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as zipped:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=raw,
+            compresslevel=COMPRESSION_LEVEL,
+            mtime=0,
+        ) as zipped:
             with tarfile.open(fileobj=zipped, mode="w") as archive:
                 for path in iter_paths(root):
                     rel = path.relative_to(root).as_posix()

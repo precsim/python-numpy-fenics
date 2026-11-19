@@ -669,6 +669,7 @@ jobs:
             build/reference/packages/reference-bridge-${{ matrix.target }}-cp314-${{ matrix.profile }}-${{ env.REFERENCE_VERSION }}.${{ matrix.archive_ext }}.sha256
             build/reference/qualification-reference-${{ matrix.target }}-${{ matrix.profile }}.json
           if-no-files-found: error
+          compression-level: 0
           retention-days: 14
 
   aggregate-release-set:
