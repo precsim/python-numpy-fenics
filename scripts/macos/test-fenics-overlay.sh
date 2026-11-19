@@ -64,7 +64,13 @@ cache="$work/jit cache with spaces"
 poison="$work/ambient poison"
 mkdir -p "$runtime" "$cache" "$poison"
 trap 'rm -rf "$work"' EXIT
+phase_start=$SECONDS
+log_phase() {
+    printf 'overlay_qualification_phase_seconds %s %s\n' "$1" "$((SECONDS - phase_start))"
+    phase_start=$SECONDS
+}
 ditto "$base_runtime" "$runtime"
+log_phase base_runtime_copy
 
 site_packages="$runtime/Python.framework/Versions/3.14/lib/python3.14/site-packages"
 staged_python="$runtime/Python.framework/Versions/3.14/bin/python3.14"
@@ -107,7 +113,9 @@ PY
 }
 
 hash_numpy "$work/numpy-before.json"
+log_phase numpy_before_hash
 ditto -x -k "$overlay_zip" "$runtime"
+log_phase overlay_zip_extraction
 
 overlay_manifest="$runtime/fenics-embed-manifest.json"
 [[ -f "$overlay_manifest" ]] || { echo "FEnICS overlay manifest is missing after extraction" >&2; exit 1; }
@@ -158,6 +166,7 @@ PY
 
 hash_numpy "$work/numpy-after.json"
 cmp "$work/numpy-before.json" "$work/numpy-after.json"
+log_phase manifest_and_numpy_identity
 
 tool_bin="$runtime/fenics-runtime/conda/bin"
 if [[ "$target_arch" == arm64 ]]; then
@@ -193,6 +202,7 @@ PY
 }
 "$clang_exe" --version
 printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
+log_phase compiler_and_linker_validation
 
 cat > "$poison/numpy.py" <<'PY'
 raise RuntimeError("ambient numpy poison imported")
@@ -233,6 +243,15 @@ import os
 import platform
 from pathlib import Path
 import sys
+import time
+
+phase_start = time.monotonic()
+
+def log_phase(name):
+    global phase_start
+    now = time.monotonic()
+    print(f"overlay_qualification_python_phase_seconds {name} {now - phase_start:.3f}", flush=True)
+    phase_start = now
 
 script = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
@@ -260,6 +279,7 @@ fenics_embed_runtime = importlib.util.module_from_spec(spec)
 sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
 spec.loader.exec_module(fenics_embed_runtime)
 activated = Path(fenics_embed_runtime.activate()).resolve()
+log_phase("bootstrap_activation")
 if activated != root:
     raise SystemExit(f"unexpected activated root: {activated} != {root}")
 import _tkinter
@@ -322,10 +342,13 @@ if root not in Path(numpy.__file__).resolve().parents:
     raise SystemExit(f"NumPy escaped public runtime: {numpy.__file__}")
 if root not in Path(dolfinx.__file__).resolve().parents:
     raise SystemExit(f"DOLFINx escaped public runtime: {dolfinx.__file__}")
+log_phase("imported_runtime_and_version_checks")
 print("fenics_public_overlay_import=pass")
 code = compile(script.read_text(encoding="utf-8"), str(script), "exec")
 exec(code, {"__name__": "__main__", "__file__": str(script)})
+log_phase("poisson_jit_and_petsc_solve")
 PY
+log_phase relocated_python_qualification
 
 jit_modules="$work/jit-modules.txt"
 find "$cache" -type f -name '*.so' -print | sort > "$jit_modules"
@@ -351,6 +374,7 @@ while IFS= read -r module; do
     }
     echo "jit_module_minos=$minos module=$module"
 done < "$jit_modules"
+log_phase jit_module_linkage_audit
 
 echo "fenics_public_overlay_test=pass"
 echo "fenics_numpy_base_identity=pass"

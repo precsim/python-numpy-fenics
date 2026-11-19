@@ -3,12 +3,25 @@
 Poisson on the unit circle: -laplace(u) = 4, u = 0 on boundary.
 Exact solution u = 1 - x^2 - y^2."""
 
+import time
+
+phase_start = time.monotonic()
+
+
+def log_phase(name):
+    global phase_start
+    now = time.monotonic()
+    print(f"poisson_qualification_phase_seconds {name} {now - phase_start:.3f}", flush=True)
+    phase_start = now
+
 import basix.ufl
 import numpy as np
 import ufl
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
+
+log_phase("initial_imports")
 
 # structured disk mesh (rings of triangles), no gmsh needed
 nr, nt = 16, 32
@@ -30,6 +43,7 @@ domain = mesh.create_mesh(
     ufl.Mesh(basix.ufl.element("Lagrange", "triangle", 1, shape=(2,))),
     np.array(points),
 )
+log_phase("mesh_construction")
 
 V = fem.functionspace(domain, ("Lagrange", 1))
 domain.topology.create_connectivity(domain.topology.dim - 1, domain.topology.dim)
@@ -45,12 +59,15 @@ problem = LinearProblem(ufl.dot(ufl.grad(u), ufl.grad(v)) * ufl.dx,
                         fem.Constant(domain, 4.0) * v * ufl.dx, bcs=[bc],
                         petsc_options=ksp,
                         petsc_options_prefix="poisson_disk")
+log_phase("ffcx_form_jit_and_problem_construction")
 uh = problem.solve()
+log_phase("petsc_solve")
 
 u_exact = fem.Function(V)
 u_exact.interpolate(lambda x: 1.0 - x[0]**2 - x[1]**2)
 err = np.sqrt(domain.comm.allreduce(
     fem.assemble_scalar(fem.form((uh - u_exact)**2 * ufl.dx)), op=MPI.SUM))
+log_phase("error_form_jit_and_accuracy_evaluation")
 max_l2_error = 5.0e-2
 if not np.isfinite(err) or err > max_l2_error:
     raise RuntimeError(
