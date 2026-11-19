@@ -689,8 +689,11 @@ def macho_dependencies(path: Path) -> list[str]:
     return dependencies
 
 
-def macho_rpaths(path: Path) -> list[str]:
-    lines = run("otool", "-l", str(path)).stdout.splitlines()
+def macho_load_commands(path: Path) -> list[str]:
+    return run("otool", "-l", str(path)).stdout.splitlines()
+
+
+def macho_rpaths_from_load_commands(lines: list[str]) -> list[str]:
     rpaths = []
     for index, line in enumerate(lines):
         if line.strip() != "cmd LC_RPATH":
@@ -703,8 +706,11 @@ def macho_rpaths(path: Path) -> list[str]:
     return rpaths
 
 
-def macho_minos(path: Path) -> str | None:
-    lines = run("otool", "-l", str(path)).stdout.splitlines()
+def macho_rpaths(path: Path) -> list[str]:
+    return macho_rpaths_from_load_commands(macho_load_commands(path))
+
+
+def macho_minos_from_load_commands(lines: list[str]) -> str | None:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("minos "):
@@ -716,6 +722,10 @@ def macho_minos(path: Path) -> str | None:
                 if stripped.startswith("version "):
                     return stripped.split()[1]
     return None
+
+
+def macho_minos(path: Path) -> str | None:
+    return macho_minos_from_load_commands(macho_load_commands(path))
 
 
 def version_tuple(value: str) -> tuple[int, ...]:
@@ -867,14 +877,15 @@ def relocate_and_audit_macho(
         if archs != [architecture]:
             raise SystemExit(f"unexpected Mach-O architectures for {binary}: {archs!r}")
         audit_started = time.monotonic()
-        minos = macho_minos(binary)
+        load_commands = macho_load_commands(binary)
+        minos = macho_minos_from_load_commands(load_commands)
         elapsed["minos"] = time.monotonic() - audit_started
         if minos is None:
             raise SystemExit(f"Mach-O has no measurable minimum macOS version: {binary}")
         if version_tuple(minos) > version_tuple("14.0"):
             raise SystemExit(f"Mach-O requires macOS newer than 14.0: {binary}: {minos}")
         audit_started = time.monotonic()
-        rpaths = macho_rpaths(binary)
+        rpaths = macho_rpaths_from_load_commands(load_commands)
         elapsed["rpaths"] = time.monotonic() - audit_started
         for rpath in rpaths:
             if rpath.startswith((str(source_prefix), "/opt/homebrew", "/usr/local", "/Users/")):
