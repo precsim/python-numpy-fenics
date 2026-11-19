@@ -62,8 +62,16 @@ work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/fenics public overlay test.XXXXXX")"
 runtime="$work/runtime with spaces"
 cache="$work/jit cache with spaces"
 poison="$work/ambient poison"
+rosetta_import_warmup_pid=""
 mkdir -p "$runtime" "$cache" "$poison"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+    if [[ -n "${rosetta_import_warmup_pid:-}" ]]; then
+        kill "$rosetta_import_warmup_pid" 2>/dev/null || true
+        wait "$rosetta_import_warmup_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work"
+}
+trap cleanup EXIT
 phase_start=$SECONDS
 log_phase() {
     printf 'overlay_qualification_phase_seconds %s %s\n' "$1" "$((SECONDS - phase_start))"
@@ -178,6 +186,58 @@ else
 fi
 [[ -x "$clang_exe" ]] || { echo "packaged Clang executable is missing: $clang_exe" >&2; exit 1; }
 [[ -x "$linker_exe" ]] || { echo "packaged cctools linker is missing: $linker_exe" >&2; exit 1; }
+rosetta_import_warmup_log=""
+if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
+    rosetta_import_warmup_log="$work/rosetta-import-warmup.log"
+    rosetta_import_warmup_cache="$work/rosetta import warmup cache"
+    mkdir -p "$rosetta_import_warmup_cache"
+    (
+        unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+            LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
+            PETSC_DIR FENICS_JIT_ROOT FENICS_JIT_COMPILER FENICS_JIT_CLANG \
+            FENICS_JIT_LINKER CONDA_PREFIX || true
+        export PYTHONPATH="$poison"
+        export PYTHONUSERBASE="$poison"
+        export PYTHONNOUSERSITE=1
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONHOME="$runtime/Python.framework/Versions/3.14"
+        export XDG_CACHE_HOME="$rosetta_import_warmup_cache"
+        export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+        "${python_cmd[@]}" -S -P - "$runtime" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+import time
+
+started = time.monotonic()
+root = Path(sys.argv[1]).resolve()
+bootstrap = (
+    root
+    / "Python.framework"
+    / "Versions"
+    / "3.14"
+    / "lib"
+    / "python3.14"
+    / "site-packages"
+    / "fenics_embed_runtime.py"
+)
+spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load staged FEniCS bootstrap for Rosetta warmup: {bootstrap}")
+fenics_embed_runtime = importlib.util.module_from_spec(spec)
+sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
+spec.loader.exec_module(fenics_embed_runtime)
+fenics_embed_runtime.activate()
+import basix
+import dolfinx
+print(
+    f"overlay_rosetta_import_warmup_seconds {time.monotonic() - started:.3f}",
+    flush=True,
+)
+PY
+    ) >"$rosetta_import_warmup_log" 2>&1 &
+    rosetta_import_warmup_pid=$!
+fi
 toolchain_started=$SECONDS
 resolved_linker="$("$clang_exe" -B"$tool_bin" -print-prog-name=ld)"
 printf 'overlay_toolchain_phase_seconds clang_linker_discovery %s\n' "$((SECONDS - toolchain_started))"
@@ -217,6 +277,15 @@ if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
     "$clang_exe" -B"$tool_bin" -isysroot "$warmup_sdkroot" -mmacosx-version-min=14.0 \
         -x c -std=c17 -O2 -g0 -c "$warmup_source" -o "$warmup_object"
     printf 'overlay_toolchain_phase_seconds clang_rosetta_object_warmup %s\n' "$((SECONDS - toolchain_started))"
+fi
+if [[ -n "$rosetta_import_warmup_pid" ]]; then
+    if ! wait "$rosetta_import_warmup_pid"; then
+        cat "$rosetta_import_warmup_log" >&2
+        echo "Rosetta runtime import warmup failed" >&2
+        exit 1
+    fi
+    cat "$rosetta_import_warmup_log"
+    rosetta_import_warmup_pid=""
 fi
 printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
 log_phase compiler_and_linker_validation
