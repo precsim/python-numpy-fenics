@@ -6,6 +6,9 @@ Exact solution u = 1 - x^2 - y^2."""
 import cProfile
 import io
 import pstats
+import shlex
+import subprocess
+import sys
 import time
 
 phase_start = time.monotonic()
@@ -61,6 +64,34 @@ ksp = {"ksp_type": "preonly", "pc_type": "lu"} if MPI.COMM_WORLD.size == 1 \
 # Profile the real, fresh FFCx/CFFI JIT without changing its compilation path.
 # This diagnostic records Python call costs, not an alternative acceptance path.
 jit_profile = cProfile.Profile()
+original_check_call = subprocess.check_call
+jit_subprocess_count = 0
+
+
+def timed_jit_check_call(*args, **kwargs):
+    """Observe real CFFI compiler/linker calls without modifying their arguments."""
+    global jit_subprocess_count
+    jit_subprocess_count += 1
+    command = args[0] if args else kwargs["args"]
+    command_args = list(command) if isinstance(command, (list, tuple)) else [command]
+    started = time.monotonic()
+    try:
+        return original_check_call(*args, **kwargs)
+    finally:
+        elapsed = time.monotonic() - started
+        print(
+            f"poisson_jit_subprocess_seconds {jit_subprocess_count} "
+            f"{'compile' if '-c' in command_args else 'link_or_other'} {elapsed:.3f}",
+            file=sys.__stdout__, flush=True,
+        )
+        print(
+            "poisson_jit_subprocess_command "
+            f"{jit_subprocess_count} {shlex.join(map(str, command_args))}",
+            file=sys.__stdout__, flush=True,
+        )
+
+
+subprocess.check_call = timed_jit_check_call
 jit_profile.enable()
 try:
     problem = LinearProblem(ufl.dot(ufl.grad(u), ufl.grad(v)) * ufl.dx,
@@ -69,6 +100,7 @@ try:
                             petsc_options_prefix="poisson_disk")
 finally:
     jit_profile.disable()
+    subprocess.check_call = original_check_call
     jit_stats = io.StringIO()
     pstats.Stats(jit_profile, stream=jit_stats).sort_stats("cumulative").print_stats(35)
     print("poisson_jit_constructor_profile_begin", flush=True)
