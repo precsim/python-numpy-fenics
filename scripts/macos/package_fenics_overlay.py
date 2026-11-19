@@ -117,6 +117,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def copy_file_with_sha256(source: Path, destination: Path) -> str:
+    """Copy regular-file data while hashing the exact bytes written."""
+
+    digest = hashlib.sha256()
+    with source.open("rb") as source_stream, destination.open("xb") as destination_stream:
+        for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            destination_stream.write(chunk)
+    return digest.hexdigest()
+
+
 def log_duration(name: str, seconds: float) -> None:
     print(f"package_phase_seconds {name} {seconds:.3f}", flush=True)
 
@@ -407,6 +418,9 @@ def copy_path(
     destination: Path,
     source_prefix: Path,
     private_prefix: Path,
+    expected_prefix_sha: str | None,
+    package_name: str,
+    relative: PurePosixPath,
     source_size: int | None,
     profile: dict[str, float],
 ) -> None:
@@ -460,15 +474,37 @@ def copy_path(
     if destination_exists:
         profile["destination_existing_count"] += 1
         conflict_started = time.monotonic()
-        if destination.is_symlink() or sha256_file(source) != sha256_file(destination):
+        hash_started = time.monotonic()
+        actual_prefix_sha = sha256_file(source)
+        if expected_prefix_sha is not None:
+            profile["source_hashing"] += time.monotonic() - hash_started
+            if actual_prefix_sha != expected_prefix_sha:
+                raise SystemExit(
+                    f"installed package-owned file hash mismatch: {package_name}: {relative}: "
+                    f"{actual_prefix_sha} != {expected_prefix_sha}"
+                )
+        if destination.is_symlink() or actual_prefix_sha != sha256_file(destination):
             raise SystemExit(f"conflicting package ownership at file: {destination}")
         profile["conflict_verification"] += time.monotonic() - conflict_started
         profile["copy_path_total"] += time.monotonic() - copy_path_started
         return
 
     copy_started = time.monotonic()
-    shutil.copy2(source, destination, follow_symlinks=False)
-    profile["copy"] += time.monotonic() - copy_started
+    if expected_prefix_sha is None:
+        shutil.copy2(source, destination, follow_symlinks=False)
+        copy_elapsed = time.monotonic() - copy_started
+    else:
+        actual_prefix_sha = copy_file_with_sha256(source, destination)
+        if actual_prefix_sha != expected_prefix_sha:
+            destination.unlink()
+            raise SystemExit(
+                f"installed package-owned file hash mismatch: {package_name}: {relative}: "
+                f"{actual_prefix_sha} != {expected_prefix_sha}"
+            )
+        shutil.copystat(source, destination, follow_symlinks=False)
+        copy_elapsed = time.monotonic() - copy_started
+        profile["fused_hash_copy"] += copy_elapsed
+    profile["copy"] += copy_elapsed
     profile["copied_files"] += 1
     if source_size is None:
         profile["copied_unknown_size"] += 1
@@ -1368,7 +1404,10 @@ try:
                     "ambiguous multi-package overlay ownership: "
                     f"{destination_relative}: existing={owners[destination_relative]!r} new={name!r}"
                 )
-            expected_prefix_sha = owned.get("sha256_in_prefix")
+            raw_expected_prefix_sha = owned.get("sha256_in_prefix")
+            expected_prefix_sha = (
+                str(raw_expected_prefix_sha).lower() if raw_expected_prefix_sha else None
+            )
             outer_metadata_started = time.monotonic()
             if expected_prefix_sha and source.is_file() and not source.is_symlink():
                 staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
@@ -1378,21 +1417,24 @@ try:
                     staging_profile["hashed_unknown_size"] += 1
                 else:
                     staging_profile["hashed_bytes"] += source_size
-                hash_started = time.monotonic()
-                actual_prefix_sha = sha256_file(source)
-                staging_profile["source_hashing"] += time.monotonic() - hash_started
-                if actual_prefix_sha != str(expected_prefix_sha).lower():
-                    raise SystemExit(
-                        f"installed package-owned file hash mismatch: {name}: {relative}: "
-                        f"{actual_prefix_sha} != {expected_prefix_sha}"
-                    )
             else:
                 staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
+                expected_prefix_sha = None
             source_size = owned.get("size_in_bytes")
             if not isinstance(source_size, int) or source_size < 0:
                 source_size = None
             staging_parent_dirs.add(destination.parent)
-            copy_path(source, destination, prefix, private_prefix, source_size, staging_profile)
+            copy_path(
+                source,
+                destination,
+                prefix,
+                private_prefix,
+                expected_prefix_sha,
+                name,
+                relative,
+                source_size,
+                staging_profile,
+            )
             owners[destination_relative].append(name)
             contributed = True
         if contributed:
@@ -1403,6 +1445,7 @@ try:
     staging_total = staging_finished - phase_started
     log_duration("package_staging", staging_total)
     log_duration("package_staging_source_hashing", staging_profile["source_hashing"])
+    log_duration("package_staging_fused_hash_copy", staging_profile["fused_hash_copy"])
     log_duration("package_staging_copy_path", staging_profile["copy_path_total"])
     log_duration("package_staging_parent_mkdir", staging_profile["parent_mkdir"])
     log_duration("package_staging_copy", staging_profile["copy"])
@@ -1423,7 +1466,6 @@ try:
     staging_residual = max(
         0.0,
         staging_total
-        - staging_profile["source_hashing"]
         - staging_profile["outer_metadata"]
         - staging_profile["copy_path_total"],
     )
