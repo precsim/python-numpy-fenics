@@ -674,7 +674,7 @@ def macho_identity(path: Path) -> str | None:
     return output[1].strip() if len(output) > 1 and output[1].strip() else None
 
 
-def macho_dependencies(path: Path) -> list[str]:
+def macho_dependencies_and_identity(path: Path) -> tuple[list[str], str | None]:
     identity = macho_identity(path)
     output = run("otool", "-L", str(path)).stdout.splitlines()[1:]
     dependencies = []
@@ -686,7 +686,11 @@ def macho_dependencies(path: Path) -> list[str]:
         if identity is not None and dependency == identity:
             continue
         dependencies.append(dependency)
-    return dependencies
+    return dependencies, identity
+
+
+def macho_dependencies(path: Path) -> list[str]:
+    return macho_dependencies_and_identity(path)[0]
 
 
 def macho_load_commands(path: Path) -> list[str]:
@@ -796,8 +800,9 @@ def relocate_and_audit_macho(
     for binary in macho_files:
         metadata_started = time.monotonic()
         rpaths = macho_rpaths(binary)
+        dependencies, identity = macho_dependencies_and_identity(binary)
         changes = []
-        for dependency in macho_dependencies(binary):
+        for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
                 continue
             target = staged_target_for_dependency(dependency, binary, source_prefix, private_prefix, rpaths)
@@ -830,9 +835,9 @@ def relocate_and_audit_macho(
                 rewritten.add(binary)
 
         if binary.suffix == ".dylib":
-            metadata_started = time.monotonic()
-            identity = macho_identity(binary) or ""
-            relocation_metadata_seconds += time.monotonic() - metadata_started
+            # Dependency inspection already read LC_ID_DYLIB. The -change and
+            # -delete_rpath commands above do not change a dylib's install ID;
+            # avoid invoking otool -D a second time before -id.
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
