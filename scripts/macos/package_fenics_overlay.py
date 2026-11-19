@@ -1333,72 +1333,91 @@ staging_profile: dict[str, float] = defaultdict(float)
 staging_parent_dirs: set[Path] = set()
 
 try:
-    for lock_record in lock["packages"]:
-        name = str(lock_record["name"])
-        record = records[name]
-        if package_excluded(name):
-            excluded_packages.append(name)
-            continue
-        is_jit_toolchain = jit_toolchain_package(name)
-        allowed_top_level = JIT_TOOLCHAIN_SOURCE_TOP_LEVEL if is_jit_toolchain else ALLOWED_SOURCE_TOP_LEVEL
-        contributed = False
-        for owned in package_owned_paths(record):
-            relative = owned["relative"]
-            if numpy_owned_path(relative):
-                raise SystemExit(f"non-NumPy package unexpectedly owns a NumPy path: {name}: {relative}")
-            exclusion_reason = overlay_path_exclusion_reason(
-                relative, retain_static_archives=is_jit_toolchain
-            )
-            if exclusion_reason is not None:
-                excluded_owned_paths.append(
-                    {"package": name, "path": relative.as_posix(), "reason": exclusion_reason}
-                )
+    # Hash package files concurrently, but keep package and copy order serial.
+    # ``source_hashing`` measures main-thread blocking time for ordered results;
+    # hashes completed while an earlier file is copied are intentionally hidden
+    # because total staging wall time is the performance metric that matters.
+    with ThreadPoolExecutor(max_workers=4) as hash_pool:
+        for lock_record in lock["packages"]:
+            name = str(lock_record["name"])
+            record = records[name]
+            if package_excluded(name):
+                excluded_packages.append(name)
                 continue
-            if not relative.parts or relative.parts[0] not in allowed_top_level:
-                continue
-            source = prefix.joinpath(*relative.parts)
-            outer_metadata_started = time.monotonic()
-            if not source.exists() and not source.is_symlink():
-                raise SystemExit(f"package-owned source file is missing: {name}: {relative}")
-            staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
-            destination = private_prefix.joinpath(*relative.parts)
-            destination_relative = destination.relative_to(stage_root).as_posix()
-            if destination_relative in owners and name not in owners[destination_relative]:
-                raise SystemExit(
-                    "ambiguous multi-package overlay ownership: "
-                    f"{destination_relative}: existing={owners[destination_relative]!r} new={name!r}"
+            is_jit_toolchain = jit_toolchain_package(name)
+            allowed_top_level = JIT_TOOLCHAIN_SOURCE_TOP_LEVEL if is_jit_toolchain else ALLOWED_SOURCE_TOP_LEVEL
+            package_entries: list[tuple[Path, Path, str, PurePosixPath, int | None, str | None]] = []
+            hash_sources: list[Path] = []
+
+            for owned in package_owned_paths(record):
+                relative = owned["relative"]
+                if numpy_owned_path(relative):
+                    raise SystemExit(f"non-NumPy package unexpectedly owns a NumPy path: {name}: {relative}")
+                exclusion_reason = overlay_path_exclusion_reason(
+                    relative, retain_static_archives=is_jit_toolchain
                 )
-            expected_prefix_sha = owned.get("sha256_in_prefix")
-            outer_metadata_started = time.monotonic()
-            if expected_prefix_sha and source.is_file() and not source.is_symlink():
+                if exclusion_reason is not None:
+                    excluded_owned_paths.append(
+                        {"package": name, "path": relative.as_posix(), "reason": exclusion_reason}
+                    )
+                    continue
+                if not relative.parts or relative.parts[0] not in allowed_top_level:
+                    continue
+                source = prefix.joinpath(*relative.parts)
+                outer_metadata_started = time.monotonic()
+                if not source.exists() and not source.is_symlink():
+                    raise SystemExit(f"package-owned source file is missing: {name}: {relative}")
                 staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
-                staging_profile["hashed_files"] += 1
+                destination = private_prefix.joinpath(*relative.parts)
+                destination_relative = destination.relative_to(stage_root).as_posix()
+                if destination_relative in owners and name not in owners[destination_relative]:
+                    raise SystemExit(
+                        "ambiguous multi-package overlay ownership: "
+                        f"{destination_relative}: existing={owners[destination_relative]!r} new={name!r}"
+                    )
+
+                expected_prefix_sha = owned.get("sha256_in_prefix")
+                outer_metadata_started = time.monotonic()
+                hash_expected = bool(expected_prefix_sha and source.is_file() and not source.is_symlink())
+                staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
+                expected_prefix_sha = str(expected_prefix_sha) if hash_expected else None
+                if hash_expected:
+                    staging_profile["hashed_files"] += 1
+                    hash_source_size = owned.get("size_in_bytes")
+                    if not isinstance(hash_source_size, int) or hash_source_size < 0:
+                        staging_profile["hashed_unknown_size"] += 1
+                    else:
+                        staging_profile["hashed_bytes"] += hash_source_size
+                    hash_sources.append(source)
+
                 source_size = owned.get("size_in_bytes")
                 if not isinstance(source_size, int) or source_size < 0:
-                    staging_profile["hashed_unknown_size"] += 1
-                else:
-                    staging_profile["hashed_bytes"] += source_size
-                hash_started = time.monotonic()
-                actual_prefix_sha = sha256_file(source)
-                staging_profile["source_hashing"] += time.monotonic() - hash_started
-                if actual_prefix_sha != str(expected_prefix_sha).lower():
-                    raise SystemExit(
-                        f"installed package-owned file hash mismatch: {name}: {relative}: "
-                        f"{actual_prefix_sha} != {expected_prefix_sha}"
-                    )
+                    source_size = None
+                package_entries.append(
+                    (source, destination, destination_relative, relative, source_size, expected_prefix_sha)
+                )
+
+            hash_results = iter(hash_pool.map(sha256_file, hash_sources))
+            contributed = False
+            for source, destination, destination_relative, relative, source_size, expected_prefix_sha in package_entries:
+                if expected_prefix_sha is not None:
+                    hash_started = time.monotonic()
+                    actual_prefix_sha = next(hash_results)
+                    staging_profile["source_hashing"] += time.monotonic() - hash_started
+                    if actual_prefix_sha != expected_prefix_sha.lower():
+                        raise SystemExit(
+                            f"installed package-owned file hash mismatch: {name}: {relative}: "
+                            f"{actual_prefix_sha} != {expected_prefix_sha}"
+                        )
+                staging_parent_dirs.add(destination.parent)
+                copy_path(source, destination, prefix, private_prefix, source_size, staging_profile)
+                owners[destination_relative].append(name)
+                contributed = True
+
+            if contributed:
+                retained_packages.append(name)
             else:
-                staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
-            source_size = owned.get("size_in_bytes")
-            if not isinstance(source_size, int) or source_size < 0:
-                source_size = None
-            staging_parent_dirs.add(destination.parent)
-            copy_path(source, destination, prefix, private_prefix, source_size, staging_profile)
-            owners[destination_relative].append(name)
-            contributed = True
-        if contributed:
-            retained_packages.append(name)
-        else:
-            not_staged_packages.append(name)
+                not_staged_packages.append(name)
     staging_finished = time.monotonic()
     staging_total = staging_finished - phase_started
     log_duration("package_staging", staging_total)
