@@ -674,10 +674,10 @@ def macho_identity(path: Path) -> str | None:
     return output[1].strip() if len(output) > 1 and output[1].strip() else None
 
 
-def macho_dependencies_with_timings(path: Path) -> tuple[list[str], float, float]:
-    identity_started = time.monotonic()
-    identity = macho_identity(path)
-    identity_seconds = time.monotonic() - identity_started
+def macho_dependencies_from_identity_with_timings(
+    path: Path,
+    identity: str | None,
+) -> tuple[list[str], float]:
     list_started = time.monotonic()
     output = run("otool", "-L", str(path)).stdout.splitlines()[1:]
     dependencies = []
@@ -689,7 +689,15 @@ def macho_dependencies_with_timings(path: Path) -> tuple[list[str], float, float
         if identity is not None and dependency == identity:
             continue
         dependencies.append(dependency)
-    return dependencies, identity_seconds, time.monotonic() - list_started
+    return dependencies, time.monotonic() - list_started
+
+
+def macho_dependencies_with_timings(path: Path) -> tuple[list[str], float, float]:
+    identity_started = time.monotonic()
+    identity = macho_identity(path)
+    identity_seconds = time.monotonic() - identity_started
+    dependencies, list_seconds = macho_dependencies_from_identity_with_timings(path, identity)
+    return dependencies, identity_seconds, list_seconds
 
 
 def macho_dependencies(path: Path) -> list[str]:
@@ -698,6 +706,17 @@ def macho_dependencies(path: Path) -> list[str]:
 
 def macho_load_commands(path: Path) -> list[str]:
     return run("otool", "-l", str(path)).stdout.splitlines()
+
+
+def macho_identity_from_load_commands(lines: list[str]) -> str | None:
+    for index, line in enumerate(lines):
+        if line.strip() != "cmd LC_ID_DYLIB":
+            continue
+        for probe in lines[index + 1 : index + 8]:
+            stripped = probe.strip()
+            if stripped.startswith("name "):
+                return stripped.removeprefix("name ").split(" (offset", 1)[0]
+    return None
 
 
 def macho_rpaths_from_load_commands(lines: list[str]) -> list[str]:
@@ -807,10 +826,14 @@ def relocate_and_audit_macho(
     for binary in macho_files:
         metadata_started = time.monotonic()
         read_started = time.monotonic()
-        rpaths = macho_rpaths(binary)
+        load_commands = macho_load_commands(binary)
+        rpaths = macho_rpaths_from_load_commands(load_commands)
         relocation_rpaths_seconds += time.monotonic() - read_started
+        identity_started = time.monotonic()
+        identity = macho_identity_from_load_commands(load_commands)
+        identity_seconds = time.monotonic() - identity_started
         changes = []
-        dependencies, identity_seconds, list_seconds = macho_dependencies_with_timings(binary)
+        dependencies, list_seconds = macho_dependencies_from_identity_with_timings(binary, identity)
         relocation_dependency_identity_seconds += identity_seconds
         relocation_dependency_list_seconds += list_seconds
         for dependency in dependencies:
@@ -850,11 +873,6 @@ def relocate_and_audit_macho(
                 rewritten.add(binary)
 
         if binary.suffix == ".dylib":
-            metadata_started = time.monotonic()
-            identity = macho_identity(binary) or ""
-            identity_seconds = time.monotonic() - metadata_started
-            relocation_dylib_identity_seconds += identity_seconds
-            relocation_metadata_seconds += identity_seconds
             desired = f"@rpath/{binary.name}"
             if identity and identity != desired:
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
@@ -928,7 +946,10 @@ def relocate_and_audit_macho(
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
 
         audit_started = time.monotonic()
-        dependencies, identity_seconds, list_seconds = macho_dependencies_with_timings(binary)
+        identity_started = time.monotonic()
+        identity = macho_identity_from_load_commands(load_commands)
+        identity_seconds = time.monotonic() - identity_started
+        dependencies, list_seconds = macho_dependencies_from_identity_with_timings(binary, identity)
         elapsed["dependencies"] = time.monotonic() - audit_started
         elapsed["dependency_identity"] = identity_seconds
         elapsed["dependency_list"] = list_seconds
