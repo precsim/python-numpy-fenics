@@ -435,27 +435,36 @@ def find_cache_record(package_cache: Path, record: dict[str, Any]) -> Path | Non
     # Micromamba 2.10 uses URL-hierarchical package caches.  Keep a bounded
     # metadata fallback so the producer remains robust if the cache layout
     # changes without accepting an unbound package identity.
-    candidates.extend(path.parent.parent for path in package_cache.rglob("info/index.json"))
-
     seen: set[Path] = set()
-    for candidate in candidates:
+
+    def matching(candidate: Path) -> Path | None:
         try:
             candidate = candidate.resolve()
         except OSError:
-            continue
+            return None
         if candidate in seen:
-            continue
+            return None
         seen.add(candidate)
         index = candidate / "info" / "index.json"
         if not index.is_file():
-            continue
+            return None
         try:
             meta = read_json(index)
         except Exception:
-            continue
+            return None
         identity = (str(meta.get("name")), str(meta.get("version")), str(meta.get("build")))
         if identity == expected:
             return candidate
+        return None
+
+    for candidate in candidates:
+        match = matching(candidate)
+        if match is not None:
+            return match
+    for index in package_cache.rglob("info/index.json"):
+        match = matching(index.parent.parent)
+        if match is not None:
+            return match
     return None
 
 
