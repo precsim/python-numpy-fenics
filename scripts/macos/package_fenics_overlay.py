@@ -678,8 +678,8 @@ def macho_dependencies(path: Path) -> list[str]:
     return dependencies
 
 
-def macho_rpaths(path: Path) -> list[str]:
-    lines = run("otool", "-l", str(path)).stdout.splitlines()
+def macho_rpaths(path: Path, *, load_commands: list[str] | None = None) -> list[str]:
+    lines = load_commands if load_commands is not None else run("otool", "-l", str(path)).stdout.splitlines()
     rpaths = []
     for index, line in enumerate(lines):
         if line.strip() != "cmd LC_RPATH":
@@ -692,8 +692,8 @@ def macho_rpaths(path: Path) -> list[str]:
     return rpaths
 
 
-def macho_minos(path: Path) -> str | None:
-    lines = run("otool", "-l", str(path)).stdout.splitlines()
+def macho_minos(path: Path, *, load_commands: list[str] | None = None) -> str | None:
+    lines = load_commands if load_commands is not None else run("otool", "-l", str(path)).stdout.splitlines()
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("minos "):
@@ -826,7 +826,10 @@ def relocate_and_audit_macho(
         archs = run("lipo", "-archs", str(binary)).stdout.strip().split()
         if archs != [architecture]:
             raise SystemExit(f"unexpected Mach-O architectures for {binary}: {archs!r}")
-        minos = macho_minos(binary)
+        # Both independent audits inspect the same post-relocation load commands.
+        # Read them once per binary, after signing, without weakening either check.
+        load_commands = run("otool", "-l", str(binary)).stdout.splitlines()
+        minos = macho_minos(binary, load_commands=load_commands)
         if minos is None:
             raise SystemExit(f"Mach-O has no measurable minimum macOS version: {binary}")
         if version_tuple(minos) > version_tuple("14.0"):
@@ -834,7 +837,7 @@ def relocate_and_audit_macho(
         if max_minos is None or version_tuple(minos) > version_tuple(max_minos):
             max_minos = minos
 
-        rpaths = macho_rpaths(binary)
+        rpaths = macho_rpaths(binary, load_commands=load_commands)
         for rpath in rpaths:
             if rpath.startswith((str(source_prefix), "/opt/homebrew", "/usr/local", "/Users/")):
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
