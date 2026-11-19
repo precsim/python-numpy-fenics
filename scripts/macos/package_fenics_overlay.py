@@ -121,6 +121,14 @@ def log_duration(name: str, seconds: float) -> None:
     print(f"package_phase_seconds {name} {seconds:.3f}", flush=True)
 
 
+def log_count(name: str, count: float) -> None:
+    print(f"package_stage_count {name} {int(count)}", flush=True)
+
+
+def log_bytes(name: str, size: float) -> None:
+    print(f"package_stage_bytes {name} {int(size)}", flush=True)
+
+
 def log_phase(name: str, started: float) -> float:
     now = time.monotonic()
     log_duration(name, now - started)
@@ -394,9 +402,26 @@ def verify_locked_prefix(lock: dict[str, Any], records: dict[str, dict[str, Any]
         raise SystemExit("locked prefix does not match package lock:\n" + json.dumps(mismatches, indent=2))
 
 
-def copy_path(source: Path, destination: Path, source_prefix: Path, private_prefix: Path) -> None:
+def copy_path(
+    source: Path,
+    destination: Path,
+    source_prefix: Path,
+    private_prefix: Path,
+    source_size: int | None,
+    profile: dict[str, float],
+) -> None:
+    copy_path_started = time.monotonic()
+    mkdir_started = time.monotonic()
+    profile["parent_mkdir_calls"] += 1
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_symlink():
+    profile["parent_mkdir"] += time.monotonic() - mkdir_started
+
+    metadata_started = time.monotonic()
+    source_is_symlink = source.is_symlink()
+    profile["metadata"] += time.monotonic() - metadata_started
+    if source_is_symlink:
+        symlink_started = time.monotonic()
+        profile["symlink_count"] += 1
         raw_target = os.readlink(source)
         target_path = Path(raw_target)
         resolved_target = (
@@ -411,19 +436,45 @@ def copy_path(source: Path, destination: Path, source_prefix: Path, private_pref
         staged_target = private_prefix / relative_target
         target = os.path.relpath(staged_target, destination.parent)
         if destination.exists() or destination.is_symlink():
+            profile["destination_existing_count"] += 1
             if not destination.is_symlink() or os.readlink(destination) != target:
                 raise SystemExit(f"conflicting package ownership at symlink: {destination}")
+            profile["symlink"] += time.monotonic() - symlink_started
+            profile["copy_path_total"] += time.monotonic() - copy_path_started
             return
         os.symlink(target, destination)
+        profile["symlink"] += time.monotonic() - symlink_started
+        profile["copy_path_total"] += time.monotonic() - copy_path_started
         return
 
-    if not source.is_file():
+    metadata_started = time.monotonic()
+    source_is_file = source.is_file()
+    profile["metadata"] += time.monotonic() - metadata_started
+    if not source_is_file:
         raise SystemExit(f"package-owned path is not a file/symlink: {source}")
-    if destination.exists() or destination.is_symlink():
+    profile["regular_count"] += 1
+
+    metadata_started = time.monotonic()
+    destination_exists = destination.exists() or destination.is_symlink()
+    profile["metadata"] += time.monotonic() - metadata_started
+    if destination_exists:
+        profile["destination_existing_count"] += 1
+        conflict_started = time.monotonic()
         if destination.is_symlink() or sha256_file(source) != sha256_file(destination):
             raise SystemExit(f"conflicting package ownership at file: {destination}")
+        profile["conflict_verification"] += time.monotonic() - conflict_started
+        profile["copy_path_total"] += time.monotonic() - copy_path_started
         return
+
+    copy_started = time.monotonic()
     shutil.copy2(source, destination, follow_symlinks=False)
+    profile["copy"] += time.monotonic() - copy_started
+    profile["copied_files"] += 1
+    if source_size is None:
+        profile["copied_unknown_size"] += 1
+    else:
+        profile["copied_bytes"] += source_size
+    profile["copy_path_total"] += time.monotonic() - copy_path_started
 
 
 def find_cache_record(package_cache: Path, record: dict[str, Any]) -> Path | None:
@@ -1278,6 +1329,8 @@ retained_packages: list[str] = []
 excluded_packages: list[str] = []
 not_staged_packages: list[str] = []
 excluded_owned_paths: list[dict[str, str]] = []
+staging_profile: dict[str, float] = defaultdict(float)
+staging_parent_dirs: set[Path] = set()
 
 try:
     for lock_record in lock["packages"]:
@@ -1304,8 +1357,10 @@ try:
             if not relative.parts or relative.parts[0] not in allowed_top_level:
                 continue
             source = prefix.joinpath(*relative.parts)
+            outer_metadata_started = time.monotonic()
             if not source.exists() and not source.is_symlink():
                 raise SystemExit(f"package-owned source file is missing: {name}: {relative}")
+            staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
             destination = private_prefix.joinpath(*relative.parts)
             destination_relative = destination.relative_to(stage_root).as_posix()
             if destination_relative in owners and name not in owners[destination_relative]:
@@ -1314,21 +1369,77 @@ try:
                     f"{destination_relative}: existing={owners[destination_relative]!r} new={name!r}"
                 )
             expected_prefix_sha = owned.get("sha256_in_prefix")
+            outer_metadata_started = time.monotonic()
             if expected_prefix_sha and source.is_file() and not source.is_symlink():
+                staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
+                staging_profile["hashed_files"] += 1
+                source_size = owned.get("size_in_bytes")
+                if not isinstance(source_size, int) or source_size < 0:
+                    staging_profile["hashed_unknown_size"] += 1
+                else:
+                    staging_profile["hashed_bytes"] += source_size
+                hash_started = time.monotonic()
                 actual_prefix_sha = sha256_file(source)
+                staging_profile["source_hashing"] += time.monotonic() - hash_started
                 if actual_prefix_sha != str(expected_prefix_sha).lower():
                     raise SystemExit(
                         f"installed package-owned file hash mismatch: {name}: {relative}: "
                         f"{actual_prefix_sha} != {expected_prefix_sha}"
                     )
-            copy_path(source, destination, prefix, private_prefix)
+            else:
+                staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
+            source_size = owned.get("size_in_bytes")
+            if not isinstance(source_size, int) or source_size < 0:
+                source_size = None
+            staging_parent_dirs.add(destination.parent)
+            copy_path(source, destination, prefix, private_prefix, source_size, staging_profile)
             owners[destination_relative].append(name)
             contributed = True
         if contributed:
             retained_packages.append(name)
         else:
             not_staged_packages.append(name)
-    phase_started = log_phase("package_staging", phase_started)
+    staging_finished = time.monotonic()
+    staging_total = staging_finished - phase_started
+    log_duration("package_staging", staging_total)
+    log_duration("package_staging_source_hashing", staging_profile["source_hashing"])
+    log_duration("package_staging_copy_path", staging_profile["copy_path_total"])
+    log_duration("package_staging_parent_mkdir", staging_profile["parent_mkdir"])
+    log_duration("package_staging_copy", staging_profile["copy"])
+    log_duration("package_staging_symlink", staging_profile["symlink"])
+    log_duration("package_staging_conflict_verification", staging_profile["conflict_verification"])
+    log_duration("package_staging_outer_metadata", staging_profile["outer_metadata"])
+    log_duration("package_staging_copy_metadata", staging_profile["metadata"])
+    copy_path_other = max(
+        0.0,
+        staging_profile["copy_path_total"]
+        - staging_profile["parent_mkdir"]
+        - staging_profile["copy"]
+        - staging_profile["symlink"]
+        - staging_profile["conflict_verification"]
+        - staging_profile["metadata"],
+    )
+    log_duration("package_staging_copy_other", copy_path_other)
+    staging_residual = max(
+        0.0,
+        staging_total
+        - staging_profile["source_hashing"]
+        - staging_profile["outer_metadata"]
+        - staging_profile["copy_path_total"],
+    )
+    log_duration("package_staging_residual", staging_residual)
+    log_count("hashed_files", staging_profile["hashed_files"])
+    log_bytes("hashed_bytes", staging_profile["hashed_bytes"])
+    log_count("hashed_unknown_size", staging_profile["hashed_unknown_size"])
+    log_count("copied_files", staging_profile["copied_files"])
+    log_bytes("copied_bytes", staging_profile["copied_bytes"])
+    log_count("copied_unknown_size", staging_profile["copied_unknown_size"])
+    log_count("regular_files", staging_profile["regular_count"])
+    log_count("symlinks", staging_profile["symlink_count"])
+    log_count("parent_mkdir_calls", staging_profile["parent_mkdir_calls"])
+    log_count("unique_parent_dirs", len(staging_parent_dirs))
+    log_count("destination_existing", staging_profile["destination_existing_count"])
+    phase_started = time.monotonic()
 
     # The consumer-owned NumPy distribution and producer CPython must never be
     # represented anywhere in the emitted overlay.

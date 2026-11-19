@@ -268,6 +268,8 @@ jobs:
             --base-producer-revision "$NUMPY_BASE_REVISION" \
             --producer-revision "$producer_revision" \
             > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
+          grep -E '^package_phase_seconds package_staging|^package_stage_(count|bytes) ' \
+            "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
           cmp "dist/$OVERLAY_ASSET" "dist-repeat/$OVERLAY_ASSET"
           cmp "dist/$OVERLAY_ASSET.json" "dist-repeat/$OVERLAY_ASSET.json"
           cmp "dist/$OVERLAY_ASSET.sha256" "dist-repeat/$OVERLAY_ASSET.sha256"
