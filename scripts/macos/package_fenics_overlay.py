@@ -23,6 +23,14 @@ from urllib.parse import urlparse
 
 
 SYSTEM_PREFIXES = ("/usr/lib/", "/System/Library/")
+MACHO_DEPENDENCY_COMMANDS = {
+    "LC_LOAD_DYLIB",
+    "LC_LOAD_WEAK_DYLIB",
+    "LC_REEXPORT_DYLIB",
+    "LC_LOAD_UPWARD_DYLIB",
+    "LC_LAZY_LOAD_DYLIB",
+}
+UNSUPPORTED_MACHO_LIBRARY_COMMANDS = {"LC_IDFVMLIB", "LC_LOADFVMLIB"}
 MACHO_MAGICS = {
     b"\xfe\xed\xfa\xce",  # MH_MAGIC
     b"\xce\xfa\xed\xfe",  # MH_CIGAM
@@ -719,6 +727,21 @@ def macho_identity_from_load_commands(lines: list[str]) -> str | None:
     return None
 
 
+def macho_dependencies_from_load_commands(lines: list[str]) -> list[str]:
+    dependencies = []
+    current_cmd = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("cmd "):
+            current_cmd = stripped.split(None, 1)[1]
+            if current_cmd in UNSUPPORTED_MACHO_LIBRARY_COMMANDS:
+                raise SystemExit(f"unsupported legacy Mach-O library load command: {current_cmd}")
+            continue
+        if current_cmd in MACHO_DEPENDENCY_COMMANDS and stripped.startswith("name "):
+            dependencies.append(stripped.removeprefix("name ").split(" (offset", 1)[0])
+    return dependencies
+
+
 def macho_rpaths_from_load_commands(lines: list[str]) -> list[str]:
     rpaths = []
     for index, line in enumerate(lines):
@@ -833,7 +856,9 @@ def relocate_and_audit_macho(
         identity = macho_identity_from_load_commands(load_commands)
         identity_seconds = time.monotonic() - identity_started
         changes = []
-        dependencies, list_seconds = macho_dependencies_from_identity_with_timings(binary, identity)
+        dependency_started = time.monotonic()
+        dependencies = macho_dependencies_from_load_commands(load_commands)
+        list_seconds = time.monotonic() - dependency_started
         relocation_dependency_identity_seconds += identity_seconds
         relocation_dependency_list_seconds += list_seconds
         for dependency in dependencies:
@@ -946,10 +971,10 @@ def relocate_and_audit_macho(
                 raise SystemExit(f"forbidden Mach-O rpath remains after relocation: {binary}: {rpath}")
 
         audit_started = time.monotonic()
-        identity_started = time.monotonic()
-        identity = macho_identity_from_load_commands(load_commands)
-        identity_seconds = time.monotonic() - identity_started
-        dependencies, list_seconds = macho_dependencies_from_identity_with_timings(binary, identity)
+        identity_seconds = 0.0
+        dependency_started = time.monotonic()
+        dependencies = macho_dependencies_from_load_commands(load_commands)
+        list_seconds = time.monotonic() - dependency_started
         elapsed["dependencies"] = time.monotonic() - audit_started
         elapsed["dependency_identity"] = identity_seconds
         elapsed["dependency_list"] = list_seconds
