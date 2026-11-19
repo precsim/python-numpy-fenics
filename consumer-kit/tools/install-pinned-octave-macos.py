@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
@@ -81,6 +82,20 @@ def resolved_explicit_spec(transaction: str) -> str:
     return "@EXPLICIT\n" + "\n".join(urls) + "\n"
 
 
+def verify_reused_resolution(source: str, subdir: str) -> None:
+    """Fail closed if a transferred closure contains alien or wrong-arch packages."""
+    lines = source.splitlines()
+    require(lines and lines[0] == "@EXPLICIT", "reused resolution lacks @EXPLICIT header")
+    urls = lines[1:]
+    require(bool(urls) and len(urls) == len(set(urls)), "reused resolution has no packages or duplicates")
+    for url in urls:
+        parsed = urlsplit(url)
+        require(parsed.scheme == "https" and parsed.netloc == "conda.anaconda.org" and
+                parsed.path.startswith((f"/conda-forge/{subdir}/", "/conda-forge/noarch/")) and
+                parsed.path.endswith((".conda", ".tar.bz2")) and not parsed.username and not parsed.password,
+                f"reused resolution contains an unexpected package source: {url}")
+
+
 def verify_installed(prefix: Path, archives: dict[str, Path], sha256s: dict[str, str],
                      versions: dict[str, str], builds: dict[str, str]) -> None:
     metadata = prefix / "conda-meta"
@@ -108,6 +123,11 @@ def main() -> int:
     parser.add_argument("--micromamba", type=Path, required=True)
     parser.add_argument("--prefix", type=Path, required=True)
     parser.add_argument("--subdir", choices=("osx-arm64", "osx-64"), required=True)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--export-resolution", type=Path,
+                       help="write the solved remote package URLs for same-run qualification jobs")
+    group.add_argument("--resolution-file", type=Path,
+                       help="reuse the matching build job's solved remote package URLs")
     for name in ("octave", "openssl"):
         parser.add_argument(f"--{name}-archive", type=Path, required=True)
         parser.add_argument(f"--{name}-sha256", required=True)
@@ -128,18 +148,35 @@ def main() -> int:
     prefix.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CONDA_SUBDIR=args.subdir)
     with tempfile.TemporaryDirectory(prefix="reference-octave-solve-", dir=prefix.parent) as raw:
-        result = subprocess.run([
-            str(args.micromamba), "create", "--dry-run", "--json", "-y", "-p", str(Path(raw) / "resolver"),
-            "-c", "conda-forge", "--strict-channel-priority",
-            *(f"{name}={versions[name]}={builds[name]}" for name in archives),
-        ], env=env, check=True, capture_output=True, text=True)
+        solve_start = time.monotonic()
+        if args.resolution_file is not None:
+            require(args.resolution_file.is_file(), "same-run resolution artifact is missing")
+            remote_spec = args.resolution_file.read_text(encoding="utf-8")
+            verify_reused_resolution(remote_spec, args.subdir)
+        else:
+            result = subprocess.run([
+                str(args.micromamba), "create", "--dry-run", "--json", "-y", "-p", str(Path(raw) / "resolver"),
+                "-c", "conda-forge", "--strict-channel-priority",
+                *(f"{name}={versions[name]}={builds[name]}" for name in archives),
+            ], env=env, check=True, capture_output=True, text=True)
+            remote_spec = resolved_explicit_spec(result.stdout)
+            verify_reused_resolution(remote_spec, args.subdir)
         spec = Path(raw) / "verified-explicit.txt"
-        spec.write_text(pinned_explicit_spec(resolved_explicit_spec(result.stdout), archives), encoding="utf-8")
+        spec.write_text(pinned_explicit_spec(remote_spec, archives), encoding="utf-8")
+        if args.export_resolution is not None:
+            require(not args.export_resolution.exists(), "resolution output already exists")
+            args.export_resolution.parent.mkdir(parents=True, exist_ok=True)
+            args.export_resolution.write_text(remote_spec, encoding="utf-8")
+        print(f"reference_octave_resolution_seconds={time.monotonic() - solve_start:.3f}", flush=True)
+        install_start = time.monotonic()
         subprocess.run([
             str(args.micromamba), "create", "-y", "-p", str(prefix),
             "--file", str(spec),
         ], env=env, check=True)
+        print(f"reference_octave_installation_seconds={time.monotonic() - install_start:.3f}", flush=True)
+        verify_start = time.monotonic()
         verify_installed(prefix, archives, hashes, versions, builds)
+        print(f"reference_octave_verification_seconds={time.monotonic() - verify_start:.3f}", flush=True)
     print("reference_octave_explicit_archive_install=pass")
     return 0
 
