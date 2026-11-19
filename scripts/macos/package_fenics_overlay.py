@@ -32,6 +32,7 @@ MACHO_MAGICS = {
     b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
+ZIP_COMPRESSION_LEVEL = 6
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
@@ -952,7 +953,12 @@ def file_entry(path: Path, stage_root: Path, owners: dict[str, list[str]]) -> di
 
 
 def deterministic_zip(stage_root: Path, destination: Path) -> None:
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(
+        destination,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=ZIP_COMPRESSION_LEVEL,
+    ) as archive:
         for path in sorted(stage_root.rglob("*")):
             if path.is_dir() and not path.is_symlink():
                 continue
@@ -963,10 +969,20 @@ def deterministic_zip(stage_root: Path, destination: Path) -> None:
             if path.is_symlink():
                 info.external_attr = (stat.S_IFLNK | mode) << 16
                 data = os.readlink(path).encode("utf-8")
-                archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                archive.writestr(
+                    info,
+                    data,
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=ZIP_COMPRESSION_LEVEL,
+                )
             else:
                 info.external_attr = (stat.S_IFREG | mode) << 16
-                archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                archive.writestr(
+                    info,
+                    path.read_bytes(),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=ZIP_COMPRESSION_LEVEL,
+                )
 
 
 parser = argparse.ArgumentParser()
