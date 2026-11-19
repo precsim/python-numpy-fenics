@@ -2,7 +2,7 @@
 """Install verified macOS Octave/OpenSSL archives with a solved dependency closure.
 
 Micromamba cannot mix local .conda paths with named dependency specifications in
-a single solve. Resolve the ordinary channel environment in a disposable prefix,
+a single solve. Dry-run the channel solve without installing a resolver prefix,
 then replay its explicit package list, replacing Octave and OpenSSL with the
 verified local archives. Only the final prefix is used to build/test the MEX.
 """
@@ -58,23 +58,26 @@ def pinned_explicit_spec(source: str, archives: dict[str, Path]) -> str:
     return "\n".join(output) + "\n"
 
 
-def resolved_explicit_spec(prefix: Path) -> str:
-    """Capture the solved closure from installed conda-meta records, not CLI output.
-
-    Micromamba's `list --explicit` output is not an explicit spec on all
-    supported versions; conda-meta URL records are the installed package inputs.
-    """
-    metadata = prefix / "conda-meta"
-    require(metadata.is_dir(), "resolver conda metadata is missing")
-    records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(metadata.glob("*.json"))]
-    require(bool(records), "resolver environment contains no package metadata")
+def resolved_explicit_spec(transaction: str) -> str:
+    """Read the exact package URLs from a micromamba dry-run LINK transaction."""
+    try:
+        payload = json.loads(transaction)
+    except (ValueError, TypeError) as exc:
+        raise SystemExit("micromamba dry-run did not return JSON") from exc
+    require(isinstance(payload, dict) and payload.get("success") is True and payload.get("dry_run") is True,
+            "micromamba dry-run did not succeed")
+    actions = payload.get("actions")
+    require(isinstance(actions, dict), "micromamba dry-run omitted actions")
+    records = actions.get("LINK")
+    require(isinstance(records, list) and bool(records), "micromamba dry-run omitted LINK packages")
     urls: list[str] = []
     for record in records:
+        require(isinstance(record, dict), "micromamba dry-run has invalid package entry")
         source = record.get("url")
         require(isinstance(source, str) and urlsplit(source).scheme in {"https", "file"},
-                f"resolver package has no usable archive URL: {record.get('name')}")
+                f"dry-run package has no usable archive URL: {record.get('name')}")
         urls.append(source)
-    require(len(urls) == len(set(urls)), "resolver package list contains duplicate archives")
+    require(len(urls) == len(set(urls)), "dry-run package list contains duplicate archives")
     return "@EXPLICIT\n" + "\n".join(urls) + "\n"
 
 
@@ -124,15 +127,14 @@ def main() -> int:
     require(not prefix.exists(), f"target prefix already exists: {prefix}")
     prefix.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CONDA_SUBDIR=args.subdir)
-    with tempfile.TemporaryDirectory(prefix="reference-octave-resolve-", dir=prefix.parent) as raw:
-        resolver = Path(raw) / "resolver"
-        subprocess.run([
-            str(args.micromamba), "create", "-y", "-p", str(resolver),
+    with tempfile.TemporaryDirectory(prefix="reference-octave-solve-", dir=prefix.parent) as raw:
+        result = subprocess.run([
+            str(args.micromamba), "create", "--dry-run", "--json", "-y", "-p", str(Path(raw) / "resolver"),
             "-c", "conda-forge", "--strict-channel-priority",
             *(f"{name}={versions[name]}={builds[name]}" for name in archives),
-        ], env=env, check=True)
+        ], env=env, check=True, capture_output=True, text=True)
         spec = Path(raw) / "verified-explicit.txt"
-        spec.write_text(pinned_explicit_spec(resolved_explicit_spec(resolver), archives), encoding="utf-8")
+        spec.write_text(pinned_explicit_spec(resolved_explicit_spec(result.stdout), archives), encoding="utf-8")
         subprocess.run([
             str(args.micromamba), "create", "-y", "-p", str(prefix),
             "--file", str(spec),
