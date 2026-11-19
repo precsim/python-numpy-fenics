@@ -135,6 +135,28 @@ class OctaveLoaderContractTests(unittest.TestCase):
             ),
             2,
         )
+        self.assertIn('OCTAVE_MICROMAMBA_VERSION: "2.10.0-0"', workflow)
+        setup_steps = workflow.split("      - name: Set up pinned micromamba for macOS Octave\n")[1:]
+        self.assertEqual(len(setup_steps), 2)
+        for raw in setup_steps:
+            step = raw.split("\n      - name:", 1)[0]
+            self.assertIn("micromamba-version: ${{ env.OCTAVE_MICROMAMBA_VERSION }}", step)
+            self.assertIn("cache-downloads: true", step)
+            self.assertIn("cache-downloads-key: reference-octave-v1-${{ matrix.target }}", step)
+            for cache_input in (
+                "env.OCTAVE_MICROMAMBA_VERSION",
+                "env.OCTAVE_MACOS_VERSION",
+                "env.OCTAVE_MACOS_ARM64_BUILD",
+                "env.OCTAVE_MACOS_ARM64_SHA256",
+                "env.OCTAVE_MACOS_X64_BUILD",
+                "env.OCTAVE_MACOS_X64_SHA256",
+                "env.OCTAVE_MACOS_OPENSSL_VERSION",
+                "env.OCTAVE_MACOS_ARM64_OPENSSL_BUILD",
+                "env.OCTAVE_MACOS_ARM64_OPENSSL_SHA256",
+                "env.OCTAVE_MACOS_X64_OPENSSL_BUILD",
+                "env.OCTAVE_MACOS_X64_OPENSSL_SHA256",
+            ):
+                self.assertIn(cache_input, step)
         self.assertNotIn("brew install --force-bottle octave", workflow)
 
         steps = workflow.split("      - name: Install pinned GNU Octave on macOS\n")[1:]
