@@ -282,6 +282,11 @@ def overlay_path_exclusion_reason(relative: PurePosixPath, *, retain_static_arch
     text = relative.as_posix()
     if "__pycache__" in relative.parts or relative.suffix in {".pyc", ".pyo"}:
         return "generated-python-bytecode"
+    if text == "bin/llvm-exegesis-23":
+        # llvm-exegesis is an LLVM benchmarking/profiling utility.  It is not
+        # used by Clang's compile/link path exercised by the shipped FFCx JIT,
+        # and retaining it adds a large standalone executable to every overlay.
+        return "unused-llvm-profiling-tool"
     if text.startswith("etc/conda/test-files/"):
         return "conda-package-test-fixture"
     if text == "lib/python3.14/site-packages/petsc4py/lib/petsc.cfg":
