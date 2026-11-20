@@ -356,6 +356,16 @@ class PackageReferenceAcceptanceTests(unittest.TestCase):
                 self.assertIn(alias, launcher)
             self.assertIn('ln -s "$openssl_root/lib" "$blas_preload_dir"', launcher)
             self.assertIn('blas_preload="$blas_preload_dir/$(basename "$blas_provider")"', launcher)
+        self.assertIn('openssl_root=$(CDPATH= cd -- "$openssl_root" && pwd -P)', shell)
+        self.assertLess(
+            shell.index('openssl_root=$(CDPATH= cd -- "$openssl_root" && pwd -P)'),
+            shell.index('crypto_provider="$openssl_root/lib/libcrypto.so.3"'),
+        )
+        self.assertIn('openssl_root="$(cd "$openssl_root" && pwd -P)"', linux)
+        self.assertLess(
+            linux.index('openssl_root="$(cd "$openssl_root" && pwd -P)"'),
+            linux.index('crypto_provider="$openssl_root/lib/libcrypto.so.3"'),
+        )
         self.assertIn("reference-bridge-openssl.XXXXXX", shell)
         self.assertIn('ln -s "$crypto_provider" "$openssl_override/libcrypto.so.3"', shell)
         self.assertIn('ln -s "$ssl_provider" "$openssl_override/libssl.so.3"', shell)

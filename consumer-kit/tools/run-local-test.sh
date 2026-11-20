@@ -60,6 +60,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fi
 elif [ "$(uname -s)" = "Linux" ]; then
     openssl_root="$script_dir/runtime/fenics-runtime/conda"
+    if [ -d "$openssl_root" ]; then
+        openssl_root=$(CDPATH= cd -- "$openssl_root" && pwd -P)
+    fi
     crypto_provider="$openssl_root/lib/libcrypto.so.3"
     ssl_provider="$openssl_root/lib/libssl.so.3"
     if [ -f "$crypto_provider" ] && [ -f "$ssl_provider" ]; then
