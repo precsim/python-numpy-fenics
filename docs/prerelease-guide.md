@@ -77,6 +77,24 @@ packaging. Neither consumer source nor private release assets belong in this
 repository or its GitHub Actions workflows. See
 [the producer/consumer boundary](producer-consumer-boundary.md).
 
+## Stable release promotion
+
+A stable `runtime-vX.Y.Z` release is promoted from a fully qualified
+`runtime-vX.Y.Z-rcN` prerelease rather than rebuilding runtime payloads. Dispatch
+`promote-runtime-release` from `main` with the source and target tags. The
+workflow verifies the source GitHub release asset digest, the complete manifest
+inventory, all asset SHA-256 values, the full 12-profile qualification matrix,
+the source tag target, and that the qualified producer revision remains an
+ancestor of current `main`. It then copies the qualified payload and evidence
+byte-for-byte, regenerates only `prerelease-manifest.json` for the stable tag,
+creates the stable tag at the original qualified producer revision, publishes a
+non-prerelease GitHub release, and rechecks the uploaded asset digests.
+
+Stable-release notes live under `docs/releases/`. Tooling changes made after the
+qualified runtime revision must be called out there explicitly; they do not
+change the runtime producer revision or justify rebuilding an already qualified
+payload.
+
 ## Actions artifact retention and cleanup
 
 Producer qualification archives, manifests and qualification evidence remain

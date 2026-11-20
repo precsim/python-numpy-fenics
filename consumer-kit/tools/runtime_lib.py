@@ -292,7 +292,7 @@ def _current_release_layer(
 
 
 def _version_from_tag(tag: str, context: str) -> str:
-    match = re.fullmatch(r"runtime-v(\d+\.\d+\.\d+)-rc\d+", tag)
+    match = re.fullmatch(r"runtime-v(\d+\.\d+\.\d+)(?:-rc\d+)?", tag)
     require(match is not None, f"invalid producer release tag for {context}: {tag}")
     return match.group(1)
 
