@@ -21,6 +21,7 @@ ZIP_VERSION_MADE_BY_UNIX = (3 << 8) | 20
 ZIP_UTF8_FLAG = 0x0800
 ZIP_DOS_TIME = 0
 ZIP_DOS_DATE = (1 << 5) | 1  # 1980-01-01
+ZIP_IN_FLIGHT_MULTIPLIER = 4
 
 LOCAL_FILE_HEADER = struct.Struct("<IHHHHHIIIHH")
 CENTRAL_DIRECTORY_HEADER = struct.Struct("<IHHHHHHIIIHHHHHII")
@@ -126,12 +127,16 @@ def _prepare_members_in_order(
     compression_level: int,
     workers: int,
 ):
-    """Yield prepared members in input order with O(workers) results in flight."""
+    """Yield prepared members in input order with bounded look-ahead."""
     worker_count = min(workers, max(1, len(paths)))
+    in_flight_limit = min(
+        len(paths),
+        worker_count * ZIP_IN_FLIGHT_MULTIPLIER,
+    )
     path_iterator = iter(paths)
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
         pending = deque()
-        for _ in range(worker_count):
+        for _ in range(in_flight_limit):
             try:
                 path = next(path_iterator)
             except StopIteration:
