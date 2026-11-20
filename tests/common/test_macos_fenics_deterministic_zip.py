@@ -6,17 +6,21 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
 MACOS_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "macos"
 sys.path.insert(0, str(MACOS_SCRIPTS))
 try:
+    import fenics_deterministic_zip as deterministic_zip_module
     from fenics_deterministic_zip import (
         LEGACY_ZIP64_LIMIT,
+        ZIP_IN_FLIGHT_MULTIPLIER,
         _check_legacy_zip32_archive_limit,
         _check_legacy_zip32_member_limits,
         _legacy_zip64_required_for_file_size,
+        _prepare_members_in_order,
         deterministic_zip,
     )
 finally:
@@ -52,6 +56,38 @@ def legacy_deterministic_zip(stage_root: Path, destination: Path) -> None:
 
 
 class MacOSFenicsDeterministicZipTests(unittest.TestCase):
+    def test_parallel_scheduler_bounds_in_flight_results(self) -> None:
+        submitted = []
+
+        class FakeFuture:
+            def __init__(self, value):
+                self.value = value
+
+            def result(self):
+                return self.value
+
+        class FakeExecutor:
+            def __init__(self, *, max_workers):
+                self.max_workers = max_workers
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def submit(self, function, stage_root, path, compression_level):
+                submitted.append(path)
+                return FakeFuture(path)
+
+        workers = 4
+        paths = [Path(str(index)) for index in range(1000)]
+        with mock.patch.object(deterministic_zip_module, "ThreadPoolExecutor", FakeExecutor):
+            prepared = _prepare_members_in_order(Path("."), paths, 6, workers)
+            self.assertEqual(next(prepared), paths[0])
+            self.assertEqual(len(submitted), workers * ZIP_IN_FLIGHT_MULTIPLIER + 1)
+            prepared.close()
+
     def test_parallel_writer_is_byte_identical_to_legacy_writer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
@@ -20,6 +21,11 @@ ZIP_VERSION_MADE_BY_UNIX = (3 << 8) | 20
 ZIP_UTF8_FLAG = 0x0800
 ZIP_DOS_TIME = 0
 ZIP_DOS_DATE = (1 << 5) | 1  # 1980-01-01
+# Keep enough ordered work queued to hide large-member head-of-line latency
+# while bounding retained compressed results.  With four workers this permits
+# 256 prepared members; the current x86 overlay's worst such filename-ordered
+# window is about 117 MiB compressed.
+ZIP_IN_FLIGHT_MULTIPLIER = 64
 
 LOCAL_FILE_HEADER = struct.Struct("<IHHHHHIIIHH")
 CENTRAL_DIRECTORY_HEADER = struct.Struct("<IHHHHHHIIIHHHHHII")
@@ -125,13 +131,31 @@ def _prepare_members_in_order(
     compression_level: int,
     workers: int,
 ):
-    """Yield prepared members in input order while compressing concurrently."""
+    """Yield prepared members in input order with bounded look-ahead."""
     worker_count = min(workers, max(1, len(paths)))
+    in_flight_limit = min(
+        len(paths),
+        worker_count * ZIP_IN_FLIGHT_MULTIPLIER,
+    )
+    path_iterator = iter(paths)
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
-        yield from pool.map(
-            lambda path: _prepare_member(stage_root, path, compression_level),
-            paths,
-        )
+        pending = deque()
+        for _ in range(in_flight_limit):
+            try:
+                path = next(path_iterator)
+            except StopIteration:
+                break
+            pending.append(pool.submit(_prepare_member, stage_root, path, compression_level))
+
+        while pending:
+            member = pending.popleft().result()
+            try:
+                path = next(path_iterator)
+            except StopIteration:
+                pass
+            else:
+                pending.append(pool.submit(_prepare_member, stage_root, path, compression_level))
+            yield member
 
 
 def deterministic_zip(
