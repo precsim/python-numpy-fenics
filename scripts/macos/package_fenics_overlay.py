@@ -41,6 +41,7 @@ MACHO_MAGICS = {
     b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
+MACHO_LOAD_COMMAND_BATCH_SIZE = 32
 ZIP_COMPRESSION_LEVEL = 6
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
@@ -767,6 +768,55 @@ def macho_load_commands(path: Path) -> list[str]:
     return run("otool", "-l", str(path)).stdout.splitlines()
 
 
+def split_batched_macho_load_commands(output: str, paths: list[Path]) -> dict[Path, list[str]]:
+    path_text = {str(path): path for path in paths}
+    if len(path_text) != len(paths):
+        raise SystemExit("batched Mach-O inspection received duplicate paths")
+    parsed: dict[Path, list[str]] = {}
+    seen: list[Path] = []
+    current: Path | None = None
+    for line in output.splitlines():
+        path = path_text.get(line.removesuffix(":")) if line.endswith(":") else None
+        if path is None and line.endswith("):"):
+            marker = " (architecture "
+            prefix, separator, _ = line.rpartition(marker)
+            if separator:
+                path = path_text.get(prefix)
+        if path is not None:
+            if path in parsed:
+                raise SystemExit(f"otool repeated a batched Mach-O header: {path}")
+            current = path
+            seen.append(path)
+            parsed[path] = [line]
+            continue
+        if current is None:
+            if line.strip():
+                raise SystemExit(f"unexpected output before batched Mach-O header: {line}")
+            continue
+        parsed[current].append(line)
+    missing = [path for path in paths if path not in parsed]
+    if missing:
+        raise SystemExit(f"otool omitted batched Mach-O headers: {missing!r}")
+    if seen != paths:
+        raise SystemExit(f"otool reordered batched Mach-O headers: {seen!r} != {paths!r}")
+    return parsed
+
+
+def batched_macho_load_commands(paths: list[Path]) -> tuple[dict[Path, list[str]], int]:
+    parsed: dict[Path, list[str]] = {}
+    calls = 0
+    for offset in range(0, len(paths), MACHO_LOAD_COMMAND_BATCH_SIZE):
+        batch = paths[offset : offset + MACHO_LOAD_COMMAND_BATCH_SIZE]
+        output = run("otool", "-l", *(str(path) for path in batch)).stdout
+        batch_parsed = split_batched_macho_load_commands(output, batch)
+        overlap = parsed.keys() & batch_parsed.keys()
+        if overlap:
+            raise SystemExit(f"duplicate batched Mach-O inspection results: {sorted(overlap)!r}")
+        parsed.update(batch_parsed)
+        calls += 1
+    return parsed, calls
+
+
 def macho_identity_from_load_commands(lines: list[str]) -> str | None:
     for index, line in enumerate(lines):
         if line.strip() != "cmd LC_ID_DYLIB":
@@ -896,11 +946,29 @@ def relocate_and_audit_macho(
     relocation_dylib_identity_seconds = 0.0
     install_name_tool_seconds = 0.0
     signing_seconds = 0.0
+    relocation_otool_calls = 0
+
+    inodes = [(path.stat().st_dev, path.stat().st_ino) for path in macho_files]
+    independent_images = len(inodes) == len(set(inodes))
+    prefetched_load_commands: dict[Path, list[str]] | None = None
+    if independent_images:
+        batch_started = time.monotonic()
+        prefetched_load_commands, relocation_otool_calls = batched_macho_load_commands(macho_files)
+        batch_seconds = time.monotonic() - batch_started
+        relocation_metadata_seconds += batch_seconds
+        relocation_rpaths_seconds += batch_seconds
+        log_duration("macho_relocation_load_commands_batch_wall", batch_seconds)
+    else:
+        log_duration("macho_relocation_load_commands_batch_wall", 0.0)
 
     for binary in macho_files:
         metadata_started = time.monotonic()
         read_started = time.monotonic()
-        load_commands = macho_load_commands(binary)
+        if prefetched_load_commands is None:
+            load_commands = macho_load_commands(binary)
+            relocation_otool_calls += 1
+        else:
+            load_commands = prefetched_load_commands[binary]
         rpaths = macho_rpaths_from_load_commands(load_commands)
         relocation_rpaths_seconds += time.monotonic() - read_started
         identity_started = time.monotonic()
@@ -981,6 +1049,8 @@ def relocate_and_audit_macho(
         - relocation_dylib_identity_seconds,
     )
     log_duration("macho_install_name_rewrites", install_name_tool_seconds)
+    log_count("macho_relocation_otool_calls", relocation_otool_calls)
+    log_count("macho_relocation_otool_files", len(macho_files))
     log_duration(
         "macho_relocation_other",
         relocation_seconds - relocation_metadata_seconds - install_name_tool_seconds,
