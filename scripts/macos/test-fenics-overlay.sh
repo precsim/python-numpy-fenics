@@ -251,6 +251,55 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
     exit 1
 }
 
+# Diagnostic-only cold raw load of the OpenBLAS image highlighted by the
+# Rosetta dyld trace.  Run it in a disposable interpreter before the
+# authoritative qualification so the first load is process-cold.  Subsequent
+# import timings are correctness evidence only because this probe can warm
+# filesystem/dyld/Rosetta state on the host.
+"${python_cmd[@]}" -S -P - "$runtime" "$target_arch" <<'PY'
+import ctypes
+import os
+import platform
+from pathlib import Path
+import sys
+import time
+
+root = Path(sys.argv[1]).resolve()
+expected_arch = sys.argv[2]
+expected_prefix = root / "Python.framework" / "Versions" / "3.14"
+if Path(sys.prefix).resolve() != expected_prefix:
+    raise SystemExit(f"unexpected relocated prefix during OpenBLAS dlopen probe: {sys.prefix}")
+if platform.machine() != expected_arch:
+    raise SystemExit(
+        f"unexpected OpenBLAS dlopen probe architecture: {platform.machine()} != {expected_arch}"
+    )
+
+library_dir = root / "fenics-runtime" / "conda" / "lib"
+aliases = sorted(library_dir.glob("libopenblas*.dylib"))
+targets = sorted({path.resolve() for path in aliases})
+if len(targets) != 1 or not targets[0].is_file():
+    raise SystemExit(
+        f"expected one resolved OpenBLAS dylib target, aliases={aliases!r}, targets={targets!r}"
+    )
+library = targets[0]
+
+mode = os.RTLD_NOW | os.RTLD_LOCAL
+started = time.monotonic()
+handle = ctypes.CDLL(str(library), mode=mode)
+cold_elapsed = time.monotonic() - started
+if handle._handle == 0:
+    raise SystemExit("cold OpenBLAS dlopen returned an invalid handle")
+print(f"overlay_native_dlopen_seconds openblas cold {cold_elapsed:.3f}", flush=True)
+print(f"overlay_native_dlopen_origin openblas {library}", flush=True)
+
+started = time.monotonic()
+repeat_handle = ctypes.CDLL(str(library), mode=mode)
+repeat_elapsed = time.monotonic() - started
+if repeat_handle._handle == 0:
+    raise SystemExit("repeat OpenBLAS dlopen returned an invalid handle")
+print(f"overlay_native_dlopen_seconds openblas repeat {repeat_elapsed:.3f}", flush=True)
+PY
+
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
