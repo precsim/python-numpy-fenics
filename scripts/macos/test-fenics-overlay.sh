@@ -362,37 +362,47 @@ marker_started = None
 marker_done = False
 events = []
 trace_lines = 0
+dlopenflags_line = None
+child_lines = []
 for raw_line in process.stdout:
     observed = time.monotonic()
     line = raw_line.rstrip("\n")
+    child_lines.append(line)
     if line == "overlay_dyld_trace_marker petsc4py.PETSc begin":
         marker_started = observed
         events.append((0.0, line))
-        print(line, flush=True)
         continue
     if marker_started is None:
         if line.startswith("overlay_dyld_trace_dlopenflags "):
-            print(line, flush=True)
+            dlopenflags_line = line
         continue
     elapsed = observed - marker_started
     if line.startswith("overlay_dyld_trace_marker petsc4py.PETSc done "):
         events.append((elapsed, line))
-        print(line, flush=True)
         marker_done = True
         marker_started = None
         continue
     if line.startswith("dyld["):
         trace_lines += 1
         events.append((elapsed, line))
-        print(f"overlay_dyld_trace_seconds {elapsed:.6f} {line}", flush=True)
 
 returncode = process.wait()
 if returncode != 0:
+    for line in child_lines:
+        print(f"overlay_dyld_trace_child_output {line}", flush=True)
     raise SystemExit(f"dyld trace child failed with exit code {returncode}")
 if not marker_done:
     raise SystemExit("dyld trace child did not report PETSc dlopen completion")
 if trace_lines == 0:
     raise SystemExit("dyld trace emitted no post-marker DYLD_PRINT_* lines")
+
+if dlopenflags_line is not None:
+    print(dlopenflags_line, flush=True)
+for elapsed, line in events:
+    if line.startswith("overlay_dyld_trace_marker "):
+        print(line, flush=True)
+    else:
+        print(f"overlay_dyld_trace_seconds {elapsed:.6f} {line}", flush=True)
 
 gaps = []
 for previous, current in zip(events, events[1:]):
