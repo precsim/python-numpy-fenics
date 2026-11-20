@@ -1512,8 +1512,18 @@ try:
     owners[census_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
     phase_started = log_phase("relocate_and_audit_macho", phase_started)
 
+    runtime_audit_started = time.monotonic()
     verify_symlink_closure(stage_root)
+    log_duration(
+        "runtime_audit_symlink_closure",
+        time.monotonic() - runtime_audit_started,
+    )
+    runtime_audit_started = time.monotonic()
     verify_no_runtime_prefix_leaks(stage_root, prefix)
+    log_duration(
+        "runtime_audit_prefix_leak_scan",
+        time.monotonic() - runtime_audit_started,
+    )
     phase_started = log_phase("runtime_audits", phase_started)
 
     files = [
