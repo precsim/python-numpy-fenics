@@ -17,9 +17,10 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 from typing import Any
 from urllib.parse import urlparse
+
+from fenics_deterministic_zip import deterministic_zip
 
 
 SYSTEM_PREFIXES = ("/usr/lib/", "/System/Library/")
@@ -42,6 +43,7 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
 }
 ZIP_COMPRESSION_LEVEL = 6
+ZIP_COMPRESSION_WORKERS = 4
 ALLOWED_SOURCE_TOP_LEVEL = {"etc", "include", "lib", "share", "ssl"}
 JIT_TOOLCHAIN_SOURCE_TOP_LEVEL = ALLOWED_SOURCE_TOP_LEVEL | {"bin", "libexec"}
 PYTHON_NUMPY_PREFIXES = (
@@ -1175,39 +1177,6 @@ def file_entry(path: Path, stage_root: Path, owners: dict[str, list[str]]) -> di
     }
 
 
-def deterministic_zip(stage_root: Path, destination: Path) -> None:
-    with zipfile.ZipFile(
-        destination,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=ZIP_COMPRESSION_LEVEL,
-    ) as archive:
-        for path in sorted(stage_root.rglob("*")):
-            if path.is_dir() and not path.is_symlink():
-                continue
-            relative = path.relative_to(stage_root).as_posix()
-            mode = stat.S_IMODE(os.lstat(path).st_mode)
-            info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
-            info.create_system = 3
-            if path.is_symlink():
-                info.external_attr = (stat.S_IFLNK | mode) << 16
-                data = os.readlink(path).encode("utf-8")
-                archive.writestr(
-                    info,
-                    data,
-                    compress_type=zipfile.ZIP_DEFLATED,
-                    compresslevel=ZIP_COMPRESSION_LEVEL,
-                )
-            else:
-                info.external_attr = (stat.S_IFREG | mode) << 16
-                archive.writestr(
-                    info,
-                    path.read_bytes(),
-                    compress_type=zipfile.ZIP_DEFLATED,
-                    compresslevel=ZIP_COMPRESSION_LEVEL,
-                )
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--prefix", required=True)
 parser.add_argument("--lock", required=True)
@@ -1620,7 +1589,13 @@ try:
     zip_path = output / asset_name
     if zip_path.exists():
         zip_path.unlink()
-    deterministic_zip(stage_root, zip_path)
+    deterministic_zip(
+        stage_root,
+        zip_path,
+        compression_level=ZIP_COMPRESSION_LEVEL,
+        workers=ZIP_COMPRESSION_WORKERS,
+    )
+    log_count("zip_compression_workers", ZIP_COMPRESSION_WORKERS)
     phase_started = log_phase("zip_creation_compression", phase_started)
     manifest_hash = sha256_file(manifest_path)
     zip_hash = sha256_file(zip_path)
