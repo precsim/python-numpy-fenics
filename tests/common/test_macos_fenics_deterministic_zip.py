@@ -12,7 +12,13 @@ import zipfile
 MACOS_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "macos"
 sys.path.insert(0, str(MACOS_SCRIPTS))
 try:
-    from fenics_deterministic_zip import deterministic_zip
+    from fenics_deterministic_zip import (
+        LEGACY_ZIP64_LIMIT,
+        _check_legacy_zip32_archive_limit,
+        _check_legacy_zip32_member_limits,
+        _legacy_zip64_required_for_file_size,
+        deterministic_zip,
+    )
 finally:
     sys.path.pop(0)
 
@@ -72,6 +78,46 @@ class MacOSFenicsDeterministicZipTests(unittest.TestCase):
             with zipfile.ZipFile(parallel_four) as archive:
                 self.assertIsNone(archive.testzip())
                 self.assertEqual(archive.read("alpha.txt"), (b"alpha beta gamma\n" * 4096) + b"tail\n")
+
+    def test_empty_archive_is_byte_identical_to_legacy_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage = root / "stage"
+            stage.mkdir()
+            legacy = root / "legacy.zip"
+            parallel = root / "parallel.zip"
+            legacy_deterministic_zip(stage, legacy)
+            deterministic_zip(stage, parallel, compression_level=6, workers=4)
+            self.assertEqual(parallel.read_bytes(), legacy.read_bytes())
+
+    def test_legacy_zip64_boundaries_fail_closed_without_large_allocations(self) -> None:
+        self.assertEqual(LEGACY_ZIP64_LIMIT, zipfile.ZIP64_LIMIT)
+        largest_non_zip64 = int(LEGACY_ZIP64_LIMIT / 1.05)
+        while _legacy_zip64_required_for_file_size(largest_non_zip64):
+            largest_non_zip64 -= 1
+        while not _legacy_zip64_required_for_file_size(largest_non_zip64 + 1):
+            largest_non_zip64 += 1
+
+        _check_legacy_zip32_member_limits(
+            "ok.bin",
+            file_size=largest_non_zip64,
+            compressed_size=LEGACY_ZIP64_LIMIT,
+        )
+        with self.assertRaisesRegex(RuntimeError, "ZIP64 size handling"):
+            _check_legacy_zip32_member_limits(
+                "too-large.bin",
+                file_size=largest_non_zip64 + 1,
+                compressed_size=1,
+            )
+        with self.assertRaisesRegex(RuntimeError, "ZIP64 compressed-size handling"):
+            _check_legacy_zip32_member_limits(
+                "too-compressed.bin",
+                file_size=1,
+                compressed_size=LEGACY_ZIP64_LIMIT + 1,
+            )
+        _check_legacy_zip32_archive_limit("test offset", LEGACY_ZIP64_LIMIT)
+        with self.assertRaisesRegex(RuntimeError, "ZIP64 test offset"):
+            _check_legacy_zip32_archive_limit("test offset", LEGACY_ZIP64_LIMIT + 1)
 
     def test_rejects_nonpositive_worker_count(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
