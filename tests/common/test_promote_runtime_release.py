@@ -109,6 +109,7 @@ class StableRuntimePromotionTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('gh release download "$SOURCE_TAG"', workflow)
         self.assertIn("promote_runtime_release.py", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('git merge-base --is-ancestor "$producer_revision" HEAD', workflow)
         self.assertIn('-f sha="$PRODUCER_REVISION"', workflow)
         self.assertIn('--notes-file "$notes_file"', workflow)
