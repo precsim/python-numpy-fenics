@@ -60,6 +60,9 @@ also supports the independently pinned, cross-revision NumPy base: the release
 manifest records the original NumPy release tag, producer revision and pinned
 file/tree hashes rather than falsely identifying newly built NumPy as the
 FEniCS input. Base reuse alone does not qualify or authorize a FEniCS release.
+For the current macOS producer qualification state and the final Rosetta
+performance decisions, see
+[the macOS FEniCS qualification record](macos-fenics-qualification.md).
 
 ## Downstream handoff
 

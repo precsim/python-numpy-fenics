@@ -40,8 +40,8 @@ The intended producer matrix is:
 | --- | --- | --- | --- |
 | Windows x64 | qualified | qualified | deferred/manual |
 | Linux x86_64 / glibc >= 2.17 | qualified | qualified | deferred/manual |
-| macOS arm64 | qualified | qualified | deferred/manual |
-| macOS x86_64 (Rosetta 2) | qualified | qualified | deferred/manual |
+| macOS arm64 | qualified | qualified | qualified (opt-in publication) |
+| macOS x86_64 (Rosetta 2) | qualified | qualified | qualified (opt-in publication) |
 
 The core/NumPy migration was qualified on feature revision `95d56a5` and
 merged into `main` by PR #3 (`f6e6e77`). The qualification run IDs and scope
@@ -54,10 +54,10 @@ FEniCS is cumulative on the exact matching NumPy profile. A FEniCS overlay must
 not replace consumer-owned NumPy bytes unless its profile contract explicitly
 says otherwise.
 
-The active producer pre-release scope is `core` + `numpy`. FEniCS qualification
-workflows and packaging code are retained for future use but are not required to
-publish a producer pre-release. The manual pre-release workflow can explicitly
-opt into the complete FEniCS matrix when that work resumes.
+The default producer pre-release scope is `core` + `numpy`. FEniCS is an
+explicit opt-in profile and is not required to publish a producer pre-release.
+The manual pre-release workflow can include FEniCS only when the corresponding
+qualification evidence is supplied for the selected producer revision.
 The retained FEniCS workflows now target the qualified cp314 / Tcl/Tk 8.6.18
 core and NumPy inputs. Linux has a fresh 124-record cp314 x86_64 transaction
 using MPICH 5.0.1. Some FEniCS/PETSc packages retain reviewed older Python build
@@ -66,6 +66,11 @@ identities are replayed as-is rather than relabeled. The Linux transaction and
 selective-rebuild candidate still require independent glibc-2.17 native-closure,
 relocation, fresh-FFCx-JIT, PETSc and Poisson qualification, so FEniCS remains
 manual and outside the active pre-release scope.
+
+The current macOS FEniCS producer path is qualified on both arm64 and
+x86_64/Rosetta. See the
+[macOS FEniCS qualification and optimization record](docs/macos-fenics-qualification.md)
+for the final `main` verification and retained performance decisions.
 
 ## Producer artifact contract
 
