@@ -62,8 +62,16 @@ work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/fenics public overlay test.XXXXXX")"
 runtime="$work/runtime with spaces"
 cache="$work/jit cache with spaces"
 poison="$work/ambient poison"
+rosetta_superlu_preload_pid=""
 mkdir -p "$runtime" "$cache" "$poison"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+    if [[ -n "${rosetta_superlu_preload_pid:-}" ]]; then
+        kill "$rosetta_superlu_preload_pid" 2>/dev/null || true
+        wait "$rosetta_superlu_preload_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work"
+}
+trap cleanup EXIT
 phase_start=$SECONDS
 log_phase() {
     printf 'overlay_qualification_phase_seconds %s %s\n' "$1" "$((SECONDS - phase_start))"
@@ -178,6 +186,68 @@ else
 fi
 [[ -x "$clang_exe" ]] || { echo "packaged Clang executable is missing: $clang_exe" >&2; exit 1; }
 [[ -x "$linker_exe" ]] || { echo "packaged cctools linker is missing: $linker_exe" >&2; exit 1; }
+rosetta_superlu_preload_log=""
+if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
+    rosetta_superlu_preload_log="$work/rosetta-superlu-preload.log"
+    (
+        unset CC CXX CPP LD LDSHARED SDKROOT CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+            LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
+            PETSC_DIR FENICS_JIT_ROOT FENICS_JIT_COMPILER FENICS_JIT_CLANG \
+            FENICS_JIT_LINKER CONDA_PREFIX PYTHONPATH PYTHONUSERBASE || true
+        export PYTHONNOUSERSITE=1
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONHOME="$runtime/Python.framework/Versions/3.14"
+        export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+        "${python_cmd[@]}" -S -P - "$runtime" "$target_arch" <<'PY'
+import ctypes
+import os
+import platform
+from pathlib import Path
+import sys
+import time
+
+started = time.monotonic()
+root = Path(sys.argv[1]).resolve()
+expected_arch = sys.argv[2]
+expected_prefix = root / "Python.framework" / "Versions" / "3.14"
+if Path(sys.prefix).resolve() != expected_prefix:
+    raise SystemExit(
+        f"unexpected relocated prefix during Rosetta SuperLU preload: {sys.prefix}"
+    )
+if platform.machine() != expected_arch:
+    raise SystemExit(
+        f"unexpected Rosetta SuperLU preload architecture: {platform.machine()} != {expected_arch}"
+    )
+
+library_dir = root / "fenics-runtime" / "conda" / "lib"
+aliases = sorted(library_dir.glob("libsuperlu.[0-9]*.dylib"))
+targets = sorted({path.resolve() for path in aliases})
+if len(targets) != 1 or not targets[0].is_file():
+    raise SystemExit(
+        f"expected one resolved SuperLU dylib target, aliases={aliases!r}, targets={targets!r}"
+    )
+library = targets[0]
+if library_dir.resolve() not in library.parents:
+    raise SystemExit(f"resolved SuperLU dylib escaped the private runtime: {library}")
+
+dlopen_started = time.monotonic()
+handle = ctypes.CDLL(str(library), mode=os.RTLD_NOW | os.RTLD_LOCAL)
+dlopen_elapsed = time.monotonic() - dlopen_started
+if handle._handle == 0:
+    raise SystemExit("Rosetta SuperLU preload returned an invalid handle")
+print(
+    f"overlay_rosetta_superlu_preload_seconds dlopen {dlopen_elapsed:.3f}",
+    flush=True,
+)
+print(
+    f"overlay_rosetta_superlu_preload_seconds total {time.monotonic() - started:.3f}",
+    flush=True,
+)
+print(f"overlay_rosetta_superlu_preload_origin {library}", flush=True)
+PY
+    ) >"$rosetta_superlu_preload_log" 2>&1 &
+    rosetta_superlu_preload_pid=$!
+fi
 toolchain_started=$SECONDS
 resolved_linker="$("$clang_exe" -B"$tool_bin" -print-prog-name=ld)"
 printf 'overlay_toolchain_phase_seconds clang_linker_discovery %s\n' "$((SECONDS - toolchain_started))"
@@ -217,6 +287,15 @@ if [[ "$target_arch" == x86_64 && "$(uname -m)" == arm64 ]]; then
     "$clang_exe" -B"$tool_bin" -isysroot "$warmup_sdkroot" -mmacosx-version-min=14.0 \
         -x c -std=c17 -O2 -g0 -c "$warmup_source" -o "$warmup_object"
     printf 'overlay_toolchain_phase_seconds clang_rosetta_object_warmup %s\n' "$((SECONDS - toolchain_started))"
+fi
+if [[ -n "$rosetta_superlu_preload_pid" ]]; then
+    if ! wait "$rosetta_superlu_preload_pid"; then
+        cat "$rosetta_superlu_preload_log" >&2
+        echo "Rosetta SuperLU preload failed" >&2
+        exit 1
+    fi
+    cat "$rosetta_superlu_preload_log"
+    rosetta_superlu_preload_pid=""
 fi
 printf 'jit_clang=%s\njit_linker=%s\n' "$clang_exe" "$linker_exe"
 log_phase compiler_and_linker_validation
