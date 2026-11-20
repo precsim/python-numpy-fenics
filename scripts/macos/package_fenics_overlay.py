@@ -1102,21 +1102,6 @@ def relocate_and_audit_macho(
     }
 
 
-def verify_no_runtime_prefix_leaks(stage_root: Path, source_prefix: Path) -> None:
-    needle = str(source_prefix).encode("utf-8")
-    leaks = []
-    for path in sorted(stage_root.rglob("*")):
-        if path.is_symlink() or not path.is_file() or is_macho(path):
-            continue
-        data = path.read_bytes()
-        if b"\x00" in data:
-            continue
-        if needle in data:
-            leaks.append(path.relative_to(stage_root).as_posix())
-    if leaks:
-        raise SystemExit(f"producer prefix remains in staged runtime text/configuration: {leaks!r}")
-
-
 def rewrite_text_prefixes(stage_root: Path, source_prefix: Path) -> list[dict[str, Any]]:
     """Remove installed conda prefixes from relocatable text/config payloads.
 
@@ -1154,25 +1139,43 @@ def rewrite_text_prefixes(stage_root: Path, source_prefix: Path) -> list[dict[st
     return rewritten
 
 
-def file_entry(path: Path, stage_root: Path, owners: dict[str, list[str]]) -> dict[str, Any]:
-    relative = path.relative_to(stage_root).as_posix()
-    if relative not in owners or not owners[relative]:
-        raise SystemExit(f"staged overlay file has no explicit owner: {relative}")
-    mode = stat.S_IMODE(os.lstat(path).st_mode)
-    if path.is_symlink():
-        data = os.readlink(path).encode("utf-8")
-        kind = "symlink"
-    else:
-        data = path.read_bytes()
-        kind = "file"
-    return {
-        "path": relative,
-        "kind": kind,
-        "mode": oct(mode),
-        "size": len(data),
-        "sha256": sha256_bytes(data),
-        "owners": sorted(set(owners[relative])),
-    }
+def manifest_entries_and_verify_no_runtime_prefix_leaks(
+    stage_root: Path,
+    source_prefix: Path,
+    owners: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    needle = str(source_prefix).encode("utf-8")
+    leaks = []
+    entries = []
+    for path in sorted(stage_root.rglob("*")):
+        if not (path.is_symlink() or path.is_file()):
+            continue
+        relative = path.relative_to(stage_root).as_posix()
+        if relative not in owners or not owners[relative]:
+            raise SystemExit(f"staged overlay file has no explicit owner: {relative}")
+        mode = stat.S_IMODE(os.lstat(path).st_mode)
+        if path.is_symlink():
+            data = os.readlink(path).encode("utf-8")
+            kind = "symlink"
+        else:
+            macho = is_macho(path)
+            data = path.read_bytes()
+            kind = "file"
+            if not macho and b"\x00" not in data and needle in data:
+                leaks.append(relative)
+        entries.append(
+            {
+                "path": relative,
+                "kind": kind,
+                "mode": oct(mode),
+                "size": len(data),
+                "sha256": sha256_bytes(data),
+                "owners": sorted(set(owners[relative])),
+            }
+        )
+    if leaks:
+        raise SystemExit(f"producer prefix remains in staged runtime text/configuration: {leaks!r}")
+    return entries
 
 
 def deterministic_zip(stage_root: Path, destination: Path) -> None:
@@ -1512,16 +1515,14 @@ try:
     owners[census_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
     phase_started = log_phase("relocate_and_audit_macho", phase_started)
 
+    runtime_audit_started = time.monotonic()
     verify_symlink_closure(stage_root)
-    verify_no_runtime_prefix_leaks(stage_root, prefix)
-    phase_started = log_phase("runtime_audits", phase_started)
-
-    files = [
-        file_entry(path, stage_root, owners)
-        for path in sorted(stage_root.rglob("*"))
-        if path.is_symlink() or path.is_file()
-    ]
-    phase_started = log_phase("manifest_hashing", phase_started)
+    log_duration(
+        "runtime_audit_symlink_closure",
+        time.monotonic() - runtime_audit_started,
+    )
+    files = manifest_entries_and_verify_no_runtime_prefix_leaks(stage_root, prefix, owners)
+    phase_started = log_phase("runtime_audits_and_manifest_hashing", phase_started)
     package_summary = []
     for lock_record in lock["packages"]:
         name = str(lock_record["name"])
