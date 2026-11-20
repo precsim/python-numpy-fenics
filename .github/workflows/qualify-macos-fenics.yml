@@ -267,8 +267,9 @@ jobs:
             --version 0.1.0 \
             --base-producer-revision "$NUMPY_BASE_REVISION" \
             --producer-revision "$producer_revision" \
+            --determinism-reference-output dist \
             > "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
-          grep -E '^package_phase_seconds package_staging|^package_stage_(count|bytes) ' \
+          grep -E '^package_phase_seconds |^package_stage_(count|bytes) |^deterministic_reference_identity=' \
             "$FENICS_OVERLAY_EVIDENCE/package-overlay-repeat.log"
           cmp "dist/$OVERLAY_ASSET" "dist-repeat/$OVERLAY_ASSET"
           cmp "dist/$OVERLAY_ASSET.json" "dist-repeat/$OVERLAY_ASSET.json"

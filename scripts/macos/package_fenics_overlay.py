@@ -117,6 +117,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def files_identical(left: Path, right: Path) -> bool:
+    if left.stat().st_size != right.stat().st_size:
+        return False
+    with left.open("rb") as left_stream, right.open("rb") as right_stream:
+        while True:
+            left_chunk = left_stream.read(1024 * 1024)
+            right_chunk = right_stream.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+
 def log_duration(name: str, seconds: float) -> None:
     print(f"package_phase_seconds {name} {seconds:.3f}", flush=True)
 
@@ -884,6 +897,8 @@ def relocate_and_audit_macho(
     private_prefix: Path,
     source_prefix: Path,
     architecture: str,
+    *,
+    derive_census_from_relocation: bool = False,
 ) -> dict[str, Any]:
     phase_started = time.monotonic()
     macho_files = [path for path in sorted(stage_root.rglob("*")) if is_macho(path)]
@@ -896,6 +911,7 @@ def relocate_and_audit_macho(
     relocation_dylib_identity_seconds = 0.0
     install_name_tool_seconds = 0.0
     signing_seconds = 0.0
+    derived_census: list[dict[str, Any]] = []
 
     for binary in macho_files:
         metadata_started = time.monotonic()
@@ -907,6 +923,7 @@ def relocate_and_audit_macho(
         identity = macho_identity_from_load_commands(load_commands)
         identity_seconds = time.monotonic() - identity_started
         changes = []
+        relocated_dependencies = []
         dependency_started = time.monotonic()
         dependencies = macho_dependencies_from_load_commands(load_commands)
         list_seconds = time.monotonic() - dependency_started
@@ -914,6 +931,7 @@ def relocate_and_audit_macho(
         relocation_dependency_list_seconds += list_seconds
         for dependency in dependencies:
             if dependency.startswith(SYSTEM_PREFIXES):
+                relocated_dependencies.append(dependency)
                 continue
             target = staged_target_for_dependency(dependency, binary, source_prefix, private_prefix, rpaths)
             if target is None or not target.exists():
@@ -923,6 +941,7 @@ def relocate_and_audit_macho(
             except ValueError as exc:
                 raise SystemExit(f"Mach-O dependency escapes staged overlay: {binary} -> {dependency} -> {target}") from exc
             replacement = loader_reference(binary, target)
+            relocated_dependencies.append(replacement)
             if dependency != replacement:
                 changes.append((dependency, replacement))
         relocation_metadata_seconds += time.monotonic() - metadata_started
@@ -940,6 +959,7 @@ def relocate_and_audit_macho(
             install_name_tool_seconds += time.monotonic() - rewrite_started
             rewritten.add(binary)
 
+        relocated_rpaths = []
         for rpath in rpaths:
             if rpath.startswith(str(source_prefix)) or rpath.startswith(("/opt/homebrew", "/usr/local", "/Users/")):
                 binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
@@ -947,6 +967,8 @@ def relocate_and_audit_macho(
                 run("install_name_tool", "-delete_rpath", rpath, str(binary))
                 install_name_tool_seconds += time.monotonic() - rewrite_started
                 rewritten.add(binary)
+            else:
+                relocated_rpaths.append(rpath)
 
         if binary.suffix == ".dylib":
             desired = f"@rpath/{binary.name}"
@@ -964,6 +986,21 @@ def relocate_and_audit_macho(
         run("codesign", "--force", "--sign", "-", "--timestamp=none", str(binary))
         binary.chmod(mode)
         signing_seconds += time.monotonic() - signing_started
+        if derive_census_from_relocation:
+            minos = macho_minos_from_load_commands(load_commands)
+            if minos is None:
+                raise SystemExit(f"Mach-O has no measurable minimum macOS version: {binary}")
+            derived_census.append(
+                {
+                    "path": binary.relative_to(stage_root).as_posix(),
+                    "architecture": architecture,
+                    "minos": minos,
+                    "dependencies": relocated_dependencies,
+                    "rpaths": relocated_rpaths,
+                    "rewritten": binary in rewritten,
+                    "codesign": "adhoc",
+                }
+            )
     rewrite_finished = time.monotonic()
     relocation_seconds = rewrite_finished - phase_started - signing_seconds
     log_duration("macho_relocation", relocation_seconds)
@@ -998,6 +1035,32 @@ def relocate_and_audit_macho(
     audit_dependency_list_seconds = 0.0
     audit_codesign_verify_seconds = 0.0
     audit_codesign_detail_seconds = 0.0
+    if derive_census_from_relocation:
+        census = derived_census
+        for entry in census:
+            minos = entry["minos"]
+            if max_minos is None or version_tuple(minos) > version_tuple(max_minos):
+                max_minos = minos
+        audit_seconds = time.monotonic() - phase_started
+        log_duration("macho_audits", audit_seconds)
+        log_duration("macho_audit_lipo", 0.0)
+        log_duration("macho_audit_minos", 0.0)
+        log_duration("macho_audit_rpaths", 0.0)
+        log_duration("macho_audit_dependencies", 0.0)
+        log_duration("macho_audit_dependency_identity", 0.0)
+        log_duration("macho_audit_dependency_list", 0.0)
+        log_duration("macho_audit_codesign_verify", 0.0)
+        log_duration("macho_audit_codesign_detail", 0.0)
+        log_duration("macho_audit_parallel_wall_seconds", audit_seconds)
+        return {
+            "format_version": 1,
+            "architecture": architecture,
+            "macho_count": len(census),
+            "measured_max_minos": max_minos,
+            "system_library_allowlist": list(SYSTEM_PREFIXES),
+            "mach_o": census,
+        }
+
     def audit_binary(binary: Path) -> tuple[dict[str, Any], dict[str, float]]:
         """Audit one already-signed binary without modifying it or its neighbours."""
         elapsed: dict[str, float] = {}
@@ -1218,6 +1281,14 @@ parser.add_argument("--output", required=True)
 parser.add_argument("--version", default="0.1.0")
 parser.add_argument("--base-producer-revision", required=True)
 parser.add_argument("--producer-revision", required=True)
+parser.add_argument(
+    "--determinism-reference-output",
+    help=(
+        "fully audited first-pass output directory; when set, derive the repeat "
+        "native census from the relocation plan instead of re-running read-only "
+        "post-relocation audit subprocesses, then require byte-identical outputs"
+    ),
+)
 args = parser.parse_args()
 
 if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
@@ -1234,6 +1305,11 @@ lock_path = Path(args.lock).resolve()
 package_cache = Path(args.package_cache).resolve()
 base_runtime = Path(args.base_runtime).resolve()
 output = Path(args.output).resolve()
+determinism_reference_output = (
+    Path(args.determinism_reference_output).resolve()
+    if args.determinism_reference_output
+    else None
+)
 bootstrap_source = Path(__file__).resolve().parents[2] / "runtime" / "macos_fenics_embed_runtime.py"
 asset_arch = "arm64" if args.arch == "arm64" else "x64"
 expected_platform = f"macos-{asset_arch}"
@@ -1241,6 +1317,13 @@ expected_platform = f"macos-{asset_arch}"
 for required in (prefix / "conda-meta", lock_path, package_cache, base_runtime, bootstrap_source):
     if not required.exists():
         raise SystemExit(f"required producer input is missing: {required}")
+if determinism_reference_output is not None and not determinism_reference_output.is_dir():
+    raise SystemExit(
+        "determinism reference output directory is missing: "
+        f"{determinism_reference_output}"
+    )
+if determinism_reference_output == output:
+    raise SystemExit("determinism reference output must differ from the rebuild output")
 
 phase_started = time.monotonic()
 base_identity = numpy_base_identity(
@@ -1506,7 +1589,13 @@ try:
     owners[text_rewrites_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
     phase_started = log_phase("text_path_rewriting", phase_started)
 
-    census = relocate_and_audit_macho(stage_root, private_prefix, prefix, args.arch)
+    census = relocate_and_audit_macho(
+        stage_root,
+        private_prefix,
+        prefix,
+        args.arch,
+        derive_census_from_relocation=determinism_reference_output is not None,
+    )
     census_path = provenance / "native-census.json"
     census_path.write_text(json.dumps(census, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     owners[census_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
@@ -1637,7 +1726,30 @@ try:
     }
     summary_path = output / f"{asset_name}.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (output / f"{asset_name}.sha256").write_text(f"{zip_hash}  {asset_name}\n", encoding="utf-8")
+    sha256_path = output / f"{asset_name}.sha256"
+    sha256_path.write_text(f"{zip_hash}  {asset_name}\n", encoding="utf-8")
+    if determinism_reference_output is not None:
+        reference_zip = determinism_reference_output / asset_name
+        reference_summary = determinism_reference_output / summary_path.name
+        reference_sha256 = determinism_reference_output / sha256_path.name
+        for reference in (reference_zip, reference_summary, reference_sha256):
+            if not reference.is_file():
+                raise SystemExit(f"determinism reference output is missing: {reference}")
+        if not files_identical(reference_zip, zip_path):
+            raise SystemExit(
+                f"deterministic rebuild ZIP differs from reference: {reference_zip} != {zip_path}"
+            )
+        if reference_summary.read_bytes() != summary_path.read_bytes():
+            raise SystemExit(
+                "deterministic rebuild summary differs from reference: "
+                f"{reference_summary} != {summary_path}"
+            )
+        if reference_sha256.read_bytes() != sha256_path.read_bytes():
+            raise SystemExit(
+                "deterministic rebuild SHA-256 record differs from reference: "
+                f"{reference_sha256} != {sha256_path}"
+            )
+        print("deterministic_reference_identity=pass", flush=True)
     print(json.dumps(summary, indent=2, sort_keys=True))
 finally:
     cleanup_started = time.monotonic()
