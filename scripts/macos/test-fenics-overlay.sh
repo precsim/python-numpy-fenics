@@ -255,6 +255,7 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
 "${python_cmd[@]}" -S -P - "$repo_root/tests/fenics/test_poisson.py" "$runtime" "$target_arch" <<'PY'
+import _imp
 import importlib.util
 import os
 import platform
@@ -275,6 +276,45 @@ def log_import_phase(name, started):
         f"overlay_runtime_import_seconds {name} {time.monotonic() - started:.3f}",
         flush=True,
     )
+
+native_extension_targets = {
+    "basix._basixcpp",
+    "dolfinx.cpp",
+    "mpi4py.MPI",
+    "numpy._core._multiarray_umath",
+    "petsc4py.PETSc",
+}
+original_create_dynamic = _imp.create_dynamic
+original_exec_dynamic = _imp.exec_dynamic
+
+def profiled_create_dynamic(spec):
+    if spec.name not in native_extension_targets:
+        return original_create_dynamic(spec)
+    started = time.monotonic()
+    try:
+        return original_create_dynamic(spec)
+    finally:
+        elapsed = time.monotonic() - started
+        print(
+            f"overlay_native_extension_seconds {spec.name} create_dynamic {elapsed:.3f}",
+            flush=True,
+        )
+        print(f"overlay_native_extension_origin {spec.name} {spec.origin}", flush=True)
+
+def profiled_exec_dynamic(module):
+    module_spec = getattr(module, "__spec__", None)
+    name = getattr(module_spec, "name", None) or getattr(module, "__name__", "<unknown>")
+    if name not in native_extension_targets:
+        return original_exec_dynamic(module)
+    started = time.monotonic()
+    try:
+        return original_exec_dynamic(module)
+    finally:
+        elapsed = time.monotonic() - started
+        print(
+            f"overlay_native_extension_seconds {name} exec_dynamic {elapsed:.3f}",
+            flush=True,
+        )
 
 script = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
@@ -347,15 +387,21 @@ if Path(os.environ.get("PETSC_DIR", "")).resolve() != private_prefix.resolve():
 if os.environ.get("PETSC_ARCH", "") != "":
     raise SystemExit("PETSC_ARCH must be empty for the relocated FEniCS runtime")
 log_import_phase("tcl_and_toolchain_checks", import_started)
-import_started = time.monotonic()
-import basix
-log_import_phase("basix", import_started)
-import_started = time.monotonic()
-import numpy
-log_import_phase("numpy", import_started)
-import_started = time.monotonic()
-import dolfinx
-log_import_phase("dolfinx", import_started)
+_imp.create_dynamic = profiled_create_dynamic
+_imp.exec_dynamic = profiled_exec_dynamic
+try:
+    import_started = time.monotonic()
+    import basix
+    log_import_phase("basix", import_started)
+    import_started = time.monotonic()
+    import numpy
+    log_import_phase("numpy", import_started)
+    import_started = time.monotonic()
+    import dolfinx
+    log_import_phase("dolfinx", import_started)
+finally:
+    _imp.create_dynamic = original_create_dynamic
+    _imp.exec_dynamic = original_exec_dynamic
 import_started = time.monotonic()
 import ffcx
 log_import_phase("ffcx", import_started)
