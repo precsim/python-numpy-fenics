@@ -46,7 +46,7 @@
     },
     "releaseTag": {
       "type": "string",
-      "pattern": "^runtime-v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$"
+      "pattern": "^runtime-v[0-9]+\\.[0-9]+\\.[0-9]+(?:-rc[0-9]+)?$"
     },
     "assetName": {
       "type": "string",

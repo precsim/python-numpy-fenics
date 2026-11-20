@@ -1,0 +1,173 @@
+name: promote-runtime-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Qualified producer prerelease tag, for example runtime-v0.1.0-rc3
+        required: true
+        type: string
+      target_tag:
+        description: Stable producer release tag, for example runtime-v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_TAG: ${{ inputs.source_tag }}
+      TARGET_TAG: ${{ inputs.target_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Require stable promotion dispatch from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "stable runtime promotion must be dispatched from main: $GITHUB_REF" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Validate producer repository
+        run: python scripts/common/validate_repo.py
+
+      - name: Download and verify qualified source release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TARGET_TAG" >/dev/null 2>&1; then
+            echo "target release already exists: $TARGET_TAG" >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" >/dev/null 2>&1; then
+            echo "target tag already exists: $TARGET_TAG" >&2
+            exit 1
+          fi
+
+          source_metadata="$(gh release view "$SOURCE_TAG" --json tagName,isDraft,isPrerelease,assets)"
+          [[ "$(jq -r '.tagName' <<<"$source_metadata")" == "$SOURCE_TAG" ]] || {
+            echo "source release tag mismatch" >&2
+            exit 1
+          }
+          [[ "$(jq -r '.isDraft' <<<"$source_metadata")" == "false" ]] || {
+            echo "source release is still a draft" >&2
+            exit 1
+          }
+          [[ "$(jq -r '.isPrerelease' <<<"$source_metadata")" == "true" ]] || {
+            echo "source release is not a prerelease" >&2
+            exit 1
+          }
+
+          mkdir -p incoming/source
+          gh release download "$SOURCE_TAG" --dir incoming/source
+
+          expected_manifest_digest="$(
+            jq -r '.assets[] | select(.name == "prerelease-manifest.json") | .digest' \
+              <<<"$source_metadata"
+          )"
+          actual_manifest_digest="sha256:$(sha256sum incoming/source/prerelease-manifest.json | awk '{print $1}')"
+          [[ -n "$expected_manifest_digest" && "$expected_manifest_digest" != "null" ]] || {
+            echo "source release manifest has no GitHub asset digest" >&2
+            exit 1
+          }
+          [[ "$actual_manifest_digest" == "$expected_manifest_digest" ]] || {
+            echo "downloaded source release manifest digest mismatch" >&2
+            exit 1
+          }
+
+          python scripts/common/promote_runtime_release.py \
+            --source incoming/source \
+            --output release-assets \
+            --source-tag "$SOURCE_TAG" \
+            --target-tag "$TARGET_TAG"
+
+          producer_revision="$(jq -r '.producer_revision' release-assets/prerelease-manifest.json)"
+          source_tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" --jq '.object.sha')"
+          [[ "$source_tag_sha" == "$producer_revision" ]] || {
+            echo "source release tag target differs from qualified producer revision" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$producer_revision" HEAD || {
+            echo "qualified producer revision is not an ancestor of current main" >&2
+            exit 1
+          }
+          echo "PRODUCER_REVISION=$producer_revision" >> "$GITHUB_ENV"
+
+      - name: Publish stable GitHub runtime release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup_failed_promotion() {
+            status=$?
+            if [[ "$status" -ne 0 ]]; then
+              gh release delete "$TARGET_TAG" --yes >/dev/null 2>&1 || true
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TARGET_TAG" >/dev/null 2>&1 || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_promotion EXIT
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TARGET_TAG" \
+            -f sha="$PRODUCER_REVISION" >/dev/null
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TARGET_TAG" --jq '.object.sha')"
+          [[ "$tag_sha" == "$PRODUCER_REVISION" ]] || {
+            echo "created stable tag target mismatch: $tag_sha != $PRODUCER_REVISION" >&2
+            exit 1
+          }
+
+          notes_file="docs/releases/${TARGET_TAG#runtime-v}.md"
+          [[ -f "$notes_file" ]] || {
+            echo "stable release notes are missing: $notes_file" >&2
+            exit 1
+          }
+          gh release create "$TARGET_TAG" release-assets/* \
+            --verify-tag \
+            --latest \
+            --title "$TARGET_TAG" \
+            --notes-file "$notes_file"
+
+          release_json="$(gh release view "$TARGET_TAG" --json tagName,isDraft,isPrerelease,assets)"
+          [[ "$(jq -r '.tagName' <<<"$release_json")" == "$TARGET_TAG" ]] || exit 1
+          [[ "$(jq -r '.isDraft' <<<"$release_json")" == "false" ]] || exit 1
+          [[ "$(jq -r '.isPrerelease' <<<"$release_json")" == "false" ]] || exit 1
+
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          target = os.environ["TARGET_TAG"]
+          payload = json.loads(
+              subprocess.check_output(
+                  ["gh", "release", "view", target, "--json", "assets"], text=True
+              )
+          )
+          remote = {asset["name"]: asset.get("digest") for asset in payload["assets"]}
+          root = Path("release-assets")
+          local = {}
+          for path in root.iterdir():
+              if path.is_file():
+                  digest = hashlib.sha256()
+                  with path.open("rb") as stream:
+                      for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  local[path.name] = "sha256:" + digest.hexdigest()
+          if remote != local:
+              raise SystemExit("published stable release asset set or digest differs from verified promotion set")
+          print("producer_stable_release_verification=pass")
+          PY
+
+          trap - EXIT

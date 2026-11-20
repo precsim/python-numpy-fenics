@@ -138,6 +138,7 @@ def main() -> int:
         ROOT / ".github" / "workflows" / "qualify-linux-core-numpy.yml",
         ROOT / ".github" / "workflows" / "qualify-linux-fenics.yml",
         ROOT / ".github" / "workflows" / "prerelease.yml",
+        ROOT / ".github" / "workflows" / "promote-runtime-release.yml",
         ROOT / "contracts" / "runtime-manifest-v1.schema.json",
         ROOT / "contracts" / "qualification-v1.schema.json",
         ROOT / "consumer-kit" / "README.md",

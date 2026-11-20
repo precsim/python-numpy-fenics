@@ -437,6 +437,12 @@ class RuntimeFixture:
 
 
 class RuntimeStagingTests(unittest.TestCase):
+    def test_release_tag_version_accepts_stable_and_release_candidate_tags(self) -> None:
+        self.assertEqual(runtime._version_from_tag("runtime-v0.1.0", "test"), "0.1.0")
+        self.assertEqual(runtime._version_from_tag("runtime-v0.1.0-rc3", "test"), "0.1.0")
+        with self.assertRaises(runtime.ConsumerRuntimeError):
+            runtime._version_from_tag("runtime-v0.1.0-beta1", "test")
+
     def prepare(self, fixture: RuntimeFixture, profile: str) -> runtime.RuntimeInputs:
         return runtime.prepare_runtime_inputs(
             fixture.receipt,
