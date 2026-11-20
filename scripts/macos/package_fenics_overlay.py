@@ -896,6 +896,8 @@ def relocate_and_audit_macho(
     relocation_dylib_identity_seconds = 0.0
     install_name_tool_seconds = 0.0
     signing_seconds = 0.0
+    codesign_calls = 0
+    original_modes: dict[Path, int] = {}
 
     for binary in macho_files:
         metadata_started = time.monotonic()
@@ -928,6 +930,7 @@ def relocate_and_audit_macho(
         relocation_metadata_seconds += time.monotonic() - metadata_started
 
         mode = stat.S_IMODE(binary.stat().st_mode)
+        original_modes[binary] = mode
         if changes:
             binary.chmod(mode | stat.S_IWUSR)
             # install_name_tool accepts multiple -change pairs in one call.
@@ -957,13 +960,29 @@ def relocate_and_audit_macho(
                 install_name_tool_seconds += time.monotonic() - rewrite_started
                 rewritten.add(binary)
 
-        # Sign every shipped Mach-O after relocation.  This is stronger and
-        # simpler than preserving heterogeneous producer signatures.
-        signing_started = time.monotonic()
-        binary.chmod(stat.S_IMODE(binary.stat().st_mode) | stat.S_IWUSR)
-        run("codesign", "--force", "--sign", "-", "--timestamp=none", str(binary))
-        binary.chmod(mode)
-        signing_seconds += time.monotonic() - signing_started
+    # Sign every shipped Mach-O after all relocation mutations are complete.
+    # codesign accepts multiple paths, so one process can apply the same ad-hoc
+    # signature policy to the full staged set instead of paying startup once
+    # per binary.  Restore each file's original mode even when signing fails.
+    signing_started = time.monotonic()
+    try:
+        for binary in macho_files:
+            binary.chmod(original_modes[binary] | stat.S_IWUSR)
+        for batch_start in range(0, len(macho_files), 128):
+            batch = macho_files[batch_start : batch_start + 128]
+            run(
+                "codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                *(str(binary) for binary in batch),
+            )
+            codesign_calls += 1
+    finally:
+        for binary in macho_files:
+            binary.chmod(original_modes[binary])
+    signing_seconds += time.monotonic() - signing_started
     rewrite_finished = time.monotonic()
     relocation_seconds = rewrite_finished - phase_started - signing_seconds
     log_duration("macho_relocation", relocation_seconds)
@@ -986,6 +1005,8 @@ def relocate_and_audit_macho(
         relocation_seconds - relocation_metadata_seconds - install_name_tool_seconds,
     )
     log_duration("macho_signing", signing_seconds)
+    log_count("macho_codesign_calls", codesign_calls)
+    log_count("macho_codesign_files", len(macho_files))
     phase_started = rewrite_finished
 
     census = []
