@@ -367,6 +367,7 @@ for raw_line in process.stdout:
     line = raw_line.rstrip("\n")
     if line == "overlay_dyld_trace_marker petsc4py.PETSc begin":
         marker_started = observed
+        events.append((0.0, line))
         print(line, flush=True)
         continue
     if marker_started is None:
