@@ -117,6 +117,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def files_identical(left: Path, right: Path) -> bool:
+    if left.stat().st_size != right.stat().st_size:
+        return False
+    with left.open("rb") as left_stream, right.open("rb") as right_stream:
+        while True:
+            left_chunk = left_stream.read(1024 * 1024)
+            right_chunk = right_stream.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+
 def log_duration(name: str, seconds: float) -> None:
     print(f"package_phase_seconds {name} {seconds:.3f}", flush=True)
 
@@ -1218,6 +1231,14 @@ parser.add_argument("--output", required=True)
 parser.add_argument("--version", default="0.1.0")
 parser.add_argument("--base-producer-revision", required=True)
 parser.add_argument("--producer-revision", required=True)
+parser.add_argument(
+    "--determinism-reference-output",
+    help=(
+        "fully audited first-pass output directory; when set, skip read-only "
+        "source/runtime revalidation and require this independently rebuilt "
+        "artifact to be byte-identical to the reference before success"
+    ),
+)
 args = parser.parse_args()
 
 if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
@@ -1234,6 +1255,11 @@ lock_path = Path(args.lock).resolve()
 package_cache = Path(args.package_cache).resolve()
 base_runtime = Path(args.base_runtime).resolve()
 output = Path(args.output).resolve()
+determinism_reference_output = (
+    Path(args.determinism_reference_output).resolve()
+    if args.determinism_reference_output
+    else None
+)
 bootstrap_source = Path(__file__).resolve().parents[2] / "runtime" / "macos_fenics_embed_runtime.py"
 asset_arch = "arm64" if args.arch == "arm64" else "x64"
 expected_platform = f"macos-{asset_arch}"
@@ -1241,6 +1267,13 @@ expected_platform = f"macos-{asset_arch}"
 for required in (prefix / "conda-meta", lock_path, package_cache, base_runtime, bootstrap_source):
     if not required.exists():
         raise SystemExit(f"required producer input is missing: {required}")
+if determinism_reference_output is not None and not determinism_reference_output.is_dir():
+    raise SystemExit(
+        "determinism reference output directory is missing: "
+        f"{determinism_reference_output}"
+    )
+if determinism_reference_output == output:
+    raise SystemExit("determinism reference output must differ from the rebuild output")
 
 phase_started = time.monotonic()
 base_identity = numpy_base_identity(
@@ -1372,20 +1405,27 @@ try:
             outer_metadata_started = time.monotonic()
             if expected_prefix_sha and source.is_file() and not source.is_symlink():
                 staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
-                staging_profile["hashed_files"] += 1
                 source_size = owned.get("size_in_bytes")
-                if not isinstance(source_size, int) or source_size < 0:
-                    staging_profile["hashed_unknown_size"] += 1
+                if determinism_reference_output is not None:
+                    staging_profile["source_hash_skipped_files"] += 1
+                    if not isinstance(source_size, int) or source_size < 0:
+                        staging_profile["source_hash_skipped_unknown_size"] += 1
+                    else:
+                        staging_profile["source_hash_skipped_bytes"] += source_size
                 else:
-                    staging_profile["hashed_bytes"] += source_size
-                hash_started = time.monotonic()
-                actual_prefix_sha = sha256_file(source)
-                staging_profile["source_hashing"] += time.monotonic() - hash_started
-                if actual_prefix_sha != str(expected_prefix_sha).lower():
-                    raise SystemExit(
-                        f"installed package-owned file hash mismatch: {name}: {relative}: "
-                        f"{actual_prefix_sha} != {expected_prefix_sha}"
-                    )
+                    staging_profile["hashed_files"] += 1
+                    if not isinstance(source_size, int) or source_size < 0:
+                        staging_profile["hashed_unknown_size"] += 1
+                    else:
+                        staging_profile["hashed_bytes"] += source_size
+                    hash_started = time.monotonic()
+                    actual_prefix_sha = sha256_file(source)
+                    staging_profile["source_hashing"] += time.monotonic() - hash_started
+                    if actual_prefix_sha != str(expected_prefix_sha).lower():
+                        raise SystemExit(
+                            f"installed package-owned file hash mismatch: {name}: {relative}: "
+                            f"{actual_prefix_sha} != {expected_prefix_sha}"
+                        )
             else:
                 staging_profile["outer_metadata"] += time.monotonic() - outer_metadata_started
             source_size = owned.get("size_in_bytes")
@@ -1431,6 +1471,18 @@ try:
     log_count("hashed_files", staging_profile["hashed_files"])
     log_bytes("hashed_bytes", staging_profile["hashed_bytes"])
     log_count("hashed_unknown_size", staging_profile["hashed_unknown_size"])
+    log_count(
+        "source_hash_verification_skipped_files",
+        staging_profile["source_hash_skipped_files"],
+    )
+    log_bytes(
+        "source_hash_verification_skipped_bytes",
+        staging_profile["source_hash_skipped_bytes"],
+    )
+    log_count(
+        "source_hash_verification_skipped_unknown_size",
+        staging_profile["source_hash_skipped_unknown_size"],
+    )
     log_count("copied_files", staging_profile["copied_files"])
     log_bytes("copied_bytes", staging_profile["copied_bytes"])
     log_count("copied_unknown_size", staging_profile["copied_unknown_size"])
@@ -1512,8 +1564,9 @@ try:
     owners[census_path.relative_to(stage_root).as_posix()] = ["python-numpy-fenics"]
     phase_started = log_phase("relocate_and_audit_macho", phase_started)
 
-    verify_symlink_closure(stage_root)
-    verify_no_runtime_prefix_leaks(stage_root, prefix)
+    if determinism_reference_output is None:
+        verify_symlink_closure(stage_root)
+        verify_no_runtime_prefix_leaks(stage_root, prefix)
     phase_started = log_phase("runtime_audits", phase_started)
 
     files = [
@@ -1637,7 +1690,30 @@ try:
     }
     summary_path = output / f"{asset_name}.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (output / f"{asset_name}.sha256").write_text(f"{zip_hash}  {asset_name}\n", encoding="utf-8")
+    sha256_path = output / f"{asset_name}.sha256"
+    sha256_path.write_text(f"{zip_hash}  {asset_name}\n", encoding="utf-8")
+    if determinism_reference_output is not None:
+        reference_zip = determinism_reference_output / asset_name
+        reference_summary = determinism_reference_output / summary_path.name
+        reference_sha256 = determinism_reference_output / sha256_path.name
+        for reference in (reference_zip, reference_summary, reference_sha256):
+            if not reference.is_file():
+                raise SystemExit(f"determinism reference output is missing: {reference}")
+        if not files_identical(reference_zip, zip_path):
+            raise SystemExit(
+                f"deterministic rebuild ZIP differs from reference: {reference_zip} != {zip_path}"
+            )
+        if reference_summary.read_bytes() != summary_path.read_bytes():
+            raise SystemExit(
+                "deterministic rebuild summary differs from reference: "
+                f"{reference_summary} != {summary_path}"
+            )
+        if reference_sha256.read_bytes() != sha256_path.read_bytes():
+            raise SystemExit(
+                "deterministic rebuild SHA-256 record differs from reference: "
+                f"{reference_sha256} != {sha256_path}"
+            )
+        print("deterministic_reference_identity=pass", flush=True)
     print(json.dumps(summary, indent=2, sort_keys=True))
 finally:
     cleanup_started = time.monotonic()
