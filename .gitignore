@@ -1,5 +1,6 @@
 .migration-source/
 .venv/
+/.worktrees/
 __pycache__/
 *.py[cod]
 build/
