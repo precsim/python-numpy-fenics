@@ -251,6 +251,85 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
     exit 1
 }
 
+# Diagnostic-only cold raw load of the largest Rosetta extension hotspot.  This
+# intentionally runs before the authoritative imports so the first dlopen is
+# process-cold; subsequent qualification timings are therefore correctness
+# evidence only, not a performance comparison against an unprobed run.
+"${python_cmd[@]}" -S -P - "$runtime" "$target_arch" <<'PY'
+import ctypes
+import importlib.util
+import os
+import platform
+from pathlib import Path
+import sys
+import time
+
+root = Path(sys.argv[1]).resolve()
+expected_arch = sys.argv[2]
+if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.14":
+    raise SystemExit(f"unexpected relocated prefix during dlopen probe: {sys.prefix}")
+if platform.machine() != expected_arch:
+    raise SystemExit(
+        f"unexpected dlopen probe architecture: {platform.machine()} != {expected_arch}"
+    )
+
+bootstrap = (
+    root
+    / "Python.framework"
+    / "Versions"
+    / "3.14"
+    / "lib"
+    / "python3.14"
+    / "site-packages"
+    / "fenics_embed_runtime.py"
+)
+spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load staged FEnICS bootstrap for dlopen probe: {bootstrap}")
+fenics_embed_runtime = importlib.util.module_from_spec(spec)
+sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
+spec.loader.exec_module(fenics_embed_runtime)
+activated = Path(fenics_embed_runtime.activate()).resolve()
+if activated != root:
+    raise SystemExit(f"unexpected activated root during dlopen probe: {activated} != {root}")
+
+extension_dir = (
+    root
+    / "fenics-runtime"
+    / "conda"
+    / "lib"
+    / "python3.14"
+    / "site-packages"
+    / "petsc4py"
+    / "lib"
+)
+matches = sorted(extension_dir.glob("PETSc*.so"))
+if len(matches) != 1:
+    raise SystemExit(f"expected one petsc4py PETSc extension, found: {matches}")
+extension = matches[0].resolve()
+if "petsc4py.PETSc" in sys.modules:
+    raise SystemExit("PETSc extension was imported before the raw dlopen probe")
+
+mode = os.RTLD_NOW | os.RTLD_LOCAL
+started = time.monotonic()
+handle = ctypes.CDLL(str(extension), mode=mode)
+cold_elapsed = time.monotonic() - started
+print(f"overlay_native_dlopen_seconds petsc4py.PETSc cold {cold_elapsed:.3f}", flush=True)
+print(f"overlay_native_dlopen_origin petsc4py.PETSc {extension}", flush=True)
+if "petsc4py.PETSc" in sys.modules:
+    raise SystemExit("raw PETSc dlopen unexpectedly imported the Python extension")
+
+started = time.monotonic()
+repeat_handle = ctypes.CDLL(str(extension), mode=mode)
+repeat_elapsed = time.monotonic() - started
+print(
+    f"overlay_native_dlopen_seconds petsc4py.PETSc repeat {repeat_elapsed:.3f}",
+    flush=True,
+)
+if "petsc4py.PETSc" in sys.modules:
+    raise SystemExit("repeat raw PETSc dlopen unexpectedly imported the Python extension")
+PY
+
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
