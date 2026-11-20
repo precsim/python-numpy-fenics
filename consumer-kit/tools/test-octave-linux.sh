@@ -40,6 +40,9 @@ openssl_conf=""
 openssl_modules=""
 openssl_override=""
 openssl_root="$relocated_root/runtime/fenics-runtime/conda"
+if [[ -d "$openssl_root" ]]; then
+  openssl_root="$(cd "$openssl_root" && pwd -P)"
+fi
 crypto_provider="$openssl_root/lib/libcrypto.so.3"
 ssl_provider="$openssl_root/lib/libssl.so.3"
 if [[ -f "$crypto_provider" && -f "$ssl_provider" ]]; then
