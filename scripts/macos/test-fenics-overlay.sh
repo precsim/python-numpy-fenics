@@ -278,7 +278,7 @@ if platform.machine() != expected_arch:
     )
 
 library_dir = root / "fenics-runtime" / "conda" / "lib"
-aliases = sorted(library_dir.glob("libsuperlu*.dylib"))
+aliases = sorted(library_dir.glob("libsuperlu.[0-9]*.dylib"))
 targets = sorted({path.resolve() for path in aliases})
 if len(targets) != 1 or not targets[0].is_file():
     raise SystemExit(
