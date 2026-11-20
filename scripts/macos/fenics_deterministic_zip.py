@@ -21,7 +21,11 @@ ZIP_VERSION_MADE_BY_UNIX = (3 << 8) | 20
 ZIP_UTF8_FLAG = 0x0800
 ZIP_DOS_TIME = 0
 ZIP_DOS_DATE = (1 << 5) | 1  # 1980-01-01
-ZIP_IN_FLIGHT_MULTIPLIER = 4
+# Keep enough ordered work queued to hide large-member head-of-line latency
+# while bounding retained compressed results.  With four workers this permits
+# 256 prepared members; the current x86 overlay's worst such filename-ordered
+# window is about 117 MiB compressed.
+ZIP_IN_FLIGHT_MULTIPLIER = 64
 
 LOCAL_FILE_HEADER = struct.Struct("<IHHHHHIIIHH")
 CENTRAL_DIRECTORY_HEADER = struct.Struct("<IHHHHHHIIIHHHHHII")
