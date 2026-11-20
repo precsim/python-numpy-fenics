@@ -251,6 +251,160 @@ export TK_LIBRARY="$runtime/tcl/tk8.6"
     exit 1
 }
 
+# Diagnostic-only dyld trace for the PETSc native-load hotspot isolated by the
+# preceding profiling experiments.  A target-architecture parent Python starts
+# a fresh relocated Python child directly so DYLD_PRINT_* reaches the packaged
+# interpreter rather than a SIP-protected /usr/bin/arch intermediary.  The
+# parent timestamps trace lines as they arrive; those are inter-event gaps, not
+# durations reported by dyld itself.
+"${python_cmd[@]}" -S -P - "$runtime" "$target_arch" <<'PY'
+import os
+from pathlib import Path
+import platform
+import subprocess
+import sys
+import time
+
+root = Path(sys.argv[1]).resolve()
+expected_arch = sys.argv[2]
+if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.14":
+    raise SystemExit(f"unexpected relocated prefix during dyld trace: {sys.prefix}")
+if platform.machine() != expected_arch:
+    raise SystemExit(
+        f"unexpected dyld trace architecture: {platform.machine()} != {expected_arch}"
+    )
+
+child_code = r'''
+import ctypes
+import importlib.util
+import os
+import platform
+from pathlib import Path
+import sys
+import time
+
+root = Path(sys.argv[1]).resolve()
+expected_arch = sys.argv[2]
+if Path(sys.prefix).resolve() != root / "Python.framework/Versions/3.14":
+    raise SystemExit(f"unexpected relocated child prefix: {sys.prefix}")
+if platform.machine() != expected_arch:
+    raise SystemExit(
+        f"unexpected dyld child architecture: {platform.machine()} != {expected_arch}"
+    )
+
+bootstrap = (
+    root
+    / "Python.framework"
+    / "Versions"
+    / "3.14"
+    / "lib"
+    / "python3.14"
+    / "site-packages"
+    / "fenics_embed_runtime.py"
+)
+spec = importlib.util.spec_from_file_location("fenics_embed_runtime", bootstrap)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load staged FEniCS bootstrap for dyld trace: {bootstrap}")
+fenics_embed_runtime = importlib.util.module_from_spec(spec)
+sys.modules["fenics_embed_runtime"] = fenics_embed_runtime
+spec.loader.exec_module(fenics_embed_runtime)
+activated = Path(fenics_embed_runtime.activate()).resolve()
+if activated != root:
+    raise SystemExit(f"unexpected activated root during dyld trace: {activated} != {root}")
+
+extension_dir = (
+    root
+    / "fenics-runtime"
+    / "conda"
+    / "lib"
+    / "python3.14"
+    / "site-packages"
+    / "petsc4py"
+    / "lib"
+)
+matches = sorted(extension_dir.glob("PETSc*.so"))
+if len(matches) != 1:
+    raise SystemExit(f"expected one petsc4py PETSc extension, found: {matches}")
+extension = matches[0].resolve()
+if "petsc4py.PETSc" in sys.modules:
+    raise SystemExit("PETSc extension was imported before the dyld trace")
+
+mode = sys.getdlopenflags()
+print(f"overlay_dyld_trace_dlopenflags {mode}", flush=True)
+print("overlay_dyld_trace_marker petsc4py.PETSc begin", flush=True)
+started = time.monotonic()
+handle = ctypes.CDLL(str(extension), mode=mode)
+elapsed = time.monotonic() - started
+print(f"overlay_dyld_trace_marker petsc4py.PETSc done {elapsed:.3f}", flush=True)
+if "petsc4py.PETSc" in sys.modules:
+    raise SystemExit("raw PETSc dlopen unexpectedly imported the Python extension")
+if handle._handle == 0:
+    raise SystemExit("raw PETSc dlopen returned an invalid handle")
+'''
+
+env = os.environ.copy()
+env["DYLD_PRINT_LIBRARIES"] = "1"
+env["DYLD_PRINT_INITIALIZERS"] = "1"
+env["DYLD_PRINT_APIS"] = "1"
+command = [sys.executable, "-S", "-P", "-c", child_code, str(root), expected_arch]
+process = subprocess.Popen(
+    command,
+    env=env,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1,
+)
+if process.stdout is None:
+    raise SystemExit("dyld trace child stdout pipe is unavailable")
+
+marker_started = None
+marker_done = False
+events = []
+trace_lines = 0
+for raw_line in process.stdout:
+    observed = time.monotonic()
+    line = raw_line.rstrip("\n")
+    if line == "overlay_dyld_trace_marker petsc4py.PETSc begin":
+        marker_started = observed
+        print(line, flush=True)
+        continue
+    if marker_started is None:
+        if line.startswith("overlay_dyld_trace_dlopenflags "):
+            print(line, flush=True)
+        continue
+    elapsed = observed - marker_started
+    if line.startswith("overlay_dyld_trace_marker petsc4py.PETSc done "):
+        events.append((elapsed, line))
+        print(line, flush=True)
+        marker_done = True
+        marker_started = None
+        continue
+    if line.startswith("dyld["):
+        trace_lines += 1
+        events.append((elapsed, line))
+        print(f"overlay_dyld_trace_seconds {elapsed:.6f} {line}", flush=True)
+
+returncode = process.wait()
+if returncode != 0:
+    raise SystemExit(f"dyld trace child failed with exit code {returncode}")
+if not marker_done:
+    raise SystemExit("dyld trace child did not report PETSc dlopen completion")
+if trace_lines == 0:
+    raise SystemExit("dyld trace emitted no post-marker DYLD_PRINT_* lines")
+
+gaps = []
+for previous, current in zip(events, events[1:]):
+    gap = current[0] - previous[0]
+    gaps.append((gap, previous[1], current[1]))
+for gap, previous_line, current_line in sorted(gaps, reverse=True)[:20]:
+    print(
+        "overlay_dyld_trace_gap_seconds "
+        f"{gap:.6f} after={previous_line} before={current_line}",
+        flush=True,
+    )
+PY
+
 # -I would ignore PYTHONHOME. -S keeps the relocated PYTHONHOME effective while
 # preventing ambient sitecustomize execution; load the bootstrap by exact path
 # so the poisoned PYTHONPATH cannot shadow it before activation.
